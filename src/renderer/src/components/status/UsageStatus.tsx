@@ -1,0 +1,126 @@
+import React, { useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Gauge, RefreshCw } from 'lucide-react'
+import type { UsageWindow } from '@shared/types'
+import { useStore } from '@/store'
+import { Popover } from '../common/Popover'
+import { formatDateTime, formatPercent, relativeTime, timeUntil } from '@/lib/format'
+
+/** Re-render every `ms` so "2m ago" style labels stay current. */
+function useTick(ms = 30_000): void {
+  const [, set] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => set((n) => n + 1), ms)
+    return () => clearInterval(t)
+  }, [ms])
+}
+
+function shortLabel(w: UsageWindow): string {
+  switch (w.group) {
+    case 'session': return '5h'
+    case 'weekly': return 'Wk'
+    case 'model': return w.label.replace(/^Weekly\s+/i, '').slice(0, 6)
+    case 'monthly': return 'Cred'
+    default: return w.label.slice(0, 10)
+  }
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  endpoint: 'claude.ai usage endpoint (same data as /usage)',
+  session: 'a running Claude session (/usage)',
+  event: 'rate-limit headers of API responses',
+  none: 'nothing yet'
+}
+
+/** Compact plan-usage pills for the top-right corner; click for the full breakdown. */
+export function UsageStatus({ compact }: { compact?: boolean }) {
+  const usage = useStore((s) => s.usage)
+  const enabled = useStore((s) => s.settings?.showUsageStatus ?? true)
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLButtonElement>(null)
+  useTick()
+  if (!enabled) return null
+  const shown = usage.windows.filter((w) => w.group !== 'other').slice(0, compact ? 3 : 5)
+  const checked = usage.fetchedAt ? relativeTime(usage.fetchedAt).replace(' ago', '').replace('just now', 'now') : '—'
+  return (
+    <>
+      <button ref={ref} className={`usage-cluster no-drag ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)} title="Plan usage limits (click for details)">
+        {shown.length === 0 && (
+          <span className={`usage-pill sev-${usage.error ? 'warning' : 'unknown'}`}>
+            <Gauge size={11} /> {usage.checking ? 'checking limits…' : usage.error ? 'limits unavailable' : 'limits'}
+          </span>
+        )}
+        {shown.map((w) => (
+          <span key={w.key} className={`usage-pill sev-${w.severity}`} title={`${w.label}: ${formatPercent(w.percent)} used${w.resetsAt ? ` · resets ${timeUntil(w.resetsAt)}` : ''}`}>
+            <span className="u-label">{shortLabel(w)}</span>
+            <span className="u-pct">{formatPercent(w.percent)}</span>
+            <span className="u-bar">
+              <span style={{ width: `${Math.min(100, Math.max(0, w.percent ?? 0))}%` }} />
+            </span>
+          </span>
+        ))}
+        <span className="usage-checked" title={usage.fetchedAt ? `Last check ${formatDateTime(usage.fetchedAt)}` : 'Not checked yet'}>
+          {usage.checking ? <RefreshCw size={10} className="spin" /> : usage.error ? <AlertTriangle size={10} /> : <span>✓</span>}
+          <span>{checked}</span>
+        </span>
+      </button>
+      {open && (
+        <Popover anchor={ref.current} onClose={() => setOpen(false)} width={420}>
+          <UsageDetails />
+        </Popover>
+      )}
+    </>
+  )
+}
+
+export function UsageDetails() {
+  const usage = useStore((s) => s.usage)
+  const warn = useStore((s) => s.settings?.usageWarnPercent ?? 80)
+  useTick(10_000)
+  return (
+    <div className="usage-details">
+      <div className="pop-head">
+        <Gauge size={14} />
+        <b>Plan usage limits</b>
+        {usage.subscription && <span className="pill">{usage.subscription}</span>}
+        <span className="spacer" />
+        <button className="btn sm" onClick={() => void window.api.usage.refresh()} disabled={usage.checking}>
+          <RefreshCw size={12} className={usage.checking ? 'spin' : ''} /> Check now
+        </button>
+      </div>
+      {usage.error && (
+        <div className="msg-system warning">
+          <AlertTriangle size={14} />
+          <div className="body">{usage.error}</div>
+        </div>
+      )}
+      {usage.windows.length === 0 && !usage.error && <div className="faint">No limit information yet. Limits appear after the first check or the first API response.</div>}
+      {usage.windows.map((w) => (
+        <div key={w.key} className={`usage-row sev-${w.severity}`}>
+          <div className="u-row-head">
+            <span className="u-name">
+              {w.label}
+              {w.isActive ? <span className="pill green" style={{ marginLeft: 6 }}>active</span> : null}
+            </span>
+            <span className="u-val">{formatPercent(w.percent)}</span>
+          </div>
+          <div className="u-track">
+            <div className="u-fill" style={{ width: `${Math.min(100, Math.max(0, w.percent ?? 0))}%` }} />
+            <div className="u-mark" style={{ left: `${warn}%` }} title={`warning threshold ${warn}%`} />
+          </div>
+          <div className="u-sub">
+            {w.resetsAt ? `resets ${timeUntil(w.resetsAt)} · ${formatDateTime(w.resetsAt)}` : 'no reset time reported'}
+            {w.detail ? ` · ${w.detail}` : ''}
+            {w.severity === 'locked' ? ' · limit reached' : w.severity === 'critical' ? ' · almost exhausted' : w.severity === 'warning' ? ' · above warning threshold' : ''}
+            {w.updatedAt && w.updatedAt !== usage.fetchedAt ? ` · updated ${relativeTime(w.updatedAt)}` : ''}
+          </div>
+        </div>
+      ))}
+      <div className="u-footer faint">
+        Last check: {usage.fetchedAt ? `${formatDateTime(usage.fetchedAt)} (${relativeTime(usage.fetchedAt)})` : 'never'}
+        {usage.nextCheckAt ? ` · next ${timeUntil(usage.nextCheckAt)}` : ''}
+        <br />
+        Source: {SOURCE_LABEL[usage.source] ?? usage.source}. Limits also update from the rate-limit headers of every API response.
+      </div>
+    </div>
+  )
+}

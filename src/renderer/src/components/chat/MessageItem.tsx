@@ -5,8 +5,10 @@ import { Markdown } from './Markdown'
 import { ToolCallCard } from './ToolCallCard'
 import { LinkifiedText } from './LinkifiedText'
 import { formatCost, formatDuration, formatTime, formatTokens, modelLabel } from '@/lib/format'
+import { useStore } from '@/store'
 
 export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { message: ChatMessage; depth?: number }) {
+  const showTs = useStore((s) => s.settings?.showTimestamps ?? true)
   switch (message.kind) {
     case 'user':
       if (message.synthetic) {
@@ -33,7 +35,7 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { m
               <LinkifiedText text={message.text} />
             </div>
           )}
-          <div className="msg-meta">{formatTime(message.ts)}</div>
+          {showTs && <div className="msg-meta">{formatTime(message.ts)}</div>}
         </div>
       )
     case 'assistant':
@@ -64,6 +66,8 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { m
 })
 
 function AssistantMessage({ message, depth }: { message: AssistantChatMessage; depth: number }) {
+  const showTs = useStore((s) => s.settings?.showTimestamps ?? true)
+  const thinking = useStore((s) => s.settings?.thinkingDisplay ?? 'collapsed')
   const lastTextIdx = (() => {
     for (let i = message.blocks.length - 1; i >= 0; i--) if (message.blocks[i].type === 'text') return i
     return -1
@@ -76,7 +80,7 @@ function AssistantMessage({ message, depth }: { message: AssistantChatMessage; d
           <span className="avatar">C</span>
           <span>{modelLabel(message.model)}</span>
           {message.subagentType && <span className="pill">{message.subagentType}</span>}
-          <span>{formatTime(message.ts)}</span>
+          {showTs && <span>{formatTime(message.ts)}</span>}
           {message.aborted && <span className="pill amber">interrupted</span>}
         </div>
       )}
@@ -91,9 +95,9 @@ function AssistantMessage({ message, depth }: { message: AssistantChatMessage; d
             )
           }
           if (b.type === 'thinking') {
-            if (!b.text.trim()) return null
+            if (!b.text.trim() || thinking === 'hidden') return null
             return (
-              <details className="thinking" key={i}>
+              <details className="thinking" key={i} open={thinking === 'expanded'}>
                 <summary>
                   <Brain size={12} /> thinking
                 </summary>

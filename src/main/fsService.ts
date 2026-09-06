@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import type { FileContent, FsEntry } from '@shared/types'
+import type { FileContent, FileProbe, FsEntry } from '@shared/types'
 
 const IMAGE_TYPES: Record<string, string> = {
   '.png': 'image/png',
@@ -35,11 +35,34 @@ export function languageFor(file: string): string {
   return LANGUAGES[ext] ?? 'plaintext'
 }
 
-export async function listDir(dir: string, showHidden: boolean): Promise<FsEntry[]> {
+/** macOS document bundles: directories that Finder shows (and opens) as single files. */
+const BUNDLE_EXT = new Set([
+  '.app', '.pages', '.numbers', '.key', '.xcodeproj', '.xcworkspace', '.bundle', '.framework', '.photoslibrary', '.rtfd', '.scptd',
+  '.playground', '.band', '.logicx', '.fcpbundle', '.imovielibrary', '.sparsebundle', '.pbxproj', '.nib', '.lproj', '.kext', '.prefpane'
+])
+
+export function isBundle(p: string): boolean {
+  return BUNDLE_EXT.has(path.extname(p).toLowerCase())
+}
+
+function matchesExclude(name: string, patterns: string[]): boolean {
+  for (const pat of patterns) {
+    if (!pat) continue
+    if (pat.startsWith('*.')) {
+      if (name.toLowerCase().endsWith(pat.slice(1).toLowerCase())) return true
+    } else if (pat.endsWith('*')) {
+      if (name.startsWith(pat.slice(0, -1))) return true
+    } else if (name === pat) return true
+  }
+  return false
+}
+
+export async function listDir(dir: string, showHidden: boolean, exclude: string[] = []): Promise<FsEntry[]> {
   const dirents = await fs.promises.readdir(dir, { withFileTypes: true })
   const entries: FsEntry[] = []
   for (const d of dirents) {
     if (!showHidden && d.name.startsWith('.')) continue
+    if (exclude.length && matchesExclude(d.name, exclude)) continue
     const full = path.join(dir, d.name)
     let isDir = d.isDirectory()
     let size = 0
@@ -67,7 +90,30 @@ export async function listDir(dir: string, showHidden: boolean): Promise<FsEntry
 const MAX_TEXT = 1_500_000
 const MAX_IMAGE = 20_000_000
 
-export async function readFileContent(file: string): Promise<FileContent> {
+/** Cheap classification of a path without reading the whole file (8 KB probe). */
+export async function probeFile(file: string): Promise<FileProbe> {
+  let st: fs.Stats
+  try {
+    st = await fs.promises.stat(file)
+  } catch {
+    return { kind: 'missing', size: 0, ext: '' }
+  }
+  const ext = path.extname(file).toLowerCase()
+  if (st.isDirectory()) return { kind: isBundle(file) ? 'bundle' : 'dir', size: 0, ext }
+  if (IMAGE_TYPES[ext]) return { kind: st.size > MAX_IMAGE ? 'too-large' : 'image', size: st.size, ext }
+  if (st.size === 0) return { kind: 'text', size: 0, ext }
+  const fh = await fs.promises.open(file, 'r')
+  try {
+    const probe = Buffer.alloc(Math.min(8192, st.size))
+    await fh.read(probe, 0, probe.length, 0)
+    if (probe.includes(0)) return { kind: 'binary', size: st.size, ext }
+  } finally {
+    await fh.close()
+  }
+  return { kind: 'text', size: st.size, ext }
+}
+
+export async function readFileContent(file: string, maxText = MAX_TEXT): Promise<FileContent> {
   let st: fs.Stats
   try {
     st = await fs.promises.stat(file)
@@ -76,6 +122,7 @@ export async function readFileContent(file: string): Promise<FileContent> {
   }
   const ext = path.extname(file).toLowerCase()
   const base = { path: file, size: st.size, mtime: st.mtimeMs }
+  if (st.isDirectory()) return { ...base, kind: 'binary' }
   if (IMAGE_TYPES[ext]) {
     if (st.size > MAX_IMAGE) return { ...base, kind: 'too-large' }
     const buf = await fs.promises.readFile(file)
@@ -86,10 +133,10 @@ export async function readFileContent(file: string): Promise<FileContent> {
     const probe = Buffer.alloc(Math.min(8192, st.size))
     await fh.read(probe, 0, probe.length, 0)
     if (probe.includes(0)) return { ...base, kind: 'binary' }
-    const toRead = Math.min(st.size, MAX_TEXT)
+    const toRead = Math.min(st.size, maxText)
     const buf = Buffer.alloc(toRead)
     await fh.read(buf, 0, toRead, 0)
-    return { ...base, kind: 'text', text: buf.toString('utf8'), language: languageFor(file), truncated: st.size > MAX_TEXT }
+    return { ...base, kind: 'text', text: buf.toString('utf8'), language: languageFor(file), truncated: st.size > maxText }
   } finally {
     await fh.close()
   }

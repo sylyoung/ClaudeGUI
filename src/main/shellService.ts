@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { shell } from 'electron'
 
-function findOnPath(cmd: string, envPath: string | undefined): string | null {
+export function findOnPath(cmd: string, envPath: string | undefined): string | null {
   for (const dir of (envPath ?? '').split(':')) {
     if (!dir) continue
     const full = path.join(dir, cmd)
@@ -72,5 +72,12 @@ export function openTerminal(dir: string, env: Record<string, string>): void {
     }
   }
   const child = spawn('open', ['-a', 'Terminal', dir], { env, detached: true, stdio: 'ignore' })
+  child.unref()
+}
+
+/** Open a file with a specific application bundle (`open -a App file`). */
+export function openWithApp(appPath: string, file: string, env: Record<string, string>): void {
+  const child = spawn('open', ['-a', appPath, file], { env, detached: true, stdio: 'ignore' })
+  child.on('error', (err) => console.error('[shell] open -a failed', err))
   child.unref()
 }

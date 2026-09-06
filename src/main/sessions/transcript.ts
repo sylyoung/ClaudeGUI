@@ -23,13 +23,18 @@ import type {
   UserChatMessage
 } from '@shared/types'
 
-const MAX_TOOL_RESULT_CHARS = 60_000
+let toolResultMaxChars = 60_000
+
+/** Tool results longer than this are truncated in the middle (configurable in Settings → Advanced). */
+export function setToolResultMaxChars(n: number): void {
+  toolResultMaxChars = Math.max(2_000, Math.floor(n) || 60_000)
+}
 
 function now(): number {
   return Date.now()
 }
 
-function truncateMiddle(text: string, max = MAX_TOOL_RESULT_CHARS): string {
+function truncateMiddle(text: string, max = toolResultMaxChars): string {
   if (text.length <= max) return text
   const head = text.slice(0, Math.floor(max * 0.7))
   const tail = text.slice(-Math.floor(max * 0.3))

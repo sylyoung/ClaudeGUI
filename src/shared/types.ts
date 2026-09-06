@@ -115,6 +115,7 @@ export interface SessionLiveState {
   totalCostUsd: number
   contextTokens?: number
   contextWindow?: number
+  contextUsage?: ContextUsageView
   rateLimit?: RateLimitView
   unread: number
   lastActivityAt: number
@@ -268,21 +269,224 @@ export interface FileContent {
 // Settings
 // ---------------------------------------------------------------------------
 
+export type ThemeMode = 'system' | 'light' | 'dark'
+export type AccentColor = 'system' | 'blue' | 'purple' | 'pink' | 'red' | 'orange' | 'yellow' | 'green' | 'graphite' | 'claude'
+export type Density = 'comfortable' | 'compact'
+export type ThinkingDisplay = 'collapsed' | 'expanded' | 'hidden'
+export type DoubleClickAction = 'system' | 'editor' | 'viewer'
+export type ResumeOnLaunch = 'none' | 'active' | 'pinned' | 'all'
+
 export interface AppSettings {
+  // ---- Claude
   /** Path to a claude binary; empty = SDK-bundled binary. */
   claudeExecutable: string
-  /** Command used for "open in editor"; supports {path} and {line} placeholders. */
-  editorCommand: string
   defaultModel: string
   defaultPermissionMode: PermissionMode
   defaultEffort: EffortLevel | ''
-  notifications: boolean
-  showHiddenFiles: boolean
-  fontSize: number
-  recentDirectories: string[]
-  sendWithEnter: boolean
   /** Extra KEY=VALUE lines applied to every Claude process (e.g. proxies). */
   extraEnv: string
+  /** Maximum agent turns per message; 0 = unlimited. */
+  maxTurns: number
+  /** Maximum thinking tokens; 0 = model default. */
+  maxThinkingTokens: number
+  /** Tools that never prompt (comma or newline separated, e.g. "Read,Grep,Bash(git *)"). */
+  allowedTools: string
+  /** Tools Claude may not use at all. */
+  disallowedTools: string
+  useProjectSettings: boolean
+  useLocalSettings: boolean
+  /** Let Claude Code name new sessions automatically. */
+  autoTitle: boolean
+
+  // ---- General
+  notifications: boolean
+  notifyOnTurnFinished: boolean
+  notifyOnPermission: boolean
+  notifyOnError: boolean
+  notificationSound: boolean
+  dockBadge: boolean
+  resumeOnLaunch: ResumeOnLaunch
+  confirmQuit: boolean
+  /** Pre-filled working directory for new sessions. */
+  defaultCwd: string
+  sendWithEnter: boolean
+  recentDirectories: string[]
+
+  // ---- Appearance
+  theme: ThemeMode
+  accent: AccentColor
+  fontSize: number
+  uiFont: string
+  codeFont: string
+  codeFontSize: number
+  density: Density
+  showTimestamps: boolean
+  thinkingDisplay: ThinkingDisplay
+  toolCardsExpanded: boolean
+  chatMaxWidth: number
+  groupSessionsByFolder: boolean
+  translucentSidebar: boolean
+
+  // ---- Files
+  /** Command used for "open in editor"; supports {path} and {line} placeholders. */
+  editorCommand: string
+  showHiddenFiles: boolean
+  /** Names hidden from the file tree (comma separated, e.g. node_modules,.git). */
+  excludePatterns: string
+  openBinaryWithSystemApp: boolean
+  doubleClickAction: DoubleClickAction
+  autoRevealEditedFiles: boolean
+  maxPreviewKB: number
+  showFileSizes: boolean
+
+  // ---- Git
+  gitEnabled: boolean
+  gitShowStatusInTree: boolean
+  gitAutoRefreshSeconds: number
+  gitAutoFetchMinutes: number
+  gitPushAfterCommit: boolean
+  gitSignOff: boolean
+  gitCommitTemplate: string
+
+  // ---- Usage
+  usageRefreshMinutes: number
+  usageWarnPercent: number
+  showUsageStatus: boolean
+  showContextInSidebar: boolean
+  showTaskCountsInSidebar: boolean
+
+  // ---- Advanced
+  toolResultMaxChars: number
+  debugServer: boolean
+  debugPort: number
+}
+
+export interface ThemeInfo {
+  systemDark: boolean
+  /** macOS accent colour as #rrggbb. */
+  accent: string
+}
+
+// ---------------------------------------------------------------------------
+// Plan usage limits (claude.ai rate-limit windows)
+// ---------------------------------------------------------------------------
+
+export type UsageSeverity = 'normal' | 'warning' | 'critical' | 'locked' | 'unknown'
+
+export interface UsageWindow {
+  key: string
+  label: string
+  group: 'session' | 'weekly' | 'model' | 'monthly' | 'other'
+  /** 0-100, or null when the server did not report it. */
+  percent: number | null
+  severity: UsageSeverity
+  /** Epoch ms when the window resets. */
+  resetsAt?: number
+  isActive?: boolean
+  detail?: string
+  /** Epoch ms of the last update for this window. */
+  updatedAt: number
+}
+
+export interface UsageSnapshot {
+  /** Epoch ms of the last explicit check (0 = never). */
+  fetchedAt: number
+  source: 'endpoint' | 'session' | 'event' | 'none'
+  subscription?: string | null
+  windows: UsageWindow[]
+  error?: string
+  nextCheckAt?: number
+  checking?: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Context usage of a session
+// ---------------------------------------------------------------------------
+
+export interface ContextUsageView {
+  totalTokens: number
+  /** The window the percentage is measured against (auto-compact window). */
+  maxTokens: number
+  percentage: number
+  model?: string
+  categories: { name: string; tokens: number; kind?: string; color?: string }[]
+  checkedAt: number
+}
+
+// ---------------------------------------------------------------------------
+// Git
+// ---------------------------------------------------------------------------
+
+export type GitFileState = 'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'typechange' | 'conflicted' | 'untracked' | 'ignored'
+
+export interface GitFileStatus {
+  /** Repo-relative path (directories end with '/'). */
+  path: string
+  absPath: string
+  origPath?: string
+  /** Staged (index) change. */
+  index: GitFileState | null
+  /** Unstaged (working tree) change. */
+  worktree: GitFileState | null
+  isDir: boolean
+}
+
+export interface GitRepoInfo {
+  isRepo: boolean
+  gitAvailable: boolean
+  ghAvailable: boolean
+  root?: string
+  branch?: string
+  detached?: boolean
+  upstream?: string
+  ahead?: number
+  behind?: number
+  remoteName?: string
+  remoteUrl?: string
+  remoteWebUrl?: string
+  head?: { hash: string; subject: string; time: number }
+  userName?: string
+  userEmail?: string
+  stashCount?: number
+  hasCommits?: boolean
+}
+
+export interface GitStatusResult {
+  info: GitRepoInfo
+  files: GitFileStatus[]
+  truncated?: boolean
+  checkedAt: number
+}
+
+export interface GitCommitInfo {
+  hash: string
+  shortHash: string
+  subject: string
+  author: string
+  time: number
+  refs?: string
+}
+
+export interface GitDiffResult {
+  path: string
+  before: string
+  after: string
+  beforeLabel: string
+  afterLabel: string
+  binary: boolean
+  tooLarge?: boolean
+}
+
+export interface GitBranchInfo {
+  name: string
+  current: boolean
+  upstream?: string
+}
+
+export interface FileProbe {
+  kind: 'text' | 'image' | 'binary' | 'too-large' | 'missing' | 'dir' | 'bundle'
+  size: number
+  ext: string
 }
 
 export interface CliSessionSummary {
@@ -300,6 +504,7 @@ export interface CliSessionSummary {
 
 export interface AppInfo {
   version: string
+  platform: string
   electron: string
   node: string
   sdkVersion: string

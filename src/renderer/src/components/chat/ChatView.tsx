@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { ChevronDown, Ellipsis, FolderOpen, Loader2, Power, Square, TerminalSquare } from 'lucide-react'
+import { Bot, ChevronDown, Ellipsis, FolderOpen, GitBranch, Loader2, Power, Square, TerminalSquare } from 'lucide-react'
 import type { EffortLevel, PermissionDecision, PermissionMode, SessionLiveState, SessionRecord } from '@shared/types'
 import { useStore } from '@/store'
 import { MessageList } from './MessageList'
 import { Composer } from './Composer'
+import { ContextBar } from './ContextBar'
 import { ChatProvider, type ChatCtx } from './ChatContext'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
-import { formatCost, formatTokens, modelLabel, shortenPath } from '@/lib/format'
+import { UsageStatus } from '../status/UsageStatus'
+import { formatCost, modelLabel, shortenPath } from '@/lib/format'
+import { taskCounts } from '@/lib/tasks'
 
 const MODES: { value: PermissionMode; label: string; hint: string }[] = [
   { value: 'default', label: 'Ask', hint: 'Ask before risky actions' },
@@ -30,6 +33,10 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const messages = useStore((s) => s.messages[record.id] ?? EMPTY_MESSAGES)
   const loaded = useStore((s) => Boolean(s.historyLoaded[record.id]))
   const appInfo = useStore((s) => s.appInfo)
+  const filesOpen = useStore((s) => s.filesOpen)
+  const showPanelTab = useStore((s) => s.showPanelTab)
+  const openBinaryExternally = useStore((s) => s.settings?.openBinaryWithSystemApp ?? true)
+  const gitBranch = useStore((s) => s.git[record.id]?.status?.info.branch)
   const send = useStore((s) => s.send)
   const answer = useStore((s) => s.answerPermission)
   const toast = useStore((s) => s.toast)
@@ -45,26 +52,29 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     async (raw, line, opts) => {
       try {
         const abs = await window.api.fs.resolve(raw, record.cwd)
-        const { exists, isDir } = await window.api.fs.exists(abs)
-        if (!exists) {
+        const probe = await window.api.fs.probe(abs)
+        if (probe.kind === 'missing') {
           toast(`Not found: ${abs}`, 'error')
           return
         }
         if (opts?.inEditor) {
-          if (isDir) await window.api.shell.openPath(abs)
+          if (probe.kind === 'dir' || probe.kind === 'bundle') await window.api.shell.openPath(abs)
           else await window.api.shell.openInEditor(abs, line)
           return
         }
-        if (isDir) {
+        if (probe.kind === 'dir') {
           toggleExpanded(record.id, abs, true)
           setRevealPath(record.id, abs)
           useStore.setState({ filesOpen: true })
+        } else if (probe.kind === 'bundle' || ((probe.kind === 'binary' || probe.kind === 'too-large') && openBinaryExternally)) {
+          const err = await window.api.shell.openPath(abs)
+          if (err) toast(err, 'error')
         } else openFile(record.id, abs, line)
       } catch (err) {
         toast((err as Error).message, 'error')
       }
     },
-    [record.cwd, record.id, toast, openFile, toggleExpanded, setRevealPath]
+    [record.cwd, record.id, toast, openFile, toggleExpanded, setRevealPath, openBinaryExternally]
   )
 
   const showPathMenu = useCallback<ChatCtx['showPathMenu']>(
@@ -74,16 +84,17 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
         x,
         y,
         items: [
-          { label: 'Open in viewer', onClick: () => openPath(raw, line) },
+          { label: 'Open in viewer', onClick: async () => openFile(record.id, await resolve(), line) },
           { label: 'Open in editor', onClick: () => openPath(raw, line, { inEditor: true }) },
           { label: 'Open with default app', onClick: async () => window.api.shell.openPath(await resolve()) },
+          { label: 'Open with…', onClick: async () => window.api.shell.openWith(await resolve()) },
           { label: 'Reveal in Finder', onClick: async () => window.api.shell.showInFolder(await resolve()) },
           { label: '', onClick: () => undefined, separator: true },
           { label: 'Copy path', onClick: async () => { await window.api.shell.copy(await resolve()); toast('Path copied', 'success') } }
         ]
       })
     },
-    [record.cwd, openPath, toast]
+    [record.cwd, record.id, openPath, openFile, toast]
   )
 
   const ctx = useMemo<ChatCtx>(() => ({ sessionId: record.id, cwd: record.cwd, openPath, showPathMenu }), [record.id, record.cwd, openPath, showPathMenu])
@@ -116,6 +127,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const defaultLabel = live?.model && !record.model ? `Default (${modelLabel(live.model)})` : 'Default (settings.json)'
   const withDefault = [{ value: '', label: defaultLabel }, ...models.filter((m) => m.value !== '')]
   const modelOptions = withDefault.some((m) => m.value === currentModel) ? withDefault : [...withDefault, { value: currentModel, label: modelLabel(currentModel) }]
+  const counts = taskCounts(live)
 
   const statusPill = (() => {
     switch (status) {
@@ -145,6 +157,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     setMenu({ x: e.clientX, y: e.clientY, items })
   }
 
+  const rl = live?.rateLimit
   return (
     <ChatProvider value={ctx}>
       <div className="chat">
@@ -168,11 +181,28 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
             {record.title}
           </span>
           {statusPill}
+          {counts.background > 0 && (
+            <button className="pill no-drag clickable" title={`${counts.background} background task(s) — click to open Tasks`} onClick={() => showPanelTab('tasks')}>
+              <TerminalSquare size={11} /> {counts.background} bg
+            </button>
+          )}
+          {counts.subagents > 0 && (
+            <button className="pill no-drag clickable" title={`${counts.subagents} subagent(s) running — click to open Tasks`} onClick={() => showPanelTab('tasks')}>
+              <Bot size={11} /> {counts.subagents} agent{counts.subagents === 1 ? '' : 's'}
+            </button>
+          )}
           <span className="cwd no-drag" title={record.cwd} onClick={() => window.api.shell.openPath(record.cwd)}>
             <FolderOpen size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
             {shortenPath(record.cwd, appInfo?.homeDir)}
           </span>
+          {gitBranch && (
+            <button className="cwd no-drag" title="Open the Git panel" onClick={() => showPanelTab('git')}>
+              <GitBranch size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
+              {gitBranch}
+            </button>
+          )}
           <span className="spacer" />
+          {!filesOpen && <UsageStatus compact />}
           <button className="btn ghost icon no-drag" title="Open folder in terminal" onClick={() => window.api.shell.openTerminal(record.cwd)}>
             <TerminalSquare size={15} />
           </button>
@@ -211,11 +241,11 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
             </select>
           </label>
           <span className="spacer" />
-          {live?.contextTokens ? <span title="Context tokens used by the last request">ctx {formatTokens(live.contextTokens)}</span> : null}
-          {live?.totalCostUsd ? <span title="Estimated cost of this process's turns">{formatCost(live.totalCostUsd)}</span> : null}
-          {live?.rateLimit?.utilization != null && (
-            <span className={live.rateLimit.status === 'rejected' ? 'pill red' : live.rateLimit.status === 'allowed_warning' ? 'pill amber' : 'pill'} title={`Rate limit (${live.rateLimit.rateLimitType})`}>
-              limit {Math.round(live.rateLimit.utilization * 100)}%
+          <ContextBar sessionId={record.id} live={live} />
+          {live?.totalCostUsd ? <span title="Estimated cost of this session's turns">{formatCost(live.totalCostUsd)}</span> : null}
+          {rl && rl.status !== 'allowed' && (
+            <span className={rl.status === 'rejected' ? 'pill red' : 'pill amber'} title={`Rate limit (${rl.rateLimitType})`}>
+              {rl.status === 'rejected' ? 'rate limited' : 'near limit'}
             </span>
           )}
           {live?.claudeVersion ? <span className="faint">v{live.claudeVersion}</span> : null}

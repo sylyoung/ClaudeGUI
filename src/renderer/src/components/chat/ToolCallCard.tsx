@@ -10,6 +10,7 @@ import { Markdown } from './Markdown'
 import { LinkifiedText } from './LinkifiedText'
 import { useChatCtx } from './ChatContext'
 import { formatDuration, formatTokens } from '@/lib/format'
+import { useStore } from '@/store'
 
 const EXPANDED_BY_DEFAULT = new Set(['Edit', 'Write', 'MultiEdit', 'Agent', 'Task', 'AskUserQuestion', 'TodoWrite', 'ExitPlanMode', 'NotebookEdit'])
 
@@ -75,7 +76,8 @@ export function ToolCallCard({ block, depth = 0, renderChild }: { block: ToolUse
   const [resultExpanded, setResultExpanded] = useState(false)
   const ctx = useChatCtx()
   const isError = block.status === 'error'
-  const expanded = open ?? (isError || EXPANDED_BY_DEFAULT.has(block.name) || (block.children?.length ?? 0) > 0)
+  const expandAll = useStore((s) => s.settings?.toolCardsExpanded ?? false)
+  const expanded = open ?? (expandAll || isError || EXPANDED_BY_DEFAULT.has(block.name) || (block.children?.length ?? 0) > 0)
   const i = block.input
   const filePath = typeof (i.file_path ?? i.notebook_path) === 'string' ? String(i.file_path ?? i.notebook_path) : undefined
 

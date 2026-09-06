@@ -31,7 +31,7 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
 
   const recent = Array.from(new Set([...(settings?.recentDirectories ?? []), ...Object.values(records).map((r) => r.cwd)])).slice(0, 12)
   useEffect(() => {
-    if (!cwd && recent[0]) setCwd(recent[0])
+    if (!cwd && (settings?.defaultCwd || recent[0])) setCwd(settings?.defaultCwd || recent[0])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

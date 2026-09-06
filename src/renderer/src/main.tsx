@@ -3,7 +3,9 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import { useStore } from './store'
 import './styles.css'
-import 'highlight.js/styles/github-dark-dimmed.css'
+
+// Apply the last known appearance before the first paint to avoid a flash.
+document.documentElement.dataset.theme = localStorage.getItem('theme-dark') === '0' ? 'light' : 'dark'
 
 if (import.meta.env.DEV) (window as unknown as { __store: unknown }).__store = useStore
 const errs: string[] = []

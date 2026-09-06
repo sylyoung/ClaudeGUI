@@ -6,6 +6,7 @@ import { FilePanel } from './components/files/FilePanel'
 import { NewSessionDialog } from './components/dialogs/NewSessionDialog'
 import { ImportSessionDialog } from './components/dialogs/ImportSessionDialog'
 import { SettingsDialog } from './components/dialogs/SettingsDialog'
+import { UsageStatus } from './components/status/UsageStatus'
 
 function Resizer({ onDrag, onEnd }: { onDrag: (dx: number) => void; onEnd: () => void }) {
   const [dragging, setDragging] = React.useState(false)
@@ -44,19 +45,19 @@ export default function App() {
   const filesWidth = useStore((s) => s.filesWidth)
   const setWidths = useStore((s) => s.setWidths)
   const toasts = useStore((s) => s.toasts)
-  const fontSize = useStore((s) => s.settings?.fontSize ?? 14)
   const widthRef = useRef({ sidebarWidth, filesWidth })
   widthRef.current = { sidebarWidth, filesWidth }
 
   useEffect(() => {
     void init()
-    const off = window.api.events.onSessionEvent(applyEvent)
-    return off
+    const offs = [
+      window.api.events.onSessionEvent(applyEvent),
+      window.api.events.onUsage((u) => useStore.getState().setUsage(u)),
+      window.api.events.onTheme((t) => useStore.getState().setTheme(t)),
+      window.api.events.onSettingsChanged((s) => useStore.getState().receiveSettings(s))
+    ]
+    return () => offs.forEach((off) => off())
   }, [init, applyEvent])
-
-  useEffect(() => {
-    document.documentElement.style.setProperty('--font-size', `${fontSize}px`)
-  }, [fontSize])
 
   // keyboard shortcuts + menu commands
   useEffect(() => {
@@ -79,6 +80,7 @@ export default function App() {
         case 'menu:focus-composer': s.focusComposer(); break
         case 'menu:toggle-sidebar': s.toggleSidebar(); break
         case 'menu:toggle-files': s.toggleFiles(); break
+        case 'menu:toggle-git': s.showPanelTab('git'); break
         case 'menu:search': s.focusSearch(); break
         case 'menu:interrupt': if (s.activeId) void window.api.sessions.interrupt(s.activeId); break
       }
@@ -120,6 +122,8 @@ export default function App() {
         <div className="chat">
           <div className="chat-header drag" style={{ paddingLeft: sidebarOpen ? 12 : 84 }}>
             <span className="title">ClaudeGUI</span>
+            <span className="spacer" />
+            <UsageStatus compact />
           </div>
           <div className="empty-state">
             <h2>No session selected</h2>
@@ -135,7 +139,7 @@ export default function App() {
       )}
       {record && filesOpen && (
         <>
-          <Resizer onDrag={(dx) => setWidths({ filesWidth: Math.min(900, Math.max(220, widthRef.current.filesWidth - dx)) })} onEnd={() => undefined} />
+          <Resizer onDrag={(dx) => setWidths({ filesWidth: Math.min(1100, Math.max(260, widthRef.current.filesWidth - dx)) })} onEnd={() => undefined} />
           <div style={{ width: filesWidth, flexShrink: 0, minWidth: 0, display: 'flex' }}>
             <FilePanel record={record} live={live} />
           </div>

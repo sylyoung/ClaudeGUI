@@ -17,8 +17,10 @@ import {
   type SDKUserMessage
 } from '@anthropic-ai/claude-agent-sdk'
 import type {
+  AppSettings,
   BackgroundTaskView,
   ChatMessage,
+  ContextUsageView,
   EffortLevel,
   ImageAttachment,
   ModelInfoView,
@@ -31,6 +33,8 @@ import type {
   SlashCommandView
 } from '@shared/types'
 import { TranscriptState } from './transcript'
+import { splitList } from '../store'
+import type { SdkUsage } from '../usageService'
 
 /** Unbounded async queue used as the SDK's streaming-input prompt. */
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -65,9 +69,19 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
+export interface RateLimitEventInfo {
+  rateLimitType?: string
+  utilization?: number
+  resetsAt?: number
+  status?: string
+}
+
 export interface RuntimeDeps {
   getEnv(): Promise<Record<string, string>>
   getExecutable(): string | undefined
+  getSettings(): AppSettings
+  appVersion: string
+  onRateLimit(info: RateLimitEventInfo, ts: number): void
   emit(event: SessionEvent): void
   saveRecord(record: SessionRecord): void
   onTurnFinished(rt: SessionRuntime, preview: string, isError: boolean): void
@@ -222,6 +236,10 @@ export class SessionRuntime {
       resume = false
     }
     const mode = this.record.permissionMode as SdkPermissionMode
+    const settings = this.deps.getSettings()
+    const allowed = splitList(settings.allowedTools || '')
+    const disallowed = splitList(settings.disallowedTools || '')
+    const sources = ['user', ...(settings.useProjectSettings ? ['project'] : []), ...(settings.useLocalSettings ? ['local'] : [])]
     const options: Options = {
       cwd: this.record.cwd,
       model: this.record.model || undefined,
@@ -233,9 +251,13 @@ export class SessionRuntime {
       agentProgressSummaries: true,
       perTaskStopAffordance: true,
       systemPrompt: { type: 'preset', preset: 'claude_code' },
-      settingSources: ['user', 'project', 'local'],
+      settingSources: sources as Options['settingSources'],
+      maxTurns: settings.maxTurns > 0 ? settings.maxTurns : undefined,
+      maxThinkingTokens: settings.maxThinkingTokens > 0 ? settings.maxThinkingTokens : undefined,
+      allowedTools: allowed.length ? allowed : undefined,
+      disallowedTools: disallowed.length ? disallowed : undefined,
       canUseTool: (toolName, input, opts) => this.handleCanUseTool(toolName, input, opts),
-      env: { ...env, CLAUDE_AGENT_SDK_CLIENT_APP: 'ClaudeGUI/0.1.0' },
+      env: { ...env, CLAUDE_AGENT_SDK_CLIENT_APP: `ClaudeGUI/${this.deps.appVersion}` },
       stderr: (data) => this.deps.log(`[claude ${this.id.slice(0, 8)} stderr] ${data.trimEnd()}`),
       abortController: (this.abort = new AbortController())
     }
@@ -262,6 +284,7 @@ export class SessionRuntime {
         this.live.models = init.models.map(toModelView)
         if (this.live.status === 'starting') this.setStatus('idle')
         this.scheduleFlush()
+        void this.refreshContextUsage('summary')
       })
       .catch((err) => this.deps.log(`[session ${this.id}] initialize failed: ${(err as Error).message}`))
   }
@@ -481,9 +504,46 @@ export class SessionRuntime {
     return this.live.models
   }
 
-  async getContextUsage(): Promise<unknown> {
+  private contextRefreshing = false
+
+  /**
+   * Ask the CLI for its context-window accounting. 'summary' is cheap (uses the last response's
+   * usage); 'full' re-counts every category with the token-count API.
+   */
+  async refreshContextUsage(detail: 'summary' | 'full' = 'summary'): Promise<ContextUsageView | null> {
+    if (!this.q) return this.live.contextUsage ?? null
+    if (this.contextRefreshing && detail === 'summary') return this.live.contextUsage ?? null
+    this.contextRefreshing = true
+    try {
+      const r = await this.q.getContextUsage({ detail })
+      const view: ContextUsageView = {
+        totalTokens: r.totalTokens,
+        maxTokens: r.rawMaxTokens || r.maxTokens,
+        percentage: r.percentage,
+        model: (r as { model?: string }).model ?? this.live.model,
+        categories: r.categories.map((c) => ({ name: c.name, tokens: c.tokens, color: c.color, kind: c.isDeferred ? 'deferred' : undefined })),
+        checkedAt: Date.now()
+      }
+      this.live.contextUsage = view
+      this.live.contextWindow = view.maxTokens
+      if (view.totalTokens > 0) this.live.contextTokens = view.totalTokens
+      this.scheduleFlush()
+      return view
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] context usage failed: ${(err as Error).message}`)
+      return this.live.contextUsage ?? null
+    } finally {
+      this.contextRefreshing = false
+    }
+  }
+
+  /** Plan rate limits as reported by the CLI's structured /usage (experimental SDK API). */
+  async getPlanUsage(): Promise<SdkUsage | null> {
     if (!this.q) return null
-    return this.q.getContextUsage({ detail: 'summary' })
+    const q = this.q as unknown as { usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: (o: { skipBehaviors?: boolean }) => Promise<unknown> }
+    const fn = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET
+    if (typeof fn !== 'function') return null
+    return (await fn.call(this.q, { skipBehaviors: true })) as SdkUsage
   }
 
   markRead(): void {
@@ -557,6 +617,7 @@ export class SessionRuntime {
         this.deps.saveRecord(this.record)
         this.deps.onTurnFinished(this, this.live.lastPreview, Boolean(msg.is_error) || msg.subtype !== 'success')
         this.refreshTitle()
+        void this.refreshContextUsage('summary')
         break
       }
       case 'tool_progress': {
@@ -570,6 +631,7 @@ export class SessionRuntime {
       case 'rate_limit_event': {
         const info = msg.rate_limit_info
         this.live.rateLimit = { status: info.status, rateLimitType: info.rateLimitType, utilization: info.utilization, resetsAt: info.resetsAt }
+        this.deps.onRateLimit({ rateLimitType: info.rateLimitType, utilization: info.utilization, resetsAt: info.resetsAt, status: info.status }, ts)
         break
       }
       case 'conversation_reset': {

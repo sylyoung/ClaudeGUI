@@ -3,11 +3,17 @@ import type {
   AppInfo,
   AppSettings,
   ChatMessage,
+  GitCommitInfo,
+  GitDiffResult,
+  GitStatusResult,
   PermissionDecision,
   SessionEvent,
   SessionLiveState,
-  SessionRecord
+  SessionRecord,
+  ThemeInfo,
+  UsageSnapshot
 } from '@shared/types'
+import { applyTheme } from './lib/theme'
 
 export type DialogKind = null | 'new-session' | 'import-session' | 'settings'
 
@@ -24,19 +30,41 @@ export interface FileTab {
   version: number
 }
 
+export type PanelTab = 'files' | 'tasks' | 'git'
+
 export interface FilesState {
   open: FileTab[]
   active?: string
   /** set of expanded directories in the tree */
   expanded: string[]
   revealPath?: string
-  tab: 'files' | 'tasks'
+  tab: PanelTab
+}
+
+export interface GitSelection {
+  path: string
+  staged: boolean
+}
+
+export interface GitState {
+  status?: GitStatusResult
+  log?: GitCommitInfo[]
+  loading: boolean
+  error?: string
+  /** Label of the action currently running (push, commit…). */
+  busy?: string
+  selected?: GitSelection
+  diff?: GitDiffResult
+  diffLoading?: boolean
+  lastFetchAt?: number
 }
 
 interface State {
   ready: boolean
   appInfo?: AppInfo
   settings?: AppSettings
+  theme: ThemeInfo
+  usage: UsageSnapshot
   records: Record<string, SessionRecord>
   live: Record<string, SessionLiveState>
   messages: Record<string, ChatMessage[]>
@@ -51,6 +79,7 @@ interface State {
   showArchived: boolean
   toasts: Toast[]
   files: Record<string, FilesState>
+  git: Record<string, GitState>
   composerFocusNonce: number
   searchFocusNonce: number
 
@@ -64,15 +93,23 @@ interface State {
   toast: (text: string, kind?: Toast['kind']) => void
   dismissToast: (id: number) => void
   setSettings: (patch: Partial<AppSettings>) => Promise<void>
+  /** Settings pushed from the main process (menu changes etc.). */
+  receiveSettings: (s: AppSettings) => void
+  setTheme: (t: ThemeInfo) => void
+  setUsage: (u: UsageSnapshot) => void
   openFile: (sessionId: string, path: string, line?: number) => void
   closeFile: (sessionId: string, path: string) => void
   setActiveFile: (sessionId: string, path: string | undefined) => void
   toggleExpanded: (sessionId: string, dir: string, open?: boolean) => void
-  setFilesTab: (sessionId: string, tab: FilesState['tab']) => void
+  setFilesTab: (sessionId: string, tab: PanelTab) => void
   setRevealPath: (sessionId: string, p: string | undefined) => void
   bumpFileVersion: (path: string) => void
+  refreshGit: (sessionId: string, opts?: { log?: boolean; fetch?: boolean; quiet?: boolean }) => Promise<void>
+  selectGitFile: (sessionId: string, sel: GitSelection | undefined) => Promise<void>
+  runGit: (sessionId: string, label: string, fn: () => Promise<unknown>, opts?: { successToast?: string }) => Promise<boolean>
   toggleSidebar: () => void
   toggleFiles: () => void
+  showPanelTab: (tab: PanelTab) => void
   setSearch: (s: string) => void
   setShowArchived: (v: boolean) => void
   focusComposer: () => void
@@ -93,9 +130,12 @@ function upsertMessage(list: ChatMessage[], msg: ChatMessage): ChatMessage[] {
 }
 
 export const defaultFiles = (): FilesState => ({ open: [], expanded: [], tab: 'files' })
+const defaultGit = (): GitState => ({ loading: false })
 
 export const useStore = create<State>((set, get) => ({
   ready: false,
+  theme: { systemDark: localStorage.getItem('theme-dark') !== '0', accent: '#007aff' },
+  usage: { fetchedAt: 0, source: 'none', windows: [] },
   records: {},
   live: {},
   messages: {},
@@ -104,21 +144,29 @@ export const useStore = create<State>((set, get) => ({
   sidebarOpen: true,
   filesOpen: true,
   sidebarWidth: Number(localStorage.getItem('sidebarWidth') || 270),
-  filesWidth: Number(localStorage.getItem('filesWidth') || 340),
+  filesWidth: Number(localStorage.getItem('filesWidth') || 360),
   search: '',
   showArchived: false,
   toasts: [],
   files: {},
+  git: {},
   composerFocusNonce: 0,
   searchFocusNonce: 0,
 
   init: async () => {
-    const [info, settings, list] = await Promise.all([window.api.app.info(), window.api.settings.get(), window.api.sessions.list()])
+    const [info, settings, list, theme, usage] = await Promise.all([
+      window.api.app.info(),
+      window.api.settings.get(),
+      window.api.sessions.list(),
+      window.api.app.theme().catch(() => get().theme),
+      window.api.usage.get().catch(() => get().usage)
+    ])
     const records: Record<string, SessionRecord> = {}
     const live: Record<string, SessionLiveState> = {}
     for (const r of list.records) records[r.id] = r
     for (const l of list.live) live[l.id] = l
-    set({ appInfo: info, settings, records, live, ready: true })
+    applyTheme(settings, theme)
+    set({ appInfo: info, settings, theme, usage, records, live, ready: true })
     const last = localStorage.getItem('activeId')
     const initial = last && records[last] ? last : list.records[0]?.id
     if (initial) await get().selectSession(initial)
@@ -211,8 +259,19 @@ export const useStore = create<State>((set, get) => ({
 
   setSettings: async (patch) => {
     const settings = await window.api.settings.set(patch)
+    applyTheme(settings, get().theme)
     set({ settings })
   },
+  receiveSettings: (settings) => {
+    applyTheme(settings, get().theme)
+    set({ settings })
+  },
+  setTheme: (theme) => {
+    const s = get().settings
+    if (s) applyTheme(s, theme)
+    set({ theme })
+  },
+  setUsage: (usage) => set({ usage }),
 
   openFile: (sessionId, path, line) => {
     set((s) => {
@@ -256,8 +315,90 @@ export const useStore = create<State>((set, get) => ({
       }
       return changed ? { files } : {}
     }),
+
+  refreshGit: async (sessionId, opts) => {
+    const record = get().records[sessionId]
+    if (!record) return
+    const cur = get().git[sessionId] ?? defaultGit()
+    if (cur.loading && !opts?.fetch) return
+    set((s) => ({ git: { ...s.git, [sessionId]: { ...(s.git[sessionId] ?? defaultGit()), loading: true } } }))
+    try {
+      if (opts?.fetch) {
+        await window.api.git.fetch(record.cwd)
+        set((s) => ({ git: { ...s.git, [sessionId]: { ...(s.git[sessionId] ?? defaultGit()), lastFetchAt: Date.now() } } }))
+      }
+      const status = await window.api.git.status(record.cwd)
+      let log = cur.log
+      if (status.info.isRepo && (opts?.log || !log)) log = await window.api.git.log(record.cwd, 30)
+      set((s) => {
+        const g = s.git[sessionId] ?? defaultGit()
+        // Drop the selection when the file no longer has that kind of change.
+        let selected = g.selected
+        if (selected) {
+          const f = status.files.find((x) => x.path === selected!.path)
+          const still = f && (selected.staged ? f.index != null : f.worktree != null)
+          if (!still) selected = undefined
+        }
+        return { git: { ...s.git, [sessionId]: { ...g, status, log: status.info.isRepo ? log : undefined, loading: false, error: undefined, selected, diff: selected ? g.diff : undefined } } }
+      })
+      const sel = get().git[sessionId]?.selected
+      if (sel) void get().selectGitFile(sessionId, sel)
+    } catch (err) {
+      const message = (err as Error).message
+      set((s) => ({ git: { ...s.git, [sessionId]: { ...(s.git[sessionId] ?? defaultGit()), loading: false, error: message } } }))
+      if (!opts?.quiet) get().toast(`Git: ${message}`, 'error')
+    }
+  },
+
+  selectGitFile: async (sessionId, sel) => {
+    const record = get().records[sessionId]
+    if (!record) return
+    if (!sel) {
+      set((s) => ({ git: { ...s.git, [sessionId]: { ...(s.git[sessionId] ?? defaultGit()), selected: undefined, diff: undefined } } }))
+      return
+    }
+    set((s) => ({ git: { ...s.git, [sessionId]: { ...(s.git[sessionId] ?? defaultGit()), selected: sel, diffLoading: true } } }))
+    try {
+      const diff = await window.api.git.diff(record.cwd, sel.path, sel.staged)
+      set((s) => {
+        const g = s.git[sessionId] ?? defaultGit()
+        if (g.selected?.path !== sel.path || g.selected?.staged !== sel.staged) return {}
+        return { git: { ...s.git, [sessionId]: { ...g, diff, diffLoading: false } } }
+      })
+    } catch (err) {
+      set((s) => ({ git: { ...s.git, [sessionId]: { ...(s.git[sessionId] ?? defaultGit()), diffLoading: false } } }))
+      get().toast(`Git diff: ${(err as Error).message}`, 'error')
+    }
+  },
+
+  runGit: async (sessionId, label, fn, opts) => {
+    set((s) => ({ git: { ...s.git, [sessionId]: { ...(s.git[sessionId] ?? defaultGit()), busy: label } } }))
+    try {
+      await fn()
+      if (opts?.successToast) get().toast(opts.successToast, 'success')
+      return true
+    } catch (err) {
+      get().toast(`${label} failed: ${(err as Error).message}`, 'error')
+      return false
+    } finally {
+      set((s) => ({ git: { ...s.git, [sessionId]: { ...(s.git[sessionId] ?? defaultGit()), busy: undefined } } }))
+      void get().refreshGit(sessionId, { log: true, quiet: true })
+    }
+  },
+
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleFiles: () => set((s) => ({ filesOpen: !s.filesOpen })),
+  showPanelTab: (tab) => {
+    const id = get().activeId
+    if (!id) return
+    const cur = get().files[id] ?? defaultFiles()
+    const wasOpen = get().filesOpen
+    if (wasOpen && cur.tab === tab) {
+      set({ filesOpen: false })
+      return
+    }
+    set((s) => ({ filesOpen: true, files: { ...s.files, [id]: { ...cur, tab } } }))
+  },
   setSearch: (search) => set({ search }),
   setShowArchived: (showArchived) => set({ showArchived }),
   focusComposer: () => set((s) => ({ composerFocusNonce: s.composerFocusNonce + 1 })),

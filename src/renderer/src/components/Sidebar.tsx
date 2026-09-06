@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Download, Pin, Plus, Settings } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight, Cpu, Download, Pin, Plus, Settings, TerminalSquare } from 'lucide-react'
 import type { SessionLiveState, SessionRecord } from '@shared/types'
 import { orderedSessions, useStore } from '@/store'
 import { ContextMenu, type MenuItem } from './common/ContextMenu'
 import { basename, shortenPath, timeAgo } from '@/lib/format'
+import { contextLevel, contextPercent, taskCounts } from '@/lib/tasks'
 
 function statusText(live: SessionLiveState | undefined): React.ReactNode {
   if (!live) return 'not running'
@@ -17,6 +18,21 @@ function statusText(live: SessionLiveState | undefined): React.ReactNode {
   }
 }
 
+function Indicators({ live }: { live: SessionLiveState | undefined }) {
+  const showCtx = useStore((s) => s.settings?.showContextInSidebar ?? true)
+  const showTasks = useStore((s) => s.settings?.showTaskCountsInSidebar ?? true)
+  if (!live) return null
+  const pct = contextPercent(live)
+  const counts = taskCounts(live)
+  return (
+    <span className="indicators">
+      {showTasks && counts.background > 0 && <span className="ind" title={`${counts.background} background task(s)`}><TerminalSquare size={10} /> {counts.background}</span>}
+      {showTasks && counts.subagents > 0 && <span className="ind" title={`${counts.subagents} subagent(s)`}><Bot size={10} /> {counts.subagents}</span>}
+      {showCtx && pct != null && <span className={`ind ctx ${contextLevel(pct)}`} title={`Context window ${pct}% used`}><Cpu size={10} /> {pct}%</span>}
+    </span>
+  )
+}
+
 export function Sidebar() {
   const records = useStore((s) => s.records)
   const live = useStore((s) => s.live)
@@ -28,6 +44,7 @@ export function Sidebar() {
   const selectSession = useStore((s) => s.selectSession)
   const setDialog = useStore((s) => s.setDialog)
   const appInfo = useStore((s) => s.appInfo)
+  const groupByFolder = useStore((s) => s.settings?.groupSessionsByFolder ?? true)
   const searchNonce = useStore((s) => s.searchFocusNonce)
   const searchRef = useRef<HTMLInputElement>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
@@ -45,6 +62,7 @@ export function Sidebar() {
   }, [records, live, showArchived, search])
 
   const groups = useMemo(() => {
+    if (!groupByFolder) return [['', sessions] as [string, SessionRecord[]]]
     const map = new Map<string, SessionRecord[]>()
     for (const r of sessions) {
       const list = map.get(r.cwd) ?? []
@@ -52,9 +70,10 @@ export function Sidebar() {
       map.set(r.cwd, list)
     }
     return [...map.entries()]
-  }, [sessions])
+  }, [sessions, groupByFolder])
 
   const attention = Object.values(live).filter((l) => l.status === 'requires_action').length
+  const working = Object.values(live).filter((l) => l.status === 'running').length
 
   const itemMenu = (e: React.MouseEvent, r: SessionRecord) => {
     e.preventDefault()
@@ -74,7 +93,9 @@ export function Sidebar() {
   return (
     <div className="sidebar">
       <div className="sidebar-top drag">
-        <span className="title">ClaudeGUI{attention ? ` · ${attention} waiting` : ''}</span>
+        <span className="title" title={`${working} working · ${attention} waiting for input`}>
+          ClaudeGUI{attention ? ` · ${attention} waiting` : working ? ` · ${working} working` : ''}
+        </span>
         <button className="btn ghost icon no-drag" title="Settings (⌘,)" onClick={() => setDialog('settings')}>
           <Settings size={15} />
         </button>
@@ -87,12 +108,14 @@ export function Sidebar() {
         {groups.map(([cwd, list]) => {
           const isCollapsed = collapsed[cwd]
           return (
-            <div key={cwd}>
-              <div className="group-header" onClick={() => setCollapsed((c) => ({ ...c, [cwd]: !c[cwd] }))} title={cwd}>
-                {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                <span className="ellipsis">{basename(cwd)}</span>
-                <span className="count">{list.length}</span>
-              </div>
+            <div key={cwd || '__all'}>
+              {cwd && (
+                <div className="group-header" onClick={() => setCollapsed((c) => ({ ...c, [cwd]: !c[cwd] }))} title={cwd}>
+                  {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                  <span className="ellipsis">{basename(cwd)}</span>
+                  <span className="count">{list.length}</span>
+                </div>
+              )}
               {!isCollapsed &&
                 list.map((r) => {
                   const l = live[r.id]
@@ -108,7 +131,11 @@ export function Sidebar() {
                         {hk && <span className="hotkey-hint">⌘{hk}</span>}
                         <span>{timeAgo(l?.lastActivityAt ?? r.lastActiveAt)}</span>
                       </span>
-                      <span className="meta">{statusText(l)}</span>
+                      <span className="meta">
+                        {!groupByFolder && <span className="faint">{basename(r.cwd)} · </span>}
+                        {statusText(l)}
+                      </span>
+                      <Indicators live={l} />
                     </div>
                   )
                 })}
