@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.0.6 — 2026-09-06
+
+### Session states
+- **Seven states instead of the old six**, and each one is now printed as a marker that cannot be
+  overlooked instead of a small coloured dot: `...` **working** (the three dots run one after the
+  other, blue), `!` **permission** (a tool waits for your approval, amber), `Q` **option** (Claude
+  asked you a question and waits for your choice, red), `N` **unread** (a finished turn you have not
+  read, pink), `↻` **idle · tasks** (nothing to read, but background shells, monitors or subagents
+  are still running, teal), `·` **idle** (grey), `○` **not running** (grey) and `×` **error** (red).
+  The markers appear in the sidebar rows, the group headers, the statistics bar and the chat header.
+- A chat that is idle **with background work** is now clearly separated from a completely idle one:
+  teal `↻` versus grey `·`. Plain idle chats recede instead of being green.
+- **Unread is a state of its own.** A chat whose last turn you have not read is pink, its name is
+  bolder, and the unread count badge uses the same colour.
+- Permission requests and questions are told apart: a question tool (AskUserQuestion) is "option",
+  everything else that waits for approval is "permission".
+
+### Chat
+- **The working state is visible in the chat itself**: an animated line under the status row, a strip
+  above the input box with `...`, what Claude is doing right now (generating, compacting, or the tool
+  it is running), the time the tool has been running and the time since your prompt, plus a blue glow
+  around the input box.
+- **↑ recalls an earlier prompt.** With the caret at the start of an empty (or any) input box, ↑ walks
+  back through the prompts of this chat — including prompts that were sent but not answered yet — and
+  ↓ walks forward and finally back to what you had typed. Typing leaves the walk.
+- **No cost after a turn.** The line that closes a turn now ends with the time the turn finished
+  instead of the accumulated dollar amount ("26.4s · 3 turns · 1.2k out · 08:52"). Tokens and cost
+  are still in its tooltip.
+- **Renaming a chat works.** "Rename…" (chat menu) now puts the caret in the title and selects it,
+  double-clicking the title does the same, Escape cancels and Enter saves. The sidebar has its own
+  "Rename…" entry and renames in place (double-click the row name).
+- **Commit and push from the chat**: the status row shows "N to commit" (opens the Git panel) and
+  "push N" when commits are waiting for the remote, so neither needs the Git tab to be found first.
+  The buttons in the Git panel wrap instead of being cut off in a narrow panel.
+
+### Context colours
+- The context indicators follow the **same rule as the Claude Code status line in the terminal**
+  (`~/.claude/statusline-command.sh`): green up to 200k input tokens, yellow up to 500k, red above,
+  in exactly those three colours (#3fb950, #d29922, #da3633). A window smaller than 200k tokens would
+  never leave green with that rule alone, so a context at least 85 % full is red as well. The rule is
+  written out in the tooltip of the context bar.
+
 ## 1.0.5 — 2026-09-06
 
 ### Fixed

@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, AlertTriangle, Bot, ChevronDown, Code, Ellipsis, FolderOpen, GitBranch, Github, HardDrive, Loader2, MessageSquare, PanelRight, Pin, PinOff, Play, Power, Square, TerminalSquare } from 'lucide-react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, AlertTriangle, Bot, ChevronDown, Code, Ellipsis, FileDiff, FolderOpen, GitBranch, Github, HardDrive, MessageSquare, PanelRight, Pin, PinOff, Play, Power, Square, TerminalSquare, Upload } from 'lucide-react'
 import type { DirInfo, EffortLevel, PermissionDecision, PermissionMode, SessionLiveState, SessionRecord } from '@shared/types'
 import { groupColorFor } from '@shared/colors'
 import { lastPromptOf } from '@shared/util'
@@ -8,6 +8,8 @@ import { PopupSelect, type PopupOption } from '../common/PopupSelect'
 import { GroupColorPicker } from '../common/GroupColorPicker'
 import { isDarkTheme } from '@/lib/theme'
 import { MessageList } from './MessageList'
+import { StateMark } from '../common/StateMark'
+import { WorkingStrip } from './WorkingStrip'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { ChatProvider, type ChatCtx } from './ChatContext'
@@ -63,6 +65,12 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const openBinaryExternally = useStore((s) => s.settings?.openBinaryWithSystemApp ?? true)
   const gitBranch = useStore((s) => s.git[record.id]?.status?.info.branch)
   const gitInfo = useStore((s) => s.git[record.id]?.status?.info)
+  const gitChanges = useStore((s) => {
+    const st = s.git[record.id]?.status
+    if (!st?.info.isRepo) return 0
+    return st.files.filter((f) => f.worktree !== 'ignored' && (f.index || f.worktree)).length
+  })
+  const refreshGit = useStore((s) => s.refreshGit)
   const groups = useStore((s) => s.groups)
   const interruptSession = useStore((s) => s.interruptSession)
   const send = useStore((s) => s.send)
@@ -74,9 +82,28 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const [colorPick, setColorPick] = useState<{ x: number; y: number } | null>(null)
   const [editingTitle, setEditingTitle] = useState(false)
+  const titleRef = useRef<HTMLSpanElement>(null)
 
   const status = live?.status ?? 'stopped'
   const dirInfo = useDirInfo(record.cwd, live?.status)
+
+  // Renaming: put the caret in the title and select it, otherwise "Rename…" looks like it does
+  // nothing. When not editing, the element's text is kept equal to the stored title (React does
+  // not reliably re-render the children of a contentEditable element).
+  useEffect(() => {
+    const el = titleRef.current
+    if (!el) return
+    if (!editingTitle) {
+      if (el.textContent !== record.title) el.textContent = record.title
+      return
+    }
+    el.focus()
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+  }, [editingTitle, record.title])
 
   const openPath = useCallback<ChatCtx['openPath']>(
     async (raw, line, opts) => {
@@ -167,17 +194,33 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const group = record.groupId ? groups.find((g) => g.id === record.groupId) : undefined
   const gColor = groupColorFor(group, dark)
   const fail = (err: unknown) => toast((err as Error).message, 'error')
+  const [pushing, setPushing] = useState(false)
+  // Commit and push straight from the chat, without hunting for the Git tab first.
+  const pushNow = async () => {
+    setPushing(true)
+    try {
+      await window.api.git.push(record.cwd)
+      toast('Pushed', 'success')
+      void refreshGit(record.id, { log: true })
+    } catch (err) {
+      fail(err)
+    } finally {
+      setPushing(false)
+    }
+  }
 
   const statusPill = (() => {
     const tip = vs.description
     switch (vs.key) {
-      case 'working': return <span className="pill blue" data-tip={tip}><Loader2 size={11} className="spin" /> working</span>
-      case 'attention': return <span className="pill amber" data-tip={tip}>needs your input</span>
-      case 'starting': return <span className="pill blue" data-tip={tip}><Loader2 size={11} className="spin" /> starting</span>
-      case 'idle-tasks': return <span className="pill teal" data-tip={tip}>idle · tasks running</span>
-      case 'idle': return <span className="pill green" data-tip={tip}>idle</span>
-      case 'error': return <span className="pill red" data-tip={tip}>error</span>
-      default: return <span className="pill" data-tip={tip}>not running</span>
+      case 'working': return <span className="pill blue" data-tip={tip}><StateMark state="working" /> working</span>
+      case 'permission': return <span className="pill amber" data-tip={tip}><StateMark state="permission" /> permission</span>
+      case 'option': return <span className="pill red" data-tip={tip}><StateMark state="option" /> option</span>
+      case 'unread': return <span className="pill pink" data-tip={tip}><StateMark state="unread" /> unread</span>
+      case 'starting': return <span className="pill blue" data-tip={tip}><StateMark state="starting" /> starting</span>
+      case 'idle-tasks': return <span className="pill teal" data-tip={tip}><StateMark state="idle-tasks" /> idle · tasks running</span>
+      case 'idle': return <span className="pill grey" data-tip={tip}><StateMark state="idle" /> idle</span>
+      case 'error': return <span className="pill red" data-tip={tip}><StateMark state="error" /> error</span>
+      default: return <span className="pill grey" data-tip={tip}><StateMark state="stopped" /> not running</span>
     }
   })()
 
@@ -205,25 +248,36 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const lastAct = live?.lastActivityAt ?? record.lastActiveAt
   const rl = live?.rateLimit
   const headerInset = !sidebarOpen && !showBoard ? 84 : 12
+  const working = status === 'running' || status === 'starting'
+  // Start of the running turn, as far as the chat can tell: your last own prompt.
+  const lastTurnStart = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.kind === 'user' && !m.synthetic) return m.ts
+    }
+    return 0
+  })()
   return (
     <ChatProvider value={ctx}>
-      <div className="chat">
+      <div className={`chat ${working ? 'is-working' : ''}`}>
         <div className="chat-header drag" style={{ paddingLeft: headerInset }}>
           <span
+            ref={titleRef}
             className="title no-drag"
             contentEditable={editingTitle}
             suppressContentEditableWarning
             onDoubleClick={() => setEditingTitle(true)}
             onBlur={(e) => {
-              setEditingTitle(false)
               const t = e.currentTarget.textContent?.trim()
-              if (t && t !== record.title) window.api.sessions.rename(record.id, t)
+              setEditingTitle(false)
+              if (t && t !== record.title) window.api.sessions.rename(record.id, t).catch(fail)
+              else e.currentTarget.textContent = record.title
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') { e.preventDefault(); (e.currentTarget as HTMLElement).blur() }
-              if (e.key === 'Escape') { e.currentTarget.textContent = record.title; (e.currentTarget as HTMLElement).blur() }
+              if (e.key === 'Escape') { e.currentTarget.textContent = record.title; setEditingTitle(false); (e.currentTarget as HTMLElement).blur() }
             }}
-            data-tip="Double-click to rename this session"
+            data-tip="Double-click to rename this chat (Enter saves, Escape cancels)"
           >
             {record.title}
           </span>
@@ -316,6 +370,16 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
               {gitInfo && (gitInfo.ahead || gitInfo.behind) ? <span className="faint">{gitInfo.ahead ? ` ↑${gitInfo.ahead}` : ''}{gitInfo.behind ? ` ↓${gitInfo.behind}` : ''}</span> : null}
             </button>
           )}
+          {gitChanges > 0 && (
+            <button className="cs-item" data-tip={`${gitChanges} changed file${gitChanges === 1 ? '' : 's'} — click to open the Git panel and write a commit message`} onClick={() => showPanelTab('git')}>
+              <FileDiff size={11} /> {gitChanges} to commit
+            </button>
+          )}
+          {(gitInfo?.ahead ?? 0) > 0 && (
+            <button className="cs-item push" disabled={pushing} data-tip={`${gitInfo?.ahead} commit${gitInfo?.ahead === 1 ? '' : 's'} not pushed${gitInfo?.remoteName ? ` to ${gitInfo.remoteName}` : ''} — click to push now`} onClick={() => void pushNow()}>
+              <Upload size={11} /> {pushing ? 'pushing…' : `push ${gitInfo?.ahead}`}
+            </button>
+          )}
           {remoteLabel && (
             <button className="cs-item remote" data-tip={`Git remote ${gitInfo?.remoteName ?? 'origin'}: ${gitInfo?.remoteUrl ?? ''}${gitInfo?.remoteWebUrl ? '\nClick to open it in the browser' : ''}`} onClick={() => gitInfo?.remoteWebUrl && window.api.shell.openExternal(gitInfo.remoteWebUrl)}>
               <Github size={11} /> <span className="ellipsis">{remoteLabel}</span>
@@ -342,6 +406,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
             <div className="body">Process error: {live.error}. Sending a message restarts the session.</div>
           </div>
         )}
+        {working && <WorkingStrip live={live} since={lastTurnStart} />}
         <Composer sessionId={record.id} live={live} onSend={onSend} onInterrupt={onInterrupt} />
         {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
         {colorPick && group && (

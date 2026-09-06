@@ -4,7 +4,7 @@ import type { SessionLiveState } from '@shared/types'
 import { useStore } from '@/store'
 import { Popover } from '../common/Popover'
 import { formatTokens, relativeTime } from '@/lib/format'
-import { barScale, contextLevel, contextPercent, contextWindowOf } from '@/lib/tasks'
+import { barScale, CONTEXT_COLOUR_RULE, contextLevel, contextPercent, contextWindowOf } from '@/lib/tasks'
 
 /** Context-window usage bar for the chat toolbar; click for the /context breakdown. */
 export function ContextBar({ sessionId, live }: { sessionId: string; live: SessionLiveState | undefined }) {
@@ -14,7 +14,7 @@ export function ContextBar({ sessionId, live }: { sessionId: string; live: Sessi
   const send = useStore((s) => s.send)
   const toast = useStore((s) => s.toast)
   const pct = contextPercent(live)
-  const level = contextLevel(pct)
+  const level = contextLevel(live)
   const used = live?.contextUsage?.totalTokens ?? live?.contextTokens
   const window = contextWindowOf(live)
   const cu = live?.contextUsage
@@ -29,7 +29,7 @@ export function ContextBar({ sessionId, live }: { sessionId: string; live: Sessi
       setBusy(false)
     }
   }
-  const title = pct == null ? 'Context usage is known once the session has answered once' : `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens (${pct}%)`
+  const title = pct == null ? 'Context usage is known once the session has answered once' : `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens (${pct}%)\n${CONTEXT_COLOUR_RULE}`
   return (
     <>
       <button ref={ref} className={`ctx-bar level-${level} ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)} data-tip={title}>

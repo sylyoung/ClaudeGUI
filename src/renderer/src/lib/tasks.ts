@@ -35,12 +35,34 @@ export function contextWindowOf(live: SessionLiveState | undefined): number {
   return live?.contextUsage?.maxTokens || live?.contextWindow || DEFAULT_CONTEXT_WINDOW
 }
 
-export function contextLevel(percent: number | undefined): 'ok' | 'warn' | 'high' | 'none' {
+/** Tokens in the context, as far as the session has reported them. */
+export function contextTokens(live: SessionLiveState | undefined): number | undefined {
+  return live?.contextUsage?.totalTokens ?? live?.contextTokens
+}
+
+/** Colour cut-offs of the terminal status line (~/.claude/statusline-command.sh). */
+export const CTX_GREEN_MAX_TOKENS = 200_000
+export const CTX_YELLOW_MAX_TOKENS = 500_000
+export const CTX_FULL_PERCENT = 85
+
+/**
+ * Colour of the context indicators, following the same rule as the Claude Code status line in the
+ * terminal: green up to 200k input tokens, yellow up to 500k, red above that. A window smaller
+ * than 200k tokens would never leave green with that rule alone, so a context at least 85 % full
+ * is red as well.
+ */
+export function contextLevel(live: SessionLiveState | undefined): 'ok' | 'warn' | 'high' | 'none' {
+  const percent = contextPercent(live)
   if (percent == null) return 'none'
-  if (percent >= 85) return 'high'
-  if (percent >= 60) return 'warn'
+  const tokens = contextTokens(live) ?? 0
+  if (tokens > CTX_YELLOW_MAX_TOKENS || percent >= CTX_FULL_PERCENT) return 'high'
+  if (tokens > CTX_GREEN_MAX_TOKENS) return 'warn'
   return 'ok'
 }
+
+/** Wording of the rule above, for tooltips. */
+export const CONTEXT_COLOUR_RULE =
+  'Colours follow your terminal status line: green up to 200k tokens, yellow up to 500k, red above — and red as well from 85% of the window.'
 
 /** Bars in the context breakdown are scaled to the largest occupied category (free space is capped). */
 export function barScale(categories: { name: string; tokens: number; kind?: string }[]): number {

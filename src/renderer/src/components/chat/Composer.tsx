@@ -19,7 +19,30 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   const focusNonce = useStore((s) => s.composerFocusNonce)
   const sendWithEnter = useStore((s) => s.settings?.sendWithEnter ?? true)
   const restore = useStore((s) => s.composerRestore[sessionId])
+  const messages = useStore((s) => s.messages[sessionId])
+  const sentQueue = useStore((s) => s.sentQueue[sessionId])
   const busy = live?.status === 'running' || live?.status === 'requires_action' || live?.status === 'starting'
+
+  // ↑ / ↓ walk through the prompts you already typed in this chat (oldest last), like a shell
+  // history. Prompts that were sent but not answered yet are included, so nothing is lost.
+  const history = useMemo(() => {
+    const list: string[] = []
+    for (const m of messages ?? []) if (m.kind === 'user' && !m.synthetic && m.text.trim()) list.push(m.text)
+    for (const q of sentQueue ?? []) if (q.text.trim() && list[list.length - 1] !== q.text) list.push(q.text)
+    return list
+  }, [messages, sentQueue])
+  const [historyIndex, setHistoryIndex] = useState(-1)
+  const draftBeforeHistory = useRef('')
+  const recall = (index: number) => {
+    setHistoryIndex(index)
+    setText(index < 0 ? draftBeforeHistory.current : history[index])
+    setTimeout(() => {
+      const el = ref.current
+      if (!el) return
+      el.focus()
+      el.selectionStart = el.selectionEnd = el.value.length
+    }, 0)
+  }
 
   // Prompts of an interrupted turn come back into the box (see store.interruptSession).
   useEffect(() => {
@@ -85,6 +108,8 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     onSend(t, images)
     setText('')
     setImages([])
+    setHistoryIndex(-1)
+    draftBeforeHistory.current = ''
     localStorage.removeItem(`draft:${sessionId}`)
   }, [text, images, onSend, sessionId])
 
@@ -106,6 +131,20 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
         setText('/' + c.name + (c.argumentHint ? ' ' : ''))
         return
       }
+    }
+    const el = e.currentTarget
+    const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0
+    if (e.key === 'ArrowUp' && history.length && (!text || caretAtStart) && !e.shiftKey && !e.metaKey && !e.altKey) {
+      e.preventDefault()
+      if (historyIndex < 0) draftBeforeHistory.current = text
+      recall(historyIndex < 0 ? history.length - 1 : Math.max(0, historyIndex - 1))
+      return
+    }
+    if (e.key === 'ArrowDown' && historyIndex >= 0 && !e.shiftKey && !e.metaKey && !e.altKey) {
+      e.preventDefault()
+      const next = historyIndex + 1
+      recall(next >= history.length ? -1 : next)
+      return
     }
     if (e.key === 'Enter') {
       const plain = !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
@@ -188,8 +227,11 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
           ref={ref}
           value={text}
           rows={1}
-          placeholder={busy ? 'Queue a message… (sent after the current turn)' : 'Message Claude…  ( / for commands, drop files or paste images )'}
-          onChange={(e) => setText(e.target.value)}
+          placeholder={busy ? 'Queue a message… (sent after the current turn)' : 'Message Claude…  ( / for commands, ↑ for an earlier prompt, drop files or paste images )'}
+          onChange={(e) => {
+            setText(e.target.value)
+            if (historyIndex >= 0) setHistoryIndex(-1)
+          }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           spellCheck
@@ -200,6 +242,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
           </button>
           <span className="composer-hint">
             {sendWithEnter ? '⏎ send · ⇧⏎ newline' : '⌘⏎ send'}
+            {history.length > 0 ? ' · ↑ earlier prompt' : ''}
             {live?.queuedCount ? ` · ${live.queuedCount} queued` : ''}
           </span>
           <span className="spacer" />

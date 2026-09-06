@@ -655,3 +655,7 @@ useStore.subscribe((s, prev) => {
     }
   }, 500)
 })
+
+// Debug aid: with the development HTTP endpoint (CLAUDEGUI_DEBUG=1) the store can be read and
+// filled with example sessions from the command line to check the interface without a real host.
+if (import.meta.env.DEV) (window as unknown as { __store?: unknown }).__store = useStore

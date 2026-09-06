@@ -1,6 +1,6 @@
 # ClaudeGUI colour plan (proposal for the user to decide)
 
-Status: proposal, nothing below is implemented except the parts marked **done** (1.0.3 / 1.0.4).
+Status: proposal, nothing below is implemented except the parts marked **done** (1.0.3 / 1.0.4 / 1.0.6).
 Every item is independent: accept, change or reject it on its own. Colours follow the macOS
 system palette in light and dark variants (the same ones used for the accent colour), so the app
 keeps its native look.
@@ -9,9 +9,9 @@ keeps its native look.
 
 | # | Element | Proposal | Style options |
 |---|---------|----------|---------------|
-| A1 | State (left bar + dot + state word) | **done**: blue working, amber needs input, teal idle with tasks, green idle, grey not running, red error | a) keep; b) bar only, no coloured word; c) dot only |
+| A1 | State (left bar + marker + state word) | **done (1.0.6)**: seven states with printed markers — `...` working (blue), `!` permission (amber), `Q` option (red), `N` unread (pink), `↻` idle with tasks (teal), `·` idle (grey), `○` not running (grey), `×` error (red) | settled by the user in 1.0.6 |
 | A2 | Group membership | **done (1.0.4)**: a coloured rail along the whole group section, group name in the group colour, coloured tag in the Recent view | a) keep; b) also tint the row background very lightly with the group colour (4 %); c) coloured left rail per row instead of per section |
-| A3 | Unread badge | accent-coloured pill (current) | a) keep; b) use amber to say "look at me" |
+| A3 | Unread badge | **done (1.0.6)**: pink, the colour of the unread state | settled |
 | A4 | Selected rows (multi-selection) | **done (1.0.4)**: accent outline + light accent fill | a) keep; b) checkbox column instead of an outline |
 | A5 | Pinned | grey pin icon (current) | a) keep; b) pin icon in the accent colour |
 | A6 | Time since your last prompt | grey (current) | a) keep; b) turns amber after 24 h, red after 7 days (so stale chats stand out) |
@@ -33,7 +33,7 @@ keeps its native look.
 | C3 | Status row: group tag | **done (1.0.4)**: group colour | a) keep; b) coloured pill with light background |
 | C4 | Status row: git branch | grey (current) | a) keep; b) amber when ahead/behind the remote, red on conflicts |
 | C5 | Status row: folder size | grey (current) | a) keep; b) amber above 5 GB, red above 20 GB (thresholds adjustable) |
-| C6 | Context bar | **done**: green, amber above 60 %, red above 85 % | a) keep; b) different thresholds |
+| C6 | Context bar | **done (1.0.6)**: the rule of the user's terminal status line — green up to 200k tokens, yellow up to 500k, red above, red also from 85 % of the window, in #3fb950 / #d29922 / #da3633 | settled |
 | C7 | Header action buttons | grey icons, accent when "on" (folder panel, pin) | a) keep; b) coloured per action (Terminal black/green, Finder blue, editor purple, GitHub black) |
 
 ## D. Messages

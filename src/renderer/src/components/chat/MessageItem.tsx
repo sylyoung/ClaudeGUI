@@ -4,7 +4,7 @@ import type { AssistantChatMessage, ChatMessage } from '@shared/types'
 import { Markdown } from './Markdown'
 import { ToolCallCard } from './ToolCallCard'
 import { LinkifiedText } from './LinkifiedText'
-import { formatCost, formatDuration, formatTime, formatTokens, modelLabel } from '@/lib/format'
+import { formatCost, formatDateTime, formatDuration, formatStamp, formatTime, formatTokens, modelLabel } from '@/lib/format'
 import { useStore } from '@/store'
 
 export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { message: ChatMessage; depth?: number }) {
@@ -52,11 +52,11 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { m
     case 'result': {
       const s = message.stats
       return (
-        <div className={`msg-result ${message.errorText ? 'error' : ''}`} data-tip={`in ${formatTokens(s.inputTokens)} · out ${formatTokens(s.outputTokens)} · cache read ${formatTokens(s.cacheReadTokens)} · cache write ${formatTokens(s.cacheCreationTokens)}`}>
+        <div className={`msg-result ${message.errorText ? 'error' : ''}`} data-tip={`Turn finished ${formatDateTime(s.endedAt)}\nin ${formatTokens(s.inputTokens)} · out ${formatTokens(s.outputTokens)} · cache read ${formatTokens(s.cacheReadTokens)} · cache write ${formatTokens(s.cacheCreationTokens)} · cost ${formatCost(s.costUsd)}`}>
           <span className="line" />
           <span>
             {message.errorText ? `⚠ ${message.errorText} · ` : ''}
-            {formatDuration(s.durationMs)} · {s.numTurns} turn{s.numTurns === 1 ? '' : 's'} · {formatTokens(s.outputTokens)} out · total {formatCost(s.costUsd)}
+            {formatDuration(s.durationMs)} · {s.numTurns} turn{s.numTurns === 1 ? '' : 's'} · {formatTokens(s.outputTokens)} out · {formatStamp(s.endedAt || message.ts)}
           </span>
           <span className="line" />
         </div>

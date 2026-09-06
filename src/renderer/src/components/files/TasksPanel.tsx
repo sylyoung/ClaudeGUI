@@ -15,7 +15,7 @@ export function TasksPanel({ live, sessionId }: { live: SessionLiveState | undef
   const tasks = live.backgroundTasks.filter((t) => !t.ambient)
   const counts = taskCounts(live)
   const pct = contextPercent(live)
-  const level = contextLevel(pct)
+  const level = contextLevel(live)
   const cu = live.contextUsage
   const used = cu?.totalTokens ?? live.contextTokens
   const win = contextWindowOf(live)

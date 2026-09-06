@@ -1,14 +1,15 @@
 import React, { useMemo } from 'react'
-import { Bot, Mail, Play, TerminalSquare } from 'lucide-react'
+import { Bot, Play, TerminalSquare } from 'lucide-react'
 import { currentOrder, useStore } from '@/store'
 import { VISUAL_LEGEND, visualState, type VisualKey } from '@/lib/sessionState'
+import { StateMark } from './common/StateMark'
 
-const ORDER: VisualKey[] = ['working', 'attention', 'idle-tasks', 'idle', 'stopped', 'error']
+const ORDER: VisualKey[] = ['working', 'permission', 'option', 'unread', 'idle-tasks', 'idle', 'stopped', 'error']
 
 /**
- * One-line statistics bar above the chat: how many sessions are working, waiting for your input,
- * idle with tasks running, idle, not running, in error — plus unread turns and running tasks.
- * Clicking a number jumps to the next session in that state.
+ * One-line statistics bar above the chat: how many sessions are working, waiting for a permission
+ * or an answer, unread, idle with tasks running, idle, not running, in error — plus the running
+ * background tasks. Clicking a number jumps to the next session in that state.
  */
 export function StatusBoard() {
   const records = useStore((s) => s.records)
@@ -26,13 +27,11 @@ export function StatusBoard() {
   const byState = new Map<VisualKey, typeof all>()
   let background = 0
   let subagents = 0
-  let unread = 0
   for (const r of all) {
     const vs = visualState(live[r.id])
     byState.set(vs.key, [...(byState.get(vs.key) ?? []), r])
     background += vs.background
     subagents += vs.subagents
-    unread += live[r.id]?.unread ?? 0
   }
   const starting = byState.get('starting')?.length ?? 0
   const jumpTo = (list: typeof all) => {
@@ -55,7 +54,7 @@ export function StatusBoard() {
         const legend = VISUAL_LEGEND.find((x) => x.key === k)
         return (
           <button key={k} className={`stat vs-${k} no-drag ${n ? '' : 'zero'}`} onClick={() => jumpTo(k === 'working' ? [...list, ...(byState.get('starting') ?? [])] : list)} data-tip={`${legend?.label ?? k}: ${legend?.description ?? ''}${n ? `\n${names(k === 'working' ? [...list, ...(byState.get('starting') ?? [])] : list)}\nClick to jump to the next one` : ''}`}>
-            <span className={`dot vs-${k}`} />
+            <StateMark state={k} />
             <b>{n}</b>
             <span className="lbl">{legend?.label ?? k}</span>
           </button>
@@ -68,13 +67,6 @@ export function StatusBoard() {
         <Bot size={12} className="ic-agent" />
         <b>{subagents}</b>
       </span>
-      {unread > 0 && (
-        <button className="stat unread no-drag" onClick={() => jumpTo(all.filter((r) => (live[r.id]?.unread ?? 0) > 0))} data-tip={`${unread} finished turn${unread === 1 ? '' : 's'} you have not looked at yet.\nClick to jump to the next session with unread turns.`}>
-          <Mail size={12} />
-          <b>{unread}</b>
-          <span className="lbl">unread</span>
-        </button>
-      )}
       <span className="spacer" />
       {notRunning.length > 0 && (
         <button className="stat action no-drag" disabled={busyStarts > 0} onClick={() => void startSessions(notRunning.map((r) => r.id))} data-tip={`Start the Claude process of every session that is not running (${notRunning.length}), one after the other. Stop all / select all: sidebar view options.`}>

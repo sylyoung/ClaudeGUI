@@ -40,23 +40,27 @@ src/
                            queue for interrupt restore, files/panel state persisted per session,
                            sidebar sections for the groups / recent views, multi-selection, bulk
                            start / stop)
-    lib/sessionState.ts    Visual state of a session (working / attention / idle-tasks / …)
+    lib/sessionState.ts    Visual state of a session and its marker (working "..." / permission "!" /
+                           option "Q" / unread "N" / idle·tasks "↻" / idle / not running / error)
     lib/sessionMenu.ts     Context-menu entries shared by sidebar, status board and chat header
     lib/options.ts         Full-name labels for permission modes and effort levels
     lib/theme.ts           Theme/accent resolution -> CSS variables, highlight.js theme swap
-    lib/tasks.ts           Task counts and context-percentage helpers
+    lib/tasks.ts           Task counts, context percentage and the context colour rule (the
+                           thresholds of ~/.claude/statusline-command.sh: 200k / 500k tokens, 85 %)
     App.tsx                Layout: sidebar | (status board / chat | files), tooltip layer
     components/
       Sidebar.tsx          Groups / Recent views, pointer-event drag & drop, group colours,
                            multi-selection toolbar, view options menu
-      StatusBoard.tsx      One-line statistics bar (counts per state, tasks, unread, Start all)
+      StatusBoard.tsx      One-line statistics bar (counts per state with markers, tasks, Start all)
+      common/StateMark.tsx State marker ("..." animated, "!", "Q", "N", "↻", "·", "○", "×")
       common/Tooltip.tsx   Global hover explanations for elements with data-tip
       common/ContextMenu.tsx  Menus with submenus ("Move to group")
       common/PopupSelect.tsx  Drop-down with a short closed label and full-text options
       common/GroupColorPicker.tsx  Palette popover for group colours
       chat/                ChatView (header with action buttons, one-line configuration row,
                            status row + ContextBar), MessageList, ToolCallCard, PermissionPrompt,
-                           Composer (ranking, clear, restore)
+                           WorkingStrip (what Claude is doing + elapsed time while a turn runs),
+                           Composer (ranking, clear, restore, ↑/↓ prompt history)
       files/               FilePanel (tabs), FileTree, FileViewer, TasksPanel
       git/                 GitPanel, useGitAutoRefresh
       status/              UsageStatus (top-right pills + popover), UpdatePill

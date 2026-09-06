@@ -7,7 +7,8 @@ import { sidebarSections, useStore, type SidebarSection } from '@/store'
 import { ContextMenu, type MenuItem } from './common/ContextMenu'
 import { GroupColorPicker } from './common/GroupColorPicker'
 import { basename, formatDateTime, sessionModelName, shortenPath, timeAgo } from '@/lib/format'
-import { contextLevel, contextPercent } from '@/lib/tasks'
+import { CONTEXT_COLOUR_RULE, contextLevel, contextPercent } from '@/lib/tasks'
+import { StateMark } from './common/StateMark'
 import { visualState } from '@/lib/sessionState'
 import { sessionMenuItems } from '@/lib/sessionMenu'
 import { isDarkTheme } from '@/lib/theme'
@@ -58,7 +59,7 @@ export function Indicators({ live, large }: { live: SessionLiveState | undefined
         </span>
       )}
       {showCtx && pct != null && (
-        <span className={`ind ctx ${contextLevel(pct)}`} data-tip={`Context window ${pct}% used${pct >= 85 ? ' — consider /compact' : ''}`}>
+        <span className={`ind ctx ${contextLevel(live)}`} data-tip={`Context window ${pct}% used${pct >= 85 ? ' — consider /compact' : ''}\n${CONTEXT_COLOUR_RULE}`}>
           <Cpu size={10} /> {pct}%
         </span>
       )}
@@ -96,6 +97,7 @@ export function Sidebar() {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const [colorPick, setColorPick] = useState<{ x: number; y: number; group: SessionGroup } | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null)
+  const [renamingSession, setRenamingSession] = useState<{ id: string; name: string } | null>(null)
   const [newGroup, setNewGroup] = useState<string | null>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
   const newGroupRef = useRef<HTMLInputElement>(null)
@@ -178,13 +180,22 @@ export function Sidebar() {
     if (name.trim()) await window.api.sessions.renameGroup(id, name.trim()).catch(fail)
   }
 
+  const commitSessionRename = async () => {
+    if (!renamingSession) return
+    const { id, name } = renamingSession
+    setRenamingSession(null)
+    const title = name.trim()
+    const rec = flat.find((r) => r.id === id)
+    if (title && title !== rec?.title) await window.api.sessions.rename(id, title).catch(fail)
+  }
+
   const itemMenu = (e: React.MouseEvent, r: SessionRecord) => {
     e.preventDefault()
     if (selected.size > 1 && selected.has(r.id)) {
       setMenu({ x: e.clientX, y: e.clientY, items: selectionMenuItems() })
       return
     }
-    setMenu({ x: e.clientX, y: e.clientY, items: sessionMenuItems(r, live[r.id], { groups, toast, onNewGroup: startNewGroup }) })
+    setMenu({ x: e.clientX, y: e.clientY, items: sessionMenuItems(r, live[r.id], { groups, toast, onNewGroup: startNewGroup, onRename: () => setRenamingSession({ id: r.id, name: r.title }) }) })
   }
   const selectionMenuItems = (): MenuItem[] => {
     const n = selectedRecords.length
@@ -435,14 +446,32 @@ export function Sidebar() {
           pick(e, r.id)
         }}
         onContextMenu={(e) => itemMenu(e, r)}
-        onPointerDown={(e) => onPointerDown(e, { kind: 'session', id: r.id, title: r.title })}
+        onPointerDown={(e) => renamingSession?.id !== r.id && onPointerDown(e, { kind: 'session', id: r.id, title: r.title })}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={() => finishDrag(false)}
         data-tip={tip}
       >
-        <span className={`dot vs-${vs.key}`} />
-        <span className="name">{r.title}</span>
+        <StateMark state={vs.key} />
+        {renamingSession?.id === r.id ? (
+          <input
+            className="inline-edit"
+            autoFocus
+            value={renamingSession.name}
+            onChange={(e) => setRenamingSession({ id: r.id, name: e.target.value })}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            onBlur={() => void commitSessionRename()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void commitSessionRename()
+              if (e.key === 'Escape') setRenamingSession(null)
+            }}
+          />
+        ) : (
+          <span className="name" onDoubleClick={() => setRenamingSession({ id: r.id, name: r.title })}>
+            {r.title}
+          </span>
+        )}
         <span className="right">
           {r.pinned && <Pin size={11} className="pin" />}
           {l?.unread ? <span className="badge" data-tip={`${l.unread} finished turn${l.unread === 1 ? '' : 's'} you have not looked at`}>{l.unread}</span> : null}
@@ -458,6 +487,7 @@ export function Sidebar() {
           <span className="model">{modelName}</span>
           <span className="faint"> · </span>
           <span className={`state-text vs-${vs.key}`}>{busy ? (busy === 'start' ? 'starting…' : 'stopping…') : vs.key === 'idle' && l?.lastPreview ? l.lastPreview : vs.label}</span>
+          {!busy && vs.key === 'unread' && l?.lastPreview && <span className="faint"> · {l.lastPreview}</span>}
           {showDir && <span className="faint"> · {basename(r.cwd)}</span>}
         </span>
         <Indicators live={l} />
@@ -567,8 +597,12 @@ export function Sidebar() {
           const collapsed = Boolean(g?.collapsed) && !q
           const isGroupTarget = (t?.kind === 'group' && t.groupId === id && sec.kind !== 'pinned' && sec.kind !== 'recent') || (t?.kind === 'pin' && ((sec.kind === 'pinned' && t.pinned) || (sec.kind === 'recent' && !t.pinned)))
           const groupOrderCls = t?.kind === 'group-order' && g && t.overGroupId === g.id ? `drop-${t.pos}` : ''
-          const working = sec.sessions.filter((r) => live[r.id]?.status === 'running').length
-          const waiting = sec.sessions.filter((r) => live[r.id]?.status === 'requires_action').length
+          const keys = sec.sessions.map((r) => visualState(live[r.id]).key)
+          const working = keys.filter((k) => k === 'working' || k === 'starting').length
+          const permission = keys.filter((k) => k === 'permission').length
+          const option = keys.filter((k) => k === 'option').length
+          const unread = keys.filter((k) => k === 'unread').length
+          const waiting = permission + option
           const color = groupColorFor(g, dark)
           const showHeader = sec.kind === 'group' || sec.kind === 'pinned' || sec.kind === 'recent' || (sec.kind === 'ungrouped' && hasGroups)
           if (sec.kind === 'pinned' && sec.sessions.length === 0 && !q) return null
@@ -621,8 +655,10 @@ export function Sidebar() {
                       {sec.title}
                     </span>
                   )}
-                  {waiting > 0 && <span className="dot vs-attention" style={{ width: 7, height: 7 }} />}
-                  {working > 0 && <span className="dot vs-working" style={{ width: 7, height: 7 }} />}
+                  {permission > 0 && <StateMark state="permission" small />}
+                  {option > 0 && <StateMark state="option" small />}
+                  {unread > 0 && <StateMark state="unread" small />}
+                  {working > 0 && <StateMark state="working" small />}
                   <span className="count">{sec.sessions.length}</span>
                 </div>
               )}

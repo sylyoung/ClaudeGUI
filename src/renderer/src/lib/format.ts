@@ -19,6 +19,15 @@ export function formatTime(ts: number): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+/** Time of day for something that happened today, date + time otherwise ("Sep 5, 21:04"). */
+export function formatStamp(ts: number | undefined): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const now = new Date()
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+  return sameDay ? formatTime(ts) : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
   const s = ms / 1000

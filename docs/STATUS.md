@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-06 (session 3, v1.0.5)
+Last updated: 2026-09-06 (session 4, v1.0.6)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -140,9 +140,30 @@ npm run build:mac  # produce dist/mac-arm64/ClaudeGUI.app (quit a running Claude
       (open -n path and direct-start path), end-to-end update on an isolated app
       (`sandbox/tools/`), type checks and production build
 
-### Open after v1.0.5
-- The user's installed app was rebuilt as 1.0.5 into dist/mac-arm64 by hand after the failed 1.0.4
-  relaunch (their window had quit, the 1.0.3 host kept two sessions alive). Their host stays the
-  1.0.3 one (app binary, registered as ClaudeGUI) until its sessions stop or they restart it from
-  Settings → About; only then do group colours, `lastPromptAt` backfill and `lastModel` work.
-- Colour plan (docs/design/colour-plan.md): implement the items the user picks.
+### v1.0.6
+- [x] Seven session states (working, permission, option, unread, idle·tasks, idle, not running,
+      error) with printed markers instead of dots: `...` `!` `Q` `N` `↻` `·` `○` `×`
+- [x] Idle with background work (teal `↻`) separated from plain idle (grey `·`); unread is its own
+      state (pink `N`, bolder name, matching badge)
+- [x] Working is visible in the chat: animated line under the status row, strip above the input box
+      (what Claude is doing, tool time, time since your prompt), glow around the input box
+- [x] ↑ / ↓ in the input box walk through this chat's earlier prompts (sent-but-unanswered included)
+- [x] Turn footer ends with the finish time; cost only in its tooltip
+- [x] Rename works: caret placed and text selected in the chat title, own "Rename…" in the sidebar
+      with in-place editing (verified through the host RPC in an isolated instance)
+- [x] "N to commit" and "push N" in the chat status row; Git panel button rows wrap
+- [x] Context colours follow ~/.claude/statusline-command.sh (200k / 500k tokens, 85 % of the window,
+      colours #3fb950 / #d29922 / #da3633)
+- [x] Checked in an isolated instance (`CLAUDEGUI_USER_DATA=sandbox/dev-userdata`, debug port 45199)
+      with injected example sessions; screenshots in `sandbox/shots/`
+
+### Open after v1.0.6
+- The user updates their installed app themselves (Settings → About → check for updates); do not
+  touch `dist/mac-arm64` while it runs. Their host is a 1.0.5 one since this session.
+- Plan-usage pills still use the app's own `usageWarnPercent` (their stored value is 80) and 95 % for
+  critical, not the status line's 50 / 90. Offer to align it if they want the same thresholds there.
+- Colour plan (docs/design/colour-plan.md): the state colours are settled (section A1/B1/C1); the
+  remaining items still wait for the user's choices.
+- Restart-free updates were discussed and rejected for now: the window can only be replaced by
+  restarting it (sessions survive because they live in the host); migrating sessions one by one to a
+  new host would be needed to avoid the host restart. The user said not to build it.
