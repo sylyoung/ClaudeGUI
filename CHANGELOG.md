@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.8 — 2026-09-06
+
+### Importing terminal sessions
+- **The import window uses the whole screen height.** The list of Claude Code terminal sessions was a
+  300-pixel box inside a small dialog (about seven rows); it now fills a dialog that is 88 % of the
+  window height and 880 pixels wide, so roughly fourteen rows are visible and the scrolling is over
+  the list itself, not the dialog.
+- **Keyboard instead of scrolling**: ↑ and ↓ walk the list (Page Up / Page Down jump ten rows, Home
+  and End go to the ends) while the filter box keeps the focus, so you can type a few letters and
+  press Enter. The highlighted row is always scrolled into view, and it stops following the mouse
+  for a moment after a key press so the list does not jump under the pointer.
+- **Every row is exactly two lines**, title and folder truncated with an ellipsis instead of
+  wrapping, which keeps the row height even and makes scrolling predictable.
+- **The number of sessions is shown** next to the filter ("12 of 152 sessions").
+- **A session that is already in ClaudeGUI opens instead of being imported again** when you click it
+  or press Enter on it, rather than doing nothing.
+
 ## 1.0.7 — 2026-09-06
 
 ### Colours

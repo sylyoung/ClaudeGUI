@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-06 (session 4, v1.0.7)
+Last updated: 2026-09-06 (session 4, v1.0.8)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -166,6 +166,16 @@ npm run build:mac  # produce dist/mac-arm64/ClaudeGUI.app (quit a running Claude
       red >20 GB
 - [x] File tree marks files Claude edited in this chat; tasks panel coloured by outcome
 - [x] The user picks design options through questions in the chat, not through documents in docs/
+
+### v1.0.8
+- [x] The import window fills the screen height (`Modal tall` + a `.list.grow` that scrolls inside it),
+      880 px wide, about fourteen rows instead of seven
+- [x] Keyboard walking in the import list (↑ ↓, Page Up/Down, Home/End, Enter) while the filter box
+      keeps the focus; the highlight scrolls into view and ignores the mouse for 400 ms after a key
+- [x] Import rows are exactly two lines (ellipsis instead of wrapping); the session count is shown
+- [x] Clicking a session that is already in ClaudeGUI opens that chat instead of doing nothing
+- [x] Verified in an isolated instance (debug port 8899): list height 300 → 621 px, Enter imported and
+      opened a session, a second click on it re-opened the same chat without a duplicate
 
 ### Open after v1.0.6
 - The user updates their installed app themselves (Settings → About → check for updates); do not
