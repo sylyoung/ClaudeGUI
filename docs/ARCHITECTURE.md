@@ -25,7 +25,7 @@ src/
     gitService.ts          git + gh command wrapper (status, stage, commit, push, diff, branches…)
     usageService.ts        Plan rate-limit windows (claude.ai usage endpoint via curl, fallbacks)
     debugServer.ts         Dev-only HTTP endpoint (screenshots, state, host/update state, eval)
-  host/                    Session host: plain Node process (app binary + ELECTRON_RUN_AS_NODE)
+  host/                    Session host: plain Node process (bundle helper binary + ELECTRON_RUN_AS_NODE)
     index.ts               Unix-socket server, RPC dispatch, lifecycle (idle exit, shutdown)
     protocol.ts            NDJSON frames: hello/welcome, req/res, events; HOST_PROTOCOL version
     sessions/
@@ -77,9 +77,14 @@ src/
    publishes it in the live state.
 
 ## Session host
-- Started by the window with `process.execPath host.mjs --data <userData> --log … --version …`,
+- Started by the window with `<helper> host.mjs --data <userData> --log … --version …`,
   `detached`, `ELECTRON_RUN_AS_NODE=1`; it writes `session-host.json` (pid, socket, token, version).
   Asar support is available in that mode, so the script runs straight from `app.asar`.
+  `<helper>` is `Contents/Frameworks/<App> Helper.app/Contents/MacOS/<App> Helper` next to the app
+  binary (`hostExecutable()` in `hostClient.ts`, falling back to `process.execPath`): a process
+  started from the app binary itself is registered by LaunchServices as a running instance of the
+  app, and `open ClaudeGUI.app` (Dock, Finder, the update helper) then fails with error -600 while
+  the window is closed. The helper app has its own bundle id and is a UI element.
 - The window sends `hello` (token, protocol, settings, focus) and gets `welcome` (pid, version,
   live count). Requests are `{k:'req', id, m, p}` → `{k:'res', id, ok, v|e}`; events `{k:'ev', e, d}`
   (session events, notifications, badge, rate limits, turn finished, exiting).
@@ -97,8 +102,10 @@ src/
   when the sha256 of package-lock.json changed, `npm run build:mac -- --config.directories.output=
   <staging>`, plist version check.
 - `Updater.apply`: writes `pending-update.json` and starts `apply-update.sh` (waits for the pid,
-  moves the old bundle aside, moves the new one in, `open --env CLAUDEGUI_*=… bundle`, deletes the
-  old bundle, rolls back on failure), then quits with `updating = true` so the host stays alive.
+  moves the old bundle aside, moves the new one in, `open -n --env CLAUDEGUI_*=… bundle` with
+  retries, waits until the app has deleted the marker file, otherwise starts the executable
+  directly; deletes the old bundle once the app is up, restores it only when the new version does
+  not start), then quits with `updating = true` so the host stays alive.
   `before-quit` continues on the next tick (`setImmediate`) because a nested `app.quit()` inside the
   handler is ignored by Electron.
 

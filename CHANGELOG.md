@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5 — 2026-09-06
+
+### Fixed
+- **"Update and restart" did not reopen the app.** After the helper had swapped the bundle, macOS answered `open ClaudeGUI.app` with LaunchServices error -600; the helper took that for a broken bundle, restored the previous version, and that `open` failed the same way, so no window came back while the session host and its Claude processes kept running. Cause: the session host was the app's own executable running in Node mode, which macOS registers as a running instance of ClaudeGUI. With the window closed, `open` tried to activate the host instead of starting the app. The same confusion could stop the Dock or Finder from reopening the app while a host from a closed window was alive.
+- The session host now runs through the helper executable inside the bundle (`ClaudeGUI Helper.app`, its own bundle identifier, no Dock presence), so it is never mistaken for the app. A host started by an earlier version is replaced as before once its sessions have stopped (or from Settings → About).
+- The relaunch helper asks for a new instance (`open -n`), retries, waits until the app has consumed the update marker, and as a last resort starts the executable directly. A verified bundle is no longer rolled back because of a launch error; the previous version is restored only when the new one does not come up at all, and a macOS notification tells you if nothing could be opened.
+- The startup notice counts an update as applied when the running version is the target version or newer.
+
 ## 1.0.4 — 2026-09-06
 
 ### Sidebar

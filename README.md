@@ -13,7 +13,7 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.4** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.5** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
@@ -142,8 +142,9 @@ ClaudeGUI → **Check for Updates…** (or Settings → About) compares the runn
 newest tag of the repository configured in Settings → About (this repository by default). Updating
 checks that tag out into `~/Library/Caches/ClaudeGUI/update/src`, runs `npm ci` when the lock file
 changed, builds the bundle into a staging folder while the app stays usable, then a small helper
-script swaps the bundle at the app's location and reopens it. Running sessions continue because they
-live in the session host process. A pill in the top-right corner shows the progress; the update log
+script swaps the bundle at the app's location, reopens it and checks that the new version came up
+(the previous version is restored otherwise). Running sessions continue because they live in the
+session host process. A pill in the top-right corner shows the progress; the update log
 is available from Settings → About.
 
 ## Session host

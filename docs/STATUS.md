@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-06 (session 3, v1.0.4)
+Last updated: 2026-09-06 (session 3, v1.0.5)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -15,8 +15,11 @@ survive app restarts.
   installed `claude` CLI 2.1.263) in **streaming input mode**, so one CLI process per session stays
   alive between turns (background shells / monitors keep running).
 - Since 1.0.2 the Claude processes are owned by a detached **session host** process
-  (`out/main/host.mjs`, the app binary started with `ELECTRON_RUN_AS_NODE`), reached over a Unix
-  socket. The window can restart (updates) without stopping sessions; `⌘Q` stops everything.
+  (`out/main/host.mjs` run by the bundle's helper binary with `ELECTRON_RUN_AS_NODE`), reached over
+  a Unix socket. The window can restart (updates) without stopping sessions; `⌘Q` stops everything.
+  Since 1.0.5 the host runs through `ClaudeGUI Helper.app` (own bundle id): a host started from the
+  app binary is registered by LaunchServices as a running ClaudeGUI, which made `open ClaudeGUI.app`
+  fail with error -600 while the window was closed (the 1.0.4 relaunch failure).
 - Transcript source of truth = Claude Code's own JSONL under `~/.claude/projects/` (read via the
   SDK's `getSessionMessages`). The app only persists a small session index (records, groups, manual
   order) + settings in `~/Library/Application Support/ClaudeGUI/` (`CLAUDEGUI_USER_DATA` overrides
@@ -33,8 +36,10 @@ survive app restarts.
 - Updates = git tags of the repository (Settings → About → repository). The updater clones/fetches
   into `~/Library/Caches/ClaudeGUI/update/src`, runs `npm ci` only when the lock file hash changed,
   builds into `…/update/staging` and hands over to `apply-update.sh`, which waits for the app to
-  quit, swaps the bundle in place, deletes the old one and reopens the app (`open --env …` keeps
-  `CLAUDEGUI_*` overrides). The quit for an update leaves the host running (`updating` flag).
+  quit, swaps the bundle in place, reopens the app with `open -n --env …` (retried; `CLAUDEGUI_*`
+  overrides kept), waits until the app has deleted `pending-update.json`, else starts the executable
+  directly, and only then deletes the old bundle (restored if the new version never starts). The
+  quit for an update leaves the host running (`updating` flag).
 - Builds are signed with an "Apple Development" identity when electron-builder finds one
   (`mac.type: development`), so macOS privacy grants persist across updates; otherwise unsigned.
 - Sidebar order (1.0.4): pinned first, then by the time of the user's last prompt (`lastPromptAt`,
@@ -126,7 +131,18 @@ npm run build:mac  # produce dist/mac-arm64/ClaudeGUI.app (quit a running Claude
 - [x] 11. Multi-selection (⌘/⇧-click, ⌘⇧A) with bulk start / stop / pin / archive / move; Start all
 - [x] 12. Model name under the chat name; folder name only while the chat's folder panel is shown
 
-### Open after v1.0.4
+### v1.0.5
+- [x] Session host runs through the bundle's helper executable (no LaunchServices confusion)
+- [x] Relaunch helper: `open -n`, retries, marker-based start check, direct start fallback,
+      rollback only when the new version never starts, notification when nothing opens
+- [x] Startup notice accepts a newer running version as "applied"
+- [x] Tests: helper script on isolated bundle copies while the real host is registered
+      (open -n path and direct-start path), end-to-end update on an isolated app
+      (`sandbox/tools/`), type checks and production build
+
+### Open after v1.0.5
+- The user's installed app was rebuilt as 1.0.5 into dist/mac-arm64 by hand after the failed 1.0.4
+  relaunch (their window had quit, the 1.0.3 host kept two sessions alive). Their host stays the
+  1.0.3 one (app binary, registered as ClaudeGUI) until its sessions stop or they restart it from
+  Settings → About; only then do group colours, `lastPromptAt` backfill and `lastModel` work.
 - Colour plan (docs/design/colour-plan.md): implement the items the user picks.
-- The user updates through ClaudeGUI → Check for Updates… (first run on their machine: `npm ci`
-  in ~/Library/Caches/ClaudeGUI/update, a few minutes). No staged bundle in dist/ this time.

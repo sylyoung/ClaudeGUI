@@ -5,8 +5,9 @@
  * repository into the update work folder and looks for a tag newer than the running version.
  * "Install" checks that tag out, installs dependencies when the lock file changed, builds the
  * bundle into a staging folder and verifies its version. "Apply" starts a small shell helper that
- * waits for the app to quit, swaps the bundle at the app's current location and reopens it. The
- * session host (a separate process) keeps every Claude process alive during the restart.
+ * waits for the app to quit, swaps the bundle at the app's current location, reopens it and checks
+ * that the new version came up (it deletes the marker file at start); otherwise the previous bundle
+ * is restored. The session host (a separate process) keeps every Claude process alive meanwhile.
  */
 import { spawn, type ChildProcess } from 'child_process'
 import { createHash } from 'crypto'
@@ -96,9 +97,11 @@ export class Updater {
       return null
     }
     if (!marker) return null
-    if (marker.to === this.deps.appVersion) {
-      this.deps.log(`[update] applied ${marker.from} -> ${marker.to}`)
-      return { kind: 'success', text: `Updated to ClaudeGUI ${marker.to}. Sessions and their background tasks kept running.` }
+    // Running the target version or a newer one (e.g. a build installed by hand meanwhile) counts as applied.
+    const applied = parseVersion(marker.to) ? compareVersions(this.deps.appVersion, marker.to) >= 0 : marker.to === this.deps.appVersion
+    if (applied) {
+      this.deps.log(`[update] applied ${marker.from} -> ${this.deps.appVersion}`)
+      return { kind: 'success', text: `Updated to ClaudeGUI ${this.deps.appVersion}. Sessions and their background tasks kept running.` }
     }
     this.deps.log(`[update] marker says ${marker.to} but running ${this.deps.appVersion}`)
     return { kind: 'error', text: `The update to ${marker.to} was not applied (still running ${this.deps.appVersion}). See the update log in Settings → About.` }
@@ -425,43 +428,75 @@ export class Updater {
     // `open` does not forward the environment; keep ClaudeGUI's own overrides (isolated data dir, debug port…).
     const envArgs: string[] = []
     for (const [k, v] of Object.entries(process.env)) if (k.startsWith('CLAUDEGUI_') && typeof v === 'string') envArgs.push('--env', `${k}=${v}`)
-    const child = spawn('/bin/bash', [script, String(process.pid), target, source, this.logFile, ...envArgs], { detached: true, stdio: 'ignore', cwd: this.workDir })
+    const child = spawn('/bin/bash', [script, String(process.pid), target, source, this.logFile, this.markerPath, ...envArgs], { detached: true, stdio: 'ignore', cwd: this.workDir })
     child.unref()
     this.deps.requestRestart()
   }
 }
 
 const APPLY_SCRIPT = `#!/bin/bash
-# ClaudeGUI update helper: wait for the app to exit, swap the bundle in place, reopen the app.
-# Usage: apply-update.sh <app pid> <installed bundle> <new bundle> <log file> [--env VAR=value ...]
-PID="$1"; TARGET="$2"; NEW="$3"; LOG="$4"; shift 4
+# ClaudeGUI update helper: wait for the app to exit, swap the bundle in place, reopen the app and
+# make sure it came back (the app deletes the marker file as soon as it starts).
+# Usage: apply-update.sh <app pid> <installed bundle> <new bundle> <log file> <marker file> [--env VAR=value ...]
+PID="$1"; TARGET="$2"; NEW="$3"; LOG="$4"; MARKER="$5"; shift 5
 exec >>"$LOG" 2>&1
 stamp() { date '+%Y-%m-%dT%H:%M:%S'; }
-launch() { open "$@" "$TARGET"; }
-echo "[$(stamp)] apply: waiting for pid $PID to exit"
+say() { echo "[$(stamp)] apply: $*"; }
+notify() { osascript -e "display notification \\"$1\\" with title \\"ClaudeGUI update\\"" >/dev/null 2>&1; }
+exe_name() { /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$1/Contents/Info.plist" 2>/dev/null || basename "\${1%.app}"; }
+# The app removes the marker when it starts; wait up to $1 seconds for that.
+started() { local i; for i in $(seq 1 $(( $1 * 4 ))); do [ -e "$MARKER" ] || return 0; sleep 0.25; done; return 1; }
+# "-n": the session host keeps running from this bundle, and hosts started by older versions are
+# registered with LaunchServices as an instance of the app; asking to activate that fails with
+# error -600, so always request a new instance.
+try_open() { local i; for i in $(seq 1 20); do open -n "$@" "$TARGET" && return 0; sleep 0.5; done; return 1; }
+# Last resort: start the executable directly, with the CLAUDEGUI_* overrides exported.
+try_exec() {
+  local exe="$TARGET/Contents/MacOS/$(exe_name "$TARGET")" a
+  for a in "$@"; do case "$a" in --env) ;; *=*) export "$a" ;; esac; done
+  [ -x "$exe" ] || return 1
+  nohup "$exe" >/dev/null 2>&1 &
+  return 0
+}
+launch() {
+  if try_open "$@"; then
+    started 45 && return 0
+    say "open(1) accepted the request but the app did not start within 45 s"
+  else
+    say "open(1) kept failing"
+  fi
+  say "starting the executable directly"
+  try_exec "$@" && started 30 && return 0
+  return 1
+}
+say "waiting for pid $PID to exit"
 for i in $(seq 1 240); do kill -0 "$PID" 2>/dev/null || break; sleep 0.25; done
-if kill -0 "$PID" 2>/dev/null; then echo "[$(stamp)] apply: app still running after 60 s, giving up"; exit 1; fi
+if kill -0 "$PID" 2>/dev/null; then say "app still running after 60 s, giving up"; exit 1; fi
 OLD="\${TARGET%.app}.previous.app"
 rm -rf "$OLD"
 if [ -e "$TARGET" ]; then
-  mv "$TARGET" "$OLD" || { echo "[$(stamp)] apply: cannot move the installed bundle aside"; launch "$@"; exit 1; }
+  mv "$TARGET" "$OLD" || { say "cannot move the installed bundle aside"; launch "$@"; exit 1; }
 fi
-if mv "$NEW" "$TARGET"; then
-  echo "[$(stamp)] apply: installed new bundle at $TARGET"
-  if launch "$@"; then
-    sleep 2
-    rm -rf "$OLD"
-    echo "[$(stamp)] apply: previous bundle removed, done"
-    exit 0
-  fi
-  echo "[$(stamp)] apply: could not launch the new bundle, rolling back"
-  mv "$TARGET" "\${NEW%.app}.failed.app"
+if ! mv "$NEW" "$TARGET"; then
+  say "moving the new bundle into place failed, restoring the previous one"
   mv "$OLD" "$TARGET"
   launch "$@"
   exit 1
 fi
-echo "[$(stamp)] apply: moving the new bundle failed, rolling back"
+say "installed new bundle at $TARGET"
+if launch "$@"; then
+  say "the new version is running; removing the previous bundle"
+  rm -rf "$OLD"
+  say "done"
+  exit 0
+fi
+FAILED="\${NEW%.app}.failed.app"
+say "the new version did not start; restoring the previous one (the new bundle is kept at $FAILED)"
+rm -rf "$FAILED"
+mv "$TARGET" "$FAILED"
 mv "$OLD" "$TARGET"
-launch "$@"
+if launch "$@"; then say "previous version restored and running"; exit 1; fi
+say "the previous version did not start either; open $TARGET yourself"
+notify "ClaudeGUI could not be reopened automatically. Open it from its folder."
 exit 1
 `

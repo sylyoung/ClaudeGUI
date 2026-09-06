@@ -49,6 +49,23 @@ export class HostProtocolMismatch extends Error {
 const CONNECT_TIMEOUT_MS = 5000
 const SPAWN_TIMEOUT_MS = 20_000
 
+/**
+ * Executable for the host process. On macOS a process started from the app binary (even in Node
+ * mode) is registered by LaunchServices as a running instance of the app: with the host alive and
+ * the window closed, `open ClaudeGUI.app` (Dock, Finder, the update helper) tries to activate the
+ * host and fails with error -600. The Electron helper app inside the bundle has its own bundle id
+ * and is a UI element, so the host runs through it whenever it exists (packaged and dev builds).
+ */
+export function hostExecutable(): string {
+  const exe = process.execPath
+  if (process.platform === 'darwin') {
+    const name = path.basename(exe)
+    const helper = path.join(path.dirname(exe), '..', 'Frameworks', `${name} Helper.app`, 'Contents', 'MacOS', `${name} Helper`)
+    if (fs.existsSync(helper)) return helper
+  }
+  return exe
+}
+
 export class HostClient extends EventEmitter {
   private sock: net.Socket | null = null
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; m: string }>()
@@ -219,8 +236,9 @@ export class HostClient extends EventEmitter {
     env.CLAUDEGUI_HOST_TOKEN = token
     delete env.ELECTRON_NO_ASAR
     const args = [this.deps.hostScript, '--data', this.deps.userDataPath, '--log', this.deps.logFile, '--version', this.deps.appVersion, '--socket', socketPath]
-    this.deps.log(`[host] starting session host: ${process.execPath} ${args.join(' ')}`)
-    const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore', env, cwd: this.deps.userDataPath })
+    const exe = hostExecutable()
+    this.deps.log(`[host] starting session host: ${exe} ${args.join(' ')}`)
+    const child = spawn(exe, args, { detached: true, stdio: 'ignore', env, cwd: this.deps.userDataPath })
     let exited: string | null = null
     child.on('exit', (code, signal) => {
       exited = `exited early (code ${code ?? 'null'}, signal ${signal ?? 'none'})`
