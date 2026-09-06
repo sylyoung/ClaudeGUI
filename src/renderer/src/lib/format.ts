@@ -3,7 +3,7 @@ export function timeAgo(ts: number): string {
   const diff = Date.now() - ts
   const s = Math.floor(diff / 1000)
   if (s < 45) return 'now'
-  const m = Math.floor(s / 60)
+  const m = Math.max(1, Math.floor(s / 60))
   if (m < 60) return `${m}m`
   const h = Math.floor(m / 60)
   if (h < 24) return `${h}h`
@@ -116,4 +116,13 @@ export function formatDateTime(ts: number | undefined): string {
 export function formatPercent(p: number | null | undefined): string {
   if (p == null) return '–'
   return `${Math.round(p)}%`
+}
+
+/**
+ * Model name to show for a session: the running process's model, else the one chosen for the
+ * session, else the model its last process reported, else the default from Settings → Claude.
+ */
+export function sessionModelName(record: { model?: string; lastModel?: string }, live: { model?: string } | undefined, defaultModel: string | undefined): string {
+  const id = live?.model || record.model || record.lastModel || defaultModel || ''
+  return id ? modelLabel(id) : 'default'
 }

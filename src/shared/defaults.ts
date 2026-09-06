@@ -44,6 +44,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   translucentSidebar: false,
   showStatusBoard: true,
   showTooltips: true,
+  sidebarView: 'groups',
+  sidebarSort: 'lastPrompt',
   // Files
   editorCommand: '',
   showHiddenFiles: false,

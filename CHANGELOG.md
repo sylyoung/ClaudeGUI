@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.4 — 2026-09-06
+
+### Sidebar
+- Two views, switched with the Groups / Recent control at the top of the sidebar (⌘⇧V, also Settings → Appearance): **Groups** shows your groups with their sessions; **Recent** shows a Pinned section and then every other session. In both, sessions are ordered by the time of **your last prompt** (newest first) — Claude answering never moves a session. The previous manual order is still available (view options → "Manual order (drag to reorder)").
+- The "ClaudeGUI" label at the top of the sidebar is gone.
+- **Group colours**: every group has a colour (assigned automatically from the macOS palette when a group is created; existing groups get one on first launch). It marks the rail along the group in the sidebar, the group name, the group tag of each row in the Recent view and the group tag in the chat status row. Change it with the dot next to the group name, right-click → "Change colour…" (12 system colours + custom), or from the chat status row.
+- Each row shows the chat name and, under it, the **model** (Fable 5.1, Opus 5, …), then the folder name only while that chat's folder panel is shown, then the state or last message.
+- **Drag & drop rewritten** with pointer events: a small ghost follows the pointer and says what will happen ("Move to Papers", "Pin", "Place before this row"), the target group or row highlights, Escape cancels, the list auto-scrolls near its edges, and there is no more half-transparent browser ghost or "fly back" animation. In "last prompt" order dragging moves a session between groups (or pins / unpins it in the Recent view); in manual order it also reorders. Group headers can be dragged to reorder groups.
+- **Multi-selection**: ⌘-click toggles a session, ⇧-click selects a range, ⌘⇧A or the view options select all, Escape clears. A toolbar above the list offers Start / Stop processes, Pin / Unpin, Archive and Move to group for the selection; right-click a selected row for the same menu. Group headers offer "Start / Stop all processes in this group".
+- **Start all**: a button at the right end of the statistics bar starts every session that is not running, one after the other (staggered so the machine is not flooded); "Stop all processes" is in the view options and the Session menu.
+- View options (sliders icon): order, archived sessions, folder header rows, new group, expand / collapse all groups, start / stop all, select all.
+
+### Statistics bar (replaces the status board)
+- One line above the chat: total sessions, then **how many are working, need input, idle with tasks running, idle, not running, in error** (numbers in the state colour, zero counts dimmed), the number of running background shells / subagents, unread turns, and the Start all button. Clicking a number jumps to the next session in that state (the tooltip lists them). ⌘⇧S hides it.
+
+### Chat header
+- Frequent actions are visible buttons instead of "…" entries: open the folder in Terminal, reveal in Finder, open in the editor, open the GitHub remote, show / hide the folder panel, pin / unpin, start / stop the process. "…" keeps rename, archive, move to group, change working directory, copy resume command and delete.
+- **Model / permissions / effort on one line**: the closed controls show a short label (Opus 5, acceptEdits, xhigh) so the row never wraps; the open list shows the full text of every option with an explanation on hover. This rule applies to all option fields.
+- A separate status row shows the group tag, the working directory (click: Finder, right-click: copy), branch with ahead/behind, remote (GitHub host omitted), folder size, the time of your last prompt, the last activity, and the context bar.
+- **Folder panel per chat**: the files / tasks / git panel can be shown or hidden per chat (header button or ⌘⇧E) and the choice is remembered per chat.
+
+### Data
+- Sessions record the time of your last prompt (`lastPromptAt`); for sessions from earlier versions it is read once from the tail of their transcript. The model a process reports at start is remembered (`lastModel`) so it can be shown while the session is not running.
+
 ## 1.0.3 — 2026-09-06
 
 ### Sidebar

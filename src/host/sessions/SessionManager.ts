@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto'
 import fs from 'fs'
-import { compareRecords } from '@shared/util'
+import path from 'path'
+import { compareRecords, lastPromptOf } from '@shared/util'
+import { nextGroupColor } from '@shared/colors'
 import { deleteSession, listSessions } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AppSettings,
@@ -19,7 +21,7 @@ import type {
   SessionRecord
 } from '@shared/types'
 import type { SessionsStore } from '../../main/store'
-import { SessionRuntime, type RateLimitEventInfo } from './SessionRuntime'
+import { SessionRuntime, lastPromptTimeFromFile, projectDirFor, type RateLimitEventInfo } from './SessionRuntime'
 
 export type NotifyKind = 'turn' | 'permission' | 'error'
 
@@ -47,6 +49,36 @@ export class SessionManager {
   ) {
     for (const record of store.listSessions()) this.runtimes.set(record.id, this.makeRuntime(record))
     this.activeSessionId = store.getActiveSession()
+    this.assignMissingGroupColors()
+    void this.backfillPromptTimes()
+  }
+
+  /** Groups created before 1.0.4 have no colour yet: give each one the next free palette colour. */
+  private assignMissingGroupColors(): void {
+    const groups = this.store.listGroups()
+    if (!groups.some((g) => !g.color)) return
+    const next: SessionGroup[] = []
+    for (const g of groups) next.push(g.color ? g : { ...g, color: nextGroupColor(next) })
+    this.store.setGroups(next)
+  }
+
+  /**
+   * Records created before 1.0.4 have no `lastPromptAt`: read it from the tail of their transcript
+   * (one file at a time, in the background) so the "recent" order is right from the first launch.
+   */
+  private async backfillPromptTimes(): Promise<void> {
+    let changed = 0
+    for (const rt of this.runtimes.values()) {
+      if (rt.record.lastPromptAt) continue
+      const file = path.join(projectDirFor(rt.record.cwd), `${rt.record.claudeSessionId}.jsonl`)
+      const t = await lastPromptTimeFromFile(file).catch(() => undefined)
+      if (rt.record.lastPromptAt) continue // set meanwhile by send() / history
+      rt.record.lastPromptAt = t ?? lastPromptOf(rt.record)
+      this.store.upsertSession(rt.record)
+      this.host.broadcast({ type: 'record', record: rt.record })
+      changed += 1
+    }
+    if (changed) this.host.log(`[manager] backfilled last-prompt time for ${changed} session(s)`)
   }
 
   private makeRuntime(record: SessionRecord): SessionRuntime {
@@ -113,12 +145,23 @@ export class SessionManager {
     this.host.broadcast({ type: 'groups', groups: this.store.listGroups() })
   }
 
-  createGroup(name: string): SessionGroup {
+  createGroup(name: string, color?: string): SessionGroup {
     const groups = this.store.listGroups()
-    const group: SessionGroup = { id: randomUUID(), name: name.trim() || 'New group', order: (groups[groups.length - 1]?.order ?? -1) + 1 }
+    const group: SessionGroup = {
+      id: randomUUID(),
+      name: name.trim() || 'New group',
+      order: (groups[groups.length - 1]?.order ?? -1) + 1,
+      color: color && /^#[0-9a-f]{6}$/i.test(color) ? color : nextGroupColor(groups)
+    }
     this.store.setGroups([...groups, group])
     this.broadcastGroups()
     return group
+  }
+
+  setGroupColor(id: string, color: string): void {
+    if (!/^#[0-9a-f]{6}$/i.test(color)) throw new Error(`Not a colour: ${color}`)
+    this.store.setGroups(this.store.listGroups().map((g) => (g.id === id ? { ...g, color } : g)))
+    this.broadcastGroups()
   }
 
   renameGroup(id: string, name: string): void {

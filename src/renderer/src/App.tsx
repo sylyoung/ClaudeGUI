@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react'
-import { flattenSessions, useStore } from './store'
+import { currentOrder, useStore } from './store'
 import { Sidebar } from './components/Sidebar'
 import { ChatView } from './components/chat/ChatView'
 import { FilePanel } from './components/files/FilePanel'
@@ -68,7 +68,7 @@ export default function App() {
   useEffect(() => {
     const cycle = (dir: 1 | -1) => {
       const s = useStore.getState()
-      const list = flattenSessions(s.records, s.groups, s.showArchived)
+      const list = currentOrder(s)
       if (!list.length) return
       const idx = list.findIndex((r) => r.id === s.activeId)
       const next = list[(idx + dir + list.length) % list.length]
@@ -89,6 +89,9 @@ export default function App() {
         case 'menu:search': s.focusSearch(); break
         case 'menu:interrupt': if (s.activeId) void s.interruptSession(s.activeId); break
         case 'menu:toggle-board': void s.setSettings({ showStatusBoard: !(s.settings?.showStatusBoard ?? true) }); break
+        case 'menu:toggle-view': void s.setSettings({ sidebarView: (s.settings?.sidebarView ?? 'groups') === 'groups' ? 'recent' : 'groups' }); break
+        case 'menu:select-all': s.setSelectedIds(currentOrder(s).map((r) => r.id)); break
+        case 'menu:start-all': void s.startSessions(currentOrder(s).filter((r) => !s.live[r.id]?.processAlive).map((r) => r.id)); break
         case 'menu:check-updates':
           s.openSettings('about')
           window.api.update.check().catch((err) => s.toast(`Update check failed: ${(err as Error).message}`, 'error'))
@@ -98,14 +101,18 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey && !e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
         const s = useStore.getState()
-        const list = flattenSessions(s.records, s.groups, s.showArchived)
+        const list = currentOrder(s)
         const target = list[Number(e.key) - 1]
         if (target) {
           e.preventDefault()
           void s.selectSession(target.id)
         }
       }
-      if (e.key === 'Escape' && useStore.getState().dialog) setDialog(null)
+      if (e.key === 'Escape') {
+        const s = useStore.getState()
+        if (s.dialog) setDialog(null)
+        else if (s.selectedIds.length) s.setSelectedIds([])
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => {
@@ -134,7 +141,7 @@ export default function App() {
           ) : (
             <div className="chat">
               <div className="chat-header drag" style={{ paddingLeft: sidebarOpen || showBoard ? 12 : 84 }}>
-                <span className="title">ClaudeGUI</span>
+                <span className="title faint">No session selected</span>
                 <span className="spacer" />
                 <UsageStatus compact />
               </div>

@@ -220,6 +220,8 @@ function buildMenu(): void {
         { label: 'Previous Session', accelerator: 'Cmd+Shift+[', click: () => send('menu:prev-session') },
         { label: 'Focus Composer', accelerator: 'Cmd+L', click: () => send('menu:focus-composer') },
         { label: 'Search Sessions', accelerator: 'Cmd+K', click: () => send('menu:search') },
+        { label: 'Select All Sessions', accelerator: 'Cmd+Shift+A', click: () => send('menu:select-all') },
+        { label: 'Start All Session Processes', click: () => send('menu:start-all') },
         { type: 'separator' },
         { label: 'Interrupt Current Turn', accelerator: 'Cmd+.', click: () => send('menu:interrupt') },
         { type: 'separator' },
@@ -231,9 +233,10 @@ function buildMenu(): void {
       label: 'View',
       submenu: [
         { label: 'Toggle Sidebar', accelerator: 'Cmd+B', click: () => send('menu:toggle-sidebar') },
-        { label: 'Toggle Files Panel', accelerator: 'Cmd+Shift+E', click: () => send('menu:toggle-files') },
+        { label: 'Toggle Folder Panel (this chat)', accelerator: 'Cmd+Shift+E', click: () => send('menu:toggle-files') },
         { label: 'Toggle Git Panel', accelerator: 'Cmd+Shift+G', click: () => send('menu:toggle-git') },
-        { label: 'Toggle Status Board', accelerator: 'Cmd+Shift+S', click: () => send('menu:toggle-board') },
+        { label: 'Toggle Statistics Bar', accelerator: 'Cmd+Shift+S', click: () => send('menu:toggle-board') },
+        { label: 'Switch Sidebar View (Groups / Recent)', accelerator: 'Cmd+Shift+V', click: () => send('menu:toggle-view') },
         { type: 'separator' },
         {
           label: 'Appearance',

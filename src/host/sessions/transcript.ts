@@ -661,7 +661,8 @@ export function flattenToolResultContent(content: unknown): { text: string; imag
   return { text: JSON.stringify(content) }
 }
 
-function looksSynthetic(text: string): boolean {
+/** Text of a user-role message that the CLI generated itself (task notifications, command echoes…). */
+export function looksSynthetic(text: string): boolean {
   const t = text.trimStart()
   return (
     t.startsWith('<task-notification>') ||

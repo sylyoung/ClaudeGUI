@@ -12,12 +12,14 @@ import type {
   SessionGroup,
   SessionLiveState,
   SessionRecord,
+  SidebarSort,
+  SidebarView,
   ThemeInfo,
   UpdateState,
   UsageSnapshot
 } from '@shared/types'
 import { applyTheme } from './lib/theme'
-import { compareRecords } from '@shared/util'
+import { comparatorFor } from '@shared/util'
 
 export type DialogKind = null | 'new-session' | 'import-session' | 'settings'
 export type SettingsTab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
@@ -44,6 +46,8 @@ export interface FilesState {
   expanded: string[]
   revealPath?: string
   tab: PanelTab
+  /** Whether the folder (files / tasks / git) panel is shown for this chat; undefined = shown. */
+  panelOpen?: boolean
 }
 
 export interface GitSelection {
@@ -85,6 +89,7 @@ interface State {
   /** Tab to open the Settings dialog on (null = last used). */
   settingsTab: SettingsTab | null
   sidebarOpen: boolean
+  /** Folder panel visibility of the active chat (mirrors files[activeId].panelOpen). */
   filesOpen: boolean
   sidebarWidth: number
   filesWidth: number
@@ -95,6 +100,10 @@ interface State {
   git: Record<string, GitState>
   composerFocusNonce: number
   searchFocusNonce: number
+  /** Multi-selection in the sidebar (⌘-click / ⇧-click); bulk actions apply to these ids. */
+  selectedIds: string[]
+  /** Ids whose process is being started / stopped by a bulk action (for progress display). */
+  bulkBusy: Record<string, 'start' | 'stop'>
 
   init: () => Promise<void>
   applyEvent: (e: SessionEvent) => void
@@ -127,13 +136,20 @@ interface State {
   selectGitFile: (sessionId: string, sel: GitSelection | undefined) => Promise<void>
   runGit: (sessionId: string, label: string, fn: () => Promise<unknown>, opts?: { successToast?: string }) => Promise<boolean>
   toggleSidebar: () => void
+  /** Show / hide the folder panel of the active chat (remembered per chat). */
   toggleFiles: () => void
+  setFilesOpen: (open: boolean) => void
   showPanelTab: (tab: PanelTab) => void
   setSearch: (s: string) => void
   setShowArchived: (v: boolean) => void
   focusComposer: () => void
   focusSearch: () => void
   setWidths: (patch: { sidebarWidth?: number; filesWidth?: number }) => void
+  setSelectedIds: (ids: string[]) => void
+  /** Start the Claude process of several sessions, one after the other (staggered). */
+  startSessions: (ids: string[]) => Promise<void>
+  /** Stop the Claude process (and background tasks) of several sessions. */
+  stopSessions: (ids: string[]) => Promise<void>
 }
 
 let toastSeq = 0
@@ -176,6 +192,8 @@ export const useStore = create<State>((set, get) => ({
   git: {},
   composerFocusNonce: 0,
   searchFocusNonce: 0,
+  selectedIds: [],
+  bulkBusy: {},
 
   init: async () => {
     const [info, settings, list, theme, usage, update] = await Promise.all([
@@ -193,7 +211,7 @@ export const useStore = create<State>((set, get) => ({
     applyTheme(settings, theme)
     set({ appInfo: info, settings, theme, usage, update, records, live, groups: list.groups ?? [], ready: true })
     const last = localStorage.getItem('activeId')
-    const initial = last && records[last] ? last : list.records[0]?.id
+    const initial = last && records[last] ? last : currentOrder({ records, groups: list.groups ?? [], showArchived: false, settings })[0]?.id
     if (initial) await get().selectSession(initial)
     window.api.app
       .startupNotice()
@@ -241,7 +259,7 @@ export const useStore = create<State>((set, get) => ({
           delete records[e.id]
           delete live[e.id]
           delete messages[e.id]
-          return { records, live, messages, activeId: s.activeId === e.id ? undefined : s.activeId }
+          return { records, live, messages, activeId: s.activeId === e.id ? undefined : s.activeId, selectedIds: s.selectedIds.filter((x) => x !== e.id) }
         })
         break
       case 'message':
@@ -260,7 +278,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   selectSession: async (id) => {
-    set({ activeId: id })
+    set((s) => ({ activeId: id, filesOpen: id ? (s.files[id]?.panelOpen ?? true) : s.filesOpen }))
     if (id) localStorage.setItem('activeId', id)
     await window.api.sessions.setActive(id)
     if (id) {
@@ -352,7 +370,7 @@ export const useStore = create<State>((set, get) => ({
       const fs = s.files[sessionId] ?? defaultFiles()
       const exists = fs.open.find((t) => t.path === path)
       const open = exists ? fs.open.map((t) => (t.path === path ? { ...t, line, version: t.version + 1 } : t)) : [...fs.open, { path, line, version: 0 }]
-      return { filesOpen: true, files: { ...s.files, [sessionId]: { ...fs, open, active: path, tab: 'files' } } }
+      return { filesOpen: s.activeId === sessionId ? true : s.filesOpen, files: { ...s.files, [sessionId]: { ...fs, open, active: path, tab: 'files', panelOpen: true } } }
     })
   },
   closeFile: (sessionId, path) => {
@@ -461,17 +479,23 @@ export const useStore = create<State>((set, get) => ({
   },
 
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-  toggleFiles: () => set((s) => ({ filesOpen: !s.filesOpen })),
+  toggleFiles: () => get().setFilesOpen(!get().filesOpen),
+  setFilesOpen: (open) =>
+    set((s) => {
+      const id = s.activeId
+      if (!id) return { filesOpen: open }
+      return { filesOpen: open, files: { ...s.files, [id]: { ...(s.files[id] ?? defaultFiles()), panelOpen: open } } }
+    }),
   showPanelTab: (tab) => {
     const id = get().activeId
     if (!id) return
     const cur = get().files[id] ?? defaultFiles()
     const wasOpen = get().filesOpen
     if (wasOpen && cur.tab === tab) {
-      set({ filesOpen: false })
+      get().setFilesOpen(false)
       return
     }
-    set((s) => ({ filesOpen: true, files: { ...s.files, [id]: { ...cur, tab } } }))
+    set((s) => ({ filesOpen: true, files: { ...s.files, [id]: { ...cur, tab, panelOpen: true } } }))
   },
   setSearch: (search) => set({ search }),
   setShowArchived: (showArchived) => set({ showArchived }),
@@ -481,35 +505,110 @@ export const useStore = create<State>((set, get) => ({
     if (patch.sidebarWidth) localStorage.setItem('sidebarWidth', String(patch.sidebarWidth))
     if (patch.filesWidth) localStorage.setItem('filesWidth', String(patch.filesWidth))
     set(patch)
+  },
+  setSelectedIds: (ids) => set({ selectedIds: ids.filter((id, i) => ids.indexOf(id) === i) }),
+
+  startSessions: async (ids) => {
+    const targets = ids.filter((id) => get().records[id] && !get().live[id]?.processAlive)
+    if (!targets.length) {
+      get().toast('Every selected session is already running.', 'info')
+      return
+    }
+    set((s) => ({ bulkBusy: { ...s.bulkBusy, ...Object.fromEntries(targets.map((id) => [id, 'start'])) } }))
+    let failed = 0
+    for (let i = 0; i < targets.length; i++) {
+      const id = targets[i]
+      try {
+        await window.api.sessions.start(id)
+      } catch (err) {
+        failed += 1
+        get().toast(`${get().records[id]?.title ?? id}: ${(err as Error).message}`, 'error')
+      } finally {
+        set((s) => {
+          const bulkBusy = { ...s.bulkBusy }
+          delete bulkBusy[id]
+          return { bulkBusy }
+        })
+      }
+      // Stagger the starts: each Claude process loads settings, MCP servers and its transcript.
+      if (i < targets.length - 1) await new Promise((r) => setTimeout(r, 800))
+    }
+    get().toast(`Started ${targets.length - failed} of ${targets.length} session${targets.length === 1 ? '' : 's'}.`, failed ? 'error' : 'success')
+  },
+
+  stopSessions: async (ids) => {
+    const targets = ids.filter((id) => get().records[id] && get().live[id]?.processAlive)
+    if (!targets.length) {
+      get().toast('None of the selected sessions is running.', 'info')
+      return
+    }
+    set((s) => ({ bulkBusy: { ...s.bulkBusy, ...Object.fromEntries(targets.map((id) => [id, 'stop'])) } }))
+    let failed = 0
+    await Promise.all(
+      targets.map(async (id) => {
+        try {
+          await window.api.sessions.stop(id)
+        } catch (err) {
+          failed += 1
+          get().toast(`${get().records[id]?.title ?? id}: ${(err as Error).message}`, 'error')
+        } finally {
+          set((s) => {
+            const bulkBusy = { ...s.bulkBusy }
+            delete bulkBusy[id]
+            return { bulkBusy }
+          })
+        }
+      })
+    )
+    get().toast(`Stopped ${targets.length - failed} of ${targets.length} session${targets.length === 1 ? '' : 's'}.`, failed ? 'error' : 'success')
   }
 }))
 
-/** Sessions of one group in sidebar order: pinned first, then the manual (drag & drop) position. */
-export function orderedSessions(records: Record<string, SessionRecord>, showArchived: boolean, groupId?: string): SessionRecord[] {
-  return Object.values(records)
-    .filter((r) => (showArchived || !r.archived) && (groupId === undefined || (r.groupId || undefined) === groupId))
-    .sort(compareRecords)
-}
-
 export interface SidebarSection {
+  /** 'group' / 'ungrouped' in the groups view, 'pinned' / 'recent' in the recent view. */
+  kind: 'group' | 'ungrouped' | 'pinned' | 'recent'
   group: SessionGroup | null
+  title: string
   sessions: SessionRecord[]
 }
 
-/** Groups in order, each with its sessions, then the ungrouped sessions (`group: null`). */
-export function sidebarSections(records: Record<string, SessionRecord>, groups: SessionGroup[], showArchived: boolean): SidebarSection[] {
+function visible(records: Record<string, SessionRecord>, showArchived: boolean): SessionRecord[] {
+  return Object.values(records).filter((r) => showArchived || !r.archived)
+}
+
+/**
+ * Sidebar layout.
+ *  - groups view: one section per group (in group order) with its sessions, then the ungrouped ones;
+ *  - recent view: a "Pinned" section and a "Recent" section.
+ * Inside a section: pinned first, then by your last prompt (newest first) or the manual position.
+ */
+export function sidebarSections(records: Record<string, SessionRecord>, groups: SessionGroup[], showArchived: boolean, view: SidebarView = 'groups', sort: SidebarSort = 'lastPrompt'): SidebarSection[] {
+  const cmp = comparatorFor(sort)
+  const all = visible(records, showArchived)
+  if (view === 'recent') {
+    const pinned = all.filter((r) => r.pinned).sort(cmp)
+    const rest = all.filter((r) => !r.pinned).sort(cmp)
+    return [
+      { kind: 'pinned', group: null, title: 'Pinned', sessions: pinned },
+      { kind: 'recent', group: null, title: 'Recent', sessions: rest }
+    ]
+  }
   const known = new Set(groups.map((g) => g.id))
-  const sections: SidebarSection[] = [...groups].sort((a, b) => a.order - b.order).map((g) => ({ group: g, sessions: orderedSessions(records, showArchived, g.id) }))
-  const loose = Object.values(records)
-    .filter((r) => (showArchived || !r.archived) && (!r.groupId || !known.has(r.groupId)))
-    .sort(compareRecords)
-  sections.push({ group: null, sessions: loose })
+  const sections: SidebarSection[] = [...groups]
+    .sort((a, b) => a.order - b.order)
+    .map((g) => ({ kind: 'group' as const, group: g, title: g.name, sessions: all.filter((r) => r.groupId === g.id).sort(cmp) }))
+  sections.push({ kind: 'ungrouped', group: null, title: 'Ungrouped', sessions: all.filter((r) => !r.groupId || !known.has(r.groupId)).sort(cmp) })
   return sections
 }
 
-/** Every visible session in sidebar order (used for ⌘1…9 and next/previous). */
-export function flattenSessions(records: Record<string, SessionRecord>, groups: SessionGroup[], showArchived: boolean): SessionRecord[] {
-  return sidebarSections(records, groups, showArchived).flatMap((sec) => sec.sessions)
+/** Every visible session in sidebar order (used for ⌘1…9, next/previous and the statistics bar). */
+export function flattenSessions(records: Record<string, SessionRecord>, groups: SessionGroup[], showArchived: boolean, view: SidebarView = 'groups', sort: SidebarSort = 'lastPrompt'): SessionRecord[] {
+  return sidebarSections(records, groups, showArchived, view, sort).flatMap((sec) => sec.sessions)
+}
+
+/** Sidebar order of the current settings (helper for callers that only have the store state). */
+export function currentOrder(s: Pick<State, 'records' | 'groups' | 'showArchived' | 'settings'>): SessionRecord[] {
+  return flattenSessions(s.records, s.groups, s.showArchived, s.settings?.sidebarView ?? 'groups', s.settings?.sidebarSort ?? 'lastPrompt')
 }
 
 // ---------------------------------------------------------------------------
@@ -528,7 +627,8 @@ function loadFilesState(): Record<string, FilesState> {
         open: (f.open ?? []).filter((t) => t && typeof t.path === 'string').map((t) => ({ path: t.path, line: t.line, version: 0 })),
         active: f.active,
         expanded: Array.isArray(f.expanded) ? f.expanded : [],
-        tab: f.tab === 'tasks' || f.tab === 'git' ? f.tab : 'files'
+        tab: f.tab === 'tasks' || f.tab === 'git' ? f.tab : 'files',
+        panelOpen: typeof f.panelOpen === 'boolean' ? f.panelOpen : undefined
       }
     }
     return out
@@ -546,7 +646,7 @@ useStore.subscribe((s, prev) => {
     const out: Record<string, Omit<FilesState, 'revealPath'>> = {}
     for (const [id, f] of Object.entries(s.files)) {
       if (!s.records[id]) continue
-      out[id] = { open: f.open.map((t) => ({ path: t.path, line: t.line, version: 0 })), active: f.active, expanded: f.expanded, tab: f.tab }
+      out[id] = { open: f.open.map((t) => ({ path: t.path, line: t.line, version: 0 })), active: f.active, expanded: f.expanded, tab: f.tab, panelOpen: f.panelOpen }
     }
     try {
       localStorage.setItem(FILES_KEY, JSON.stringify(out))

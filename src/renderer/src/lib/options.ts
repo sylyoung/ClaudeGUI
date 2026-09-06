@@ -14,9 +14,12 @@ export const EFFORTS: (EffortLevel | '')[] = ['', 'low', 'medium', 'high', 'xhig
 
 export const EFFORT_LABELS: Record<string, string> = {
   '': 'default — the model decides',
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  xhigh: 'xhigh — extra high',
-  max: 'max — maximum'
+  low: 'low — quick answers, little reasoning',
+  medium: 'medium — balanced',
+  high: 'high — thorough reasoning',
+  xhigh: 'xhigh — extra high, very thorough',
+  max: 'max — maximum reasoning (slowest)'
 }
+
+/** Short text for the closed control (the open list shows the full label). */
+export const EFFORT_SHORT: Record<string, string> = { '': 'default', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' }

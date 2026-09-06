@@ -111,7 +111,8 @@ const api = {
     commands: (id: string) => invoke<SlashCommandView[]>('sessions:commands', id),
     models: (id: string) => invoke<ModelInfoView[]>('sessions:models', id),
     contextUsage: (id: string, full?: boolean) => invoke<SessionLiveState['contextUsage'] | null>('sessions:contextUsage', id, full),
-    createGroup: (name: string) => invoke<SessionGroup>('sessions:createGroup', name),
+    createGroup: (name: string, color?: string) => invoke<SessionGroup>('sessions:createGroup', name, color),
+    setGroupColor: (id: string, color: string) => invoke<void>('sessions:setGroupColor', id, color),
     renameGroup: (id: string, name: string) => invoke<void>('sessions:renameGroup', id, name),
     deleteGroup: (id: string) => invoke<void>('sessions:deleteGroup', id),
     setGroupCollapsed: (id: string, collapsed: boolean) => invoke<void>('sessions:setGroupCollapsed', id, collapsed),
@@ -192,7 +193,8 @@ const api = {
     onMenu: (cb: (command: string) => void) => {
       const channels = [
         'menu:settings', 'menu:new-session', 'menu:import-session', 'menu:next-session', 'menu:prev-session',
-        'menu:focus-composer', 'menu:toggle-sidebar', 'menu:toggle-files', 'menu:toggle-git', 'menu:search', 'menu:interrupt', 'menu:check-updates', 'menu:toggle-board'
+        'menu:focus-composer', 'menu:toggle-sidebar', 'menu:toggle-files', 'menu:toggle-git', 'menu:search', 'menu:interrupt', 'menu:check-updates', 'menu:toggle-board',
+        'menu:toggle-view', 'menu:select-all', 'menu:start-all'
       ]
       const offs = channels.map((ch) => on<void>(ch, () => cb(ch)))
       return () => offs.forEach((off) => off())

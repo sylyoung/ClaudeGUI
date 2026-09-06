@@ -1,8 +1,8 @@
-import type { SessionRecord } from './types'
+import type { SessionRecord, SidebarSort } from './types'
 
 /**
- * Sidebar order: pinned first, then the manual position (`order`, set by drag & drop), then
- * newest first for records that never got a position. Activity never reorders sessions.
+ * Manual sidebar order: pinned first, then the position set by drag & drop (`order`), then newest
+ * first for records that never got a position. Activity never reorders sessions in this mode.
  */
 export function compareRecords(a: SessionRecord, b: SessionRecord): number {
   if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
@@ -10,6 +10,23 @@ export function compareRecords(a: SessionRecord, b: SessionRecord): number {
   const bo = b.order ?? Number.POSITIVE_INFINITY
   if (ao !== bo) return ao - bo
   return b.createdAt - a.createdAt
+}
+
+/** Time of the user's last prompt (falls back to the last activity / creation time for old records). */
+export function lastPromptOf(r: SessionRecord): number {
+  return r.lastPromptAt ?? r.lastActiveAt ?? r.createdAt
+}
+
+/** "Recent" order: pinned first, then the session you prompted most recently first. */
+export function compareByLastPrompt(a: SessionRecord, b: SessionRecord): number {
+  if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
+  const d = lastPromptOf(b) - lastPromptOf(a)
+  if (d !== 0) return d
+  return b.createdAt - a.createdAt
+}
+
+export function comparatorFor(sort: SidebarSort): (a: SessionRecord, b: SessionRecord) => number {
+  return sort === 'manual' ? compareRecords : compareByLastPrompt
 }
 
 /** Split a comma/newline separated setting into trimmed, non-empty items. */

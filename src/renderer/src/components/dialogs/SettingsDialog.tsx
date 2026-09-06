@@ -189,9 +189,23 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   </select>
                 </Field>
                 <Check label="Expand every tool call card by default" hint="Off: only edits, writes, subagents and questions start expanded." checked={draft.toolCardsExpanded} onChange={(v) => upd({ toolCardsExpanded: v })} />
-                <Check label="Status board above the chat" hint="One chip per session with its colour-coded state and task counts. ⌘⇧S toggles it." checked={draft.showStatusBoard} onChange={(v) => upd({ showStatusBoard: v })} />
+                <Check label="Statistics bar above the chat" hint="One line: how many sessions are working, waiting for your input, idle with tasks, idle, not running, in error; unread turns; running tasks. Click a number to jump to the next such session. ⌘⇧S toggles it." checked={draft.showStatusBoard} onChange={(v) => upd({ showStatusBoard: v })} />
                 <Check label="Hover explanations (tooltips)" hint="Explain buttons, indicators and options when the mouse rests on them." checked={draft.showTooltips} onChange={(v) => upd({ showTooltips: v })} />
                 <Check label="Folder header rows inside groups" hint="Off (default): each row shows its folder name inline. On: sessions are additionally grouped under their project folder." checked={draft.groupSessionsByFolder} onChange={(v) => upd({ groupSessionsByFolder: v })} />
+                <div className="grid2">
+                  <Field label="Sidebar view" hint="Also switchable with the Groups / Recent control at the top of the sidebar (⌘⇧V).">
+                    <select className="select" style={{ maxWidth: 'none' }} value={draft.sidebarView} onChange={(e) => upd({ sidebarView: e.target.value as AppSettings['sidebarView'] })}>
+                      <option value="groups">Groups — sessions under your groups (Papers, Utils, Tasks…)</option>
+                      <option value="recent">Recent — pinned sessions, then all others</option>
+                    </select>
+                  </Field>
+                  <Field label="Order inside a group / list" hint="'Last prompt' moves a session up when you send a prompt (never when Claude answers).">
+                    <select className="select" style={{ maxWidth: 'none' }} value={draft.sidebarSort} onChange={(e) => upd({ sidebarSort: e.target.value as AppSettings['sidebarSort'] })}>
+                      <option value="lastPrompt">By your last prompt (newest first)</option>
+                      <option value="manual">Manual (drag to reorder)</option>
+                    </select>
+                  </Field>
+                </div>
               </Section>
             </>
           )}

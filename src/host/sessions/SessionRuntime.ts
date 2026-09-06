@@ -33,7 +33,7 @@ import type {
   SessionRecord,
   SlashCommandView
 } from '@shared/types'
-import { TranscriptState } from './transcript'
+import { TranscriptState, looksSynthetic } from './transcript'
 import { splitList } from '@shared/util'
 
 /** Unbounded async queue used as the SDK's streaming-input prompt. */
@@ -172,6 +172,13 @@ export class SessionRuntime {
         this.transcript.takeChanges()
       }
       this.deps.log(`[session ${this.id}] history loaded: ${entries.length} entries`)
+      if (!this.record.lastPromptAt) {
+        const t = lastPromptTime(this.transcript.messages)
+        if (t) {
+          this.record.lastPromptAt = t
+          this.deps.saveRecord(this.record)
+        }
+      }
     } catch (err) {
       // A brand-new session has no transcript yet; that is fine.
       this.deps.log(`[session ${this.id}] no history (${(err as Error).message})`)
@@ -391,6 +398,7 @@ export class SessionRuntime {
     else this.setStatus('running')
     this.queue.push(message)
     this.record.lastActiveAt = Date.now()
+    this.record.lastPromptAt = this.record.lastActiveAt
     this.live.lastActivityAt = this.record.lastActiveAt
     this.live.lastPreview = text.slice(0, 120)
     this.deps.saveRecord(this.record)
@@ -684,6 +692,10 @@ export class SessionRuntime {
     switch (s.subtype) {
       case 'init': {
         this.live.model = String(s.model ?? this.live.model ?? '')
+        if (this.live.model && this.record.lastModel !== this.live.model) {
+          this.record.lastModel = this.live.model
+          this.deps.saveRecord(this.record)
+        }
         this.live.permissionMode = s.permissionMode as PermissionMode
         this.live.cwd = String(s.cwd ?? this.record.cwd)
         this.live.claudeVersion = String(s.claude_code_version ?? '')
@@ -883,6 +895,83 @@ function isDirectory(p: string): boolean {
     return fs.statSync(p).isDirectory()
   } catch {
     return false
+  }
+}
+
+/** Timestamp of the last prompt the user typed (top-level, non-synthetic user message). */
+export function lastPromptTime(messages: ChatMessage[]): number | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.kind === 'user' && !m.synthetic && !m.parentToolUseId && (m.text.trim() || m.images?.length)) return m.ts
+  }
+  return undefined
+}
+
+/**
+ * Cheap version of the above for sessions whose history is not loaded: scan the transcript file
+ * backwards, one chunk at a time, until a user message that is a real prompt (not a tool result
+ * or a CLI echo) is found. Long tool-heavy sessions can have many megabytes without a prompt.
+ */
+export async function lastPromptTimeFromFile(file: string, chunkBytes = 1024 * 1024, maxBytes = 96 * 1024 * 1024): Promise<number | undefined> {
+  let size: number
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    return undefined
+  }
+  const fh = await fs.promises.open(file, 'r').catch(() => null)
+  if (!fh) return undefined
+  try {
+    let end = size
+    let carry = '' // partial line at the start of the previously read (later) chunk
+    let scanned = 0
+    while (end > 0 && scanned < maxBytes) {
+      const start = Math.max(0, end - chunkBytes)
+      const buf = Buffer.alloc(end - start)
+      await fh.read(buf, 0, end - start, start)
+      const text = buf.toString('utf8') + carry
+      const lines = text.split('\n')
+      if (start > 0) carry = lines.shift() ?? ''
+      else carry = ''
+      let best: number | undefined
+      for (const line of lines) {
+        const t = promptTimeOfLine(line)
+        if (t !== undefined && (best === undefined || t > best)) best = t
+      }
+      if (best !== undefined) return best
+      scanned += end - start
+      end = start
+    }
+    return undefined
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
+/** Epoch ms of a transcript line when it is a user prompt typed by the user; otherwise undefined. */
+function promptTimeOfLine(line: string): number | undefined {
+  if (!line.includes('"type":"user"') || !line.includes('"timestamp"')) return undefined
+  try {
+    const e = JSON.parse(line) as { type?: string; isMeta?: boolean; toolUseResult?: unknown; timestamp?: string; message?: { role?: string; content?: unknown } }
+    if (e.type !== 'user' || e.isMeta || e.toolUseResult) return undefined
+    const c = e.message?.content
+    let text = ''
+    let hasImage = false
+    if (typeof c === 'string') text = c
+    else if (Array.isArray(c)) {
+      let onlyResults = c.length > 0
+      for (const b of c as { type?: string; text?: string }[]) {
+        if (b.type === 'text') text += b.text ?? ''
+        if (b.type === 'image') hasImage = true
+        if (b.type !== 'tool_result') onlyResults = false
+      }
+      if (onlyResults) return undefined
+    }
+    if (!hasImage && (!text.trim() || looksSynthetic(text))) return undefined
+    const t = Date.parse(e.timestamp ?? '')
+    return Number.isNaN(t) ? undefined : t
+  } catch {
+    return undefined
   }
 }
 

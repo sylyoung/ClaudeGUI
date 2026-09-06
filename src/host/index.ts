@@ -167,7 +167,9 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
     case 'groups':
       return manager.list().groups
     case 'createGroup':
-      return manager.createGroup(a[0])
+      return manager.createGroup(a[0], a[1] ?? undefined)
+    case 'setGroupColor':
+      return manager.setGroupColor(a[0], a[1])
     case 'renameGroup':
       return manager.renameGroup(a[0], a[1])
     case 'deleteGroup':

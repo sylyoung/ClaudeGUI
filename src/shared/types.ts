@@ -19,6 +19,10 @@ export interface SessionRecord {
   effort?: EffortLevel
   createdAt: number
   lastActiveAt: number
+  /** When you last sent a prompt (not when Claude last answered); drives the "recent" order. */
+  lastPromptAt?: number
+  /** Model the last process reported at start (shown while the session is not running). */
+  lastModel?: string
   pinned?: boolean
   archived?: boolean
   source: 'gui' | 'cli-import'
@@ -39,6 +43,8 @@ export interface SessionGroup {
   /** Position among groups (lower first). */
   order: number
   collapsed?: boolean
+  /** Group colour as #rrggbb (assigned automatically when the group is created; user-changeable). */
+  color?: string
 }
 
 /** Where to drop a session when moving it (drag & drop / "Move to group"). */
@@ -301,6 +307,11 @@ export type ThinkingDisplay = 'collapsed' | 'expanded' | 'hidden'
 export type DoubleClickAction = 'system' | 'editor' | 'viewer'
 export type ResumeOnLaunch = 'none' | 'active' | 'pinned' | 'all'
 
+/** Sidebar layout: sessions grouped by their user-defined group, or a flat pinned / recent list. */
+export type SidebarView = 'groups' | 'recent'
+/** Session order inside a group or list. */
+export type SidebarSort = 'lastPrompt' | 'manual'
+
 export interface AppSettings {
   // ---- Claude
   /** Path to a claude binary; empty = SDK-bundled binary. */
@@ -351,8 +362,12 @@ export interface AppSettings {
   chatMaxWidth: number
   groupSessionsByFolder: boolean
   translucentSidebar: boolean
-  /** Overview strip with one chip per session above the chat. */
+  /** One-line statistics bar (n working, n waiting, …) above the chat. */
   showStatusBoard: boolean
+  /** Sidebar layout: by group, or a flat pinned / recent list. */
+  sidebarView: SidebarView
+  /** Order of sessions inside a group / list: by your last prompt, or manual (drag & drop). */
+  sidebarSort: SidebarSort
   /** Hover explanations on buttons and indicators. */
   showTooltips: boolean
 

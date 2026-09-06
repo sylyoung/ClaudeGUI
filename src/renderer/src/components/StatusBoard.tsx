@@ -1,94 +1,87 @@
-import React, { useMemo, useState } from 'react'
-import { Bot, TerminalSquare } from 'lucide-react'
-import type { SessionRecord } from '@shared/types'
-import { sidebarSections, useStore } from '@/store'
-import { ContextMenu, type MenuItem } from './common/ContextMenu'
-import { formatDateTime, shortenPath, timeAgo } from '@/lib/format'
+import React, { useMemo } from 'react'
+import { Bot, Mail, Play, TerminalSquare } from 'lucide-react'
+import { currentOrder, useStore } from '@/store'
 import { VISUAL_LEGEND, visualState, type VisualKey } from '@/lib/sessionState'
-import { sessionMenuItems } from '@/lib/sessionMenu'
 
-const ORDER: VisualKey[] = ['attention', 'working', 'idle-tasks', 'idle', 'starting', 'error', 'stopped']
+const ORDER: VisualKey[] = ['working', 'attention', 'idle-tasks', 'idle', 'stopped', 'error']
 
-/** Overview strip above the chat: one chip per session with its colour-coded state and task counts. */
+/**
+ * One-line statistics bar above the chat: how many sessions are working, waiting for your input,
+ * idle with tasks running, idle, not running, in error — plus unread turns and running tasks.
+ * Clicking a number jumps to the next session in that state.
+ */
 export function StatusBoard() {
   const records = useStore((s) => s.records)
   const live = useStore((s) => s.live)
   const groups = useStore((s) => s.groups)
   const showArchived = useStore((s) => s.showArchived)
+  const settings = useStore((s) => s.settings)
   const activeId = useStore((s) => s.activeId)
   const sidebarOpen = useStore((s) => s.sidebarOpen)
   const selectSession = useStore((s) => s.selectSession)
-  const toast = useStore((s) => s.toast)
-  const appInfo = useStore((s) => s.appInfo)
-  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  const startSessions = useStore((s) => s.startSessions)
+  const bulkBusy = useStore((s) => s.bulkBusy)
 
-  const sections = useMemo(() => sidebarSections(records, groups, showArchived), [records, groups, showArchived])
-  const all = sections.flatMap((s) => s.sessions)
-  const counts = new Map<VisualKey, number>()
+  const all = useMemo(() => currentOrder({ records, groups, showArchived, settings }), [records, groups, showArchived, settings])
+  const byState = new Map<VisualKey, typeof all>()
+  let background = 0
+  let subagents = 0
+  let unread = 0
   for (const r of all) {
-    const k = visualState(live[r.id]).key
-    counts.set(k, (counts.get(k) ?? 0) + 1)
+    const vs = visualState(live[r.id])
+    byState.set(vs.key, [...(byState.get(vs.key) ?? []), r])
+    background += vs.background
+    subagents += vs.subagents
+    unread += live[r.id]?.unread ?? 0
   }
-  const legend = VISUAL_LEGEND.map((l) => `● ${l.label}: ${l.description}`).join('\n')
-
-  const chip = (r: SessionRecord) => {
-    const l = live[r.id]
-    const vs = visualState(l)
-    const last = l?.lastActivityAt ?? r.lastActiveAt
-    const tip = [r.title, `${vs.label} — ${vs.description}`, shortenPath(r.cwd, appInfo?.homeDir), `last activity ${formatDateTime(last)} (${timeAgo(last)})`, l?.model ? `model ${l.model}` : ''].filter(Boolean).join('\n')
-    return (
-      <button
-        key={r.id}
-        className={`board-chip vs-${vs.key} ${r.id === activeId ? 'active' : ''}`}
-        onClick={() => void selectSession(r.id)}
-        onContextMenu={(e) => {
-          e.preventDefault()
-          setMenu({ x: e.clientX, y: e.clientY, items: sessionMenuItems(r, l, { groups, toast }) })
-        }}
-        data-tip={tip}
-      >
-        <span className={`dot vs-${vs.key}`} />
-        <span className="name">{r.title}</span>
-        <span className="state">{vs.label}</span>
-        {vs.background > 0 && (
-          <span className="chip bg">
-            <TerminalSquare size={11} /> {vs.background}
-          </span>
-        )}
-        {vs.subagents > 0 && (
-          <span className="chip agent">
-            <Bot size={11} /> {vs.subagents}
-          </span>
-        )}
-        {l?.unread ? <span className="badge">{l.unread}</span> : null}
-      </button>
-    )
+  const starting = byState.get('starting')?.length ?? 0
+  const jumpTo = (list: typeof all) => {
+    if (!list.length) return
+    const idx = list.findIndex((r) => r.id === activeId)
+    void selectSession(list[(idx + 1) % list.length].id)
   }
+  const names = (list: typeof all) => list.slice(0, 8).map((r) => `• ${r.title}`).join('\n') + (list.length > 8 ? `\n… and ${list.length - 8} more` : '')
+  const notRunning = byState.get('stopped') ?? []
+  const busyStarts = Object.values(bulkBusy).filter((v) => v === 'start').length
 
   return (
-    <div className="status-board drag" style={{ paddingLeft: sidebarOpen ? 10 : 84 }}>
-      <div className="board-summary no-drag" data-tip={`All sessions at a glance.\n${legend}`}>
-        {ORDER.filter((k) => counts.get(k)).map((k) => {
-          const l = VISUAL_LEGEND.find((x) => x.key === k)
-          return (
-            <span key={k} className={`board-count vs-${k}`}>
-              <span className={`dot vs-${k}`} /> {counts.get(k)} {l?.label ?? k}
-            </span>
-          )
-        })}
-        {all.length === 0 && <span className="faint">no sessions</span>}
-      </div>
-      <div className="board-chips no-drag">
-        {sections.map((sec) =>
-          sec.sessions.length === 0 ? null : (
-            <React.Fragment key={sec.group?.id ?? '__none'}>
-              {(sec.group || groups.length > 0) && <span className="board-group">{sec.group ? sec.group.name : 'ungrouped'}</span>}
-              {sec.sessions.map(chip)}
-            </React.Fragment>
-          )
-        )}
-      </div>
-      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+    <div className="stats-bar drag" style={{ paddingLeft: sidebarOpen ? 10 : 84 }}>
+      <span className="stat total no-drag" data-tip={`${all.length} session${all.length === 1 ? '' : 's'} in the sidebar${showArchived ? ' (including archived)' : ' (archived ones hidden)'}.\nClick a number to jump to the next session in that state.`}>
+        {all.length} sessions
+      </span>
+      {ORDER.map((k) => {
+        const list = byState.get(k) ?? []
+        const n = list.length + (k === 'working' ? starting : 0)
+        const legend = VISUAL_LEGEND.find((x) => x.key === k)
+        return (
+          <button key={k} className={`stat vs-${k} no-drag ${n ? '' : 'zero'}`} onClick={() => jumpTo(k === 'working' ? [...list, ...(byState.get('starting') ?? [])] : list)} data-tip={`${legend?.label ?? k}: ${legend?.description ?? ''}${n ? `\n${names(k === 'working' ? [...list, ...(byState.get('starting') ?? [])] : list)}\nClick to jump to the next one` : ''}`}>
+            <span className={`dot vs-${k}`} />
+            <b>{n}</b>
+            <span className="lbl">{legend?.label ?? k}</span>
+          </button>
+        )
+      })}
+      <span className="stat-sep" />
+      <span className={`stat stat-tasks no-drag ${background + subagents ? '' : 'zero'}`} data-tip={`${background} background shell${background === 1 ? '' : 's'} / monitor${background === 1 ? '' : 's'} and ${subagents} subagent${subagents === 1 ? '' : 's'} running across all sessions`}>
+        <TerminalSquare size={12} className="ic-bg" />
+        <b>{background}</b>
+        <Bot size={12} className="ic-agent" />
+        <b>{subagents}</b>
+      </span>
+      {unread > 0 && (
+        <button className="stat unread no-drag" onClick={() => jumpTo(all.filter((r) => (live[r.id]?.unread ?? 0) > 0))} data-tip={`${unread} finished turn${unread === 1 ? '' : 's'} you have not looked at yet.\nClick to jump to the next session with unread turns.`}>
+          <Mail size={12} />
+          <b>{unread}</b>
+          <span className="lbl">unread</span>
+        </button>
+      )}
+      <span className="spacer" />
+      {notRunning.length > 0 && (
+        <button className="stat action no-drag" disabled={busyStarts > 0} onClick={() => void startSessions(notRunning.map((r) => r.id))} data-tip={`Start the Claude process of every session that is not running (${notRunning.length}), one after the other. Stop all / select all: sidebar view options.`}>
+          <Play size={12} />
+          <span>{busyStarts > 0 ? `starting ${busyStarts}…` : `Start all (${notRunning.length})`}</span>
+        </button>
+      )}
     </div>
   )
 }

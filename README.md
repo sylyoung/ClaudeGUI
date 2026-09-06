@@ -1,11 +1,11 @@
 # ClaudeGUI
 
 A local macOS desktop app that manages many long-running **Claude Code** sessions in one window.
-It replaces a screen full of terminal windows with a session sidebar (with your own groups and a
-stable, drag-and-drop order), a status board of every session, a rendered chat (markdown, tables,
-diffs, tool cards), permission prompts in the GUI, clickable file and URL links, a file explorer +
-viewer rooted at each session's working directory, a Git panel, and always-visible plan-usage and
-context-window meters.
+It replaces a screen full of terminal windows with a session sidebar (your own coloured groups, or a
+pinned / recent list, ordered by your last prompt), a one-line statistics bar (how many sessions
+are working, waiting for you, idle…), a rendered chat (markdown, tables, diffs, tool cards),
+permission prompts in the GUI, clickable file and URL links, a file explorer + viewer rooted at each
+session's working directory, a Git panel, and always-visible plan-usage and context-window meters.
 
 Everything runs locally: each session is a real `claude` CLI process driven through the official
 Claude Agent SDK, using your existing `~/.claude` settings, skills, hooks, CLAUDE.md files, MCP
@@ -13,20 +13,24 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.3** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.4** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
 
-- **Session sidebar** with **groups** you define (Papers, Utilities, Tasks…): create with the
-  folder-plus button, rename, reorder, collapse, delete; move sessions with drag & drop or
-  "Move to group". The order is **stable** — only drag & drop changes it (pinned sessions stay at
-  the top of their group). Each row shows a colour-coded state, its folder, the last message, unread
-  count, **background-shell / monitor count** (blue), **subagent count** (purple) and
-  **context-window percentage**. `⌘1…⌘9` jumps to a session, `⌘⇧[` / `⌘⇧]` cycles, `⌘K` searches.
-- **Status board** above the chat: one chip per session with its state, task counts and unread count,
-  grouped like the sidebar, plus a summary (n working, n need input, n idle…). Click to switch,
-  right-click for the session menu, `⌘⇧S` to toggle.
+- **Session sidebar** with two views (⌘⇧V): **Groups** — your own categories (Papers, Utilities,
+  Tasks…), each with a colour (automatic, changeable) shown as a rail along the group — and
+  **Recent** — a Pinned section followed by every other session. Sessions are ordered by the time of
+  **your last prompt**; Claude answering never moves them (a manual drag & drop order is optional).
+  Each row shows the chat name, the model under it (Fable 5.1, Opus 5…), the folder only while that
+  chat's folder panel is shown, the state or last message, unread count, **background-shell /
+  monitor count** (blue), **subagent count** (purple) and **context-window percentage**.
+  Drag & drop (with a ghost that says what will happen) moves sessions between groups, pins them,
+  reorders groups. ⌘-click / ⇧-click select several sessions for bulk start / stop / pin / archive /
+  move. `⌘1…⌘9` jumps to a session, `⌘⇧[` / `⌘⇧]` cycles, `⌘K` searches, `⌘⇧A` selects all.
+- **Statistics bar** above the chat: how many sessions are working, need input, idle with tasks
+  running, idle, not running, in error; running shells / subagents; unread turns; a **Start all**
+  button. Click a number to jump to the next session in that state. `⌘⇧S` toggles it.
 - **Session states**, consistently coloured everywhere: working (blue, pulsing), needs input (amber,
   pulsing), idle with background tasks still running (teal), idle (green), not running (grey
   outline), error (red).
@@ -42,10 +46,12 @@ repository (ClaudeGUI → Check for Updates…).
   last check. Click for reset times and a manual "Check now". The data comes from the same claude.ai
   usage endpoint the CLI's `/usage` uses, refreshed on a timer, after every finished turn, and from
   the rate-limit headers of every API response.
-- **Explicit context usage per chat**: a bar in the chat toolbar shows tokens / window / percentage
-  (amber above 60 %, red above 85 %); click for the `/context` breakdown by category, a full recount
-  and a one-click `/compact`. The toolbar also shows the time of the last activity, the size of the
-  working directory and the git remote (click to open it) with ahead/behind counts.
+- **Chat header with visible actions**: open the folder in Terminal, reveal in Finder, open in the
+  editor, open the GitHub remote, show / hide the folder panel (remembered per chat), pin, start /
+  stop the process. Model, permission mode and effort sit on one line (short label when closed, full
+  text in the open list). A status row shows the group, folder, branch, remote, folder size, the time
+  of your last prompt, the last activity and the **context bar** (tokens / window / percentage, amber
+  above 60 %, red above 85 %; click for the `/context` breakdown, a recount and one-click `/compact`).
 - **Rendered chat**: GitHub-flavoured markdown with tables and syntax-highlighted code, collapsible
   tool cards (Bash command + output, Edit diffs, Write previews, Read results, Grep/Glob, Agent
   subagents with nested transcripts, TodoWrite checklists), thinking blocks, per-turn duration.
@@ -69,8 +75,8 @@ repository (ClaudeGUI → Check for Updates…).
   (your skills and built-ins, best matches first), image paste/drop, per-session drafts, message
   queueing while a turn is running, a clear (×) button, and a Stop button (`⌘.`) that puts the
   interrupted prompt back into the box.
-- **Model / permission mode / effort** switchable per session at any time, shown with their full
-  names (model id, "acceptEdits — accept file edits automatically", "xhigh — extra high"…).
+- **Model / permission mode / effort** switchable per session at any time; the option lists show the
+  full names (model id, "acceptEdits — accept file edits automatically", "xhigh — extra high"…).
 - **Renamed or deleted folders**: a session whose working directory disappeared shows a clear banner;
   "Change working directory…" points it at the new location and moves the transcript along, so the
   history is kept.

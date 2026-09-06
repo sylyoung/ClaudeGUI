@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-06 (session 2, v1.0.3)
+Last updated: 2026-09-06 (session 3, v1.0.4)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -37,8 +37,9 @@ survive app restarts.
   `CLAUDEGUI_*` overrides). The quit for an update leaves the host running (`updating` flag).
 - Builds are signed with an "Apple Development" identity when electron-builder finds one
   (`mac.type: development`), so macOS privacy grants persist across updates; otherwise unsigned.
-- Sidebar order: pinned first, then `record.order` (set only by drag & drop / "Move to group"),
-  newest first for records without a position. Groups live in `sessions.json` (`groups[]`).
+- Sidebar order (1.0.4): pinned first, then by the time of the user's last prompt (`lastPromptAt`,
+  never by Claude's replies); manual `record.order` (drag & drop) is an optional mode. Two views:
+  groups (coloured) or pinned / recent. Groups live in `sessions.json` (`groups[]`, with `color`).
 - Git is driven through the `git` CLI (porcelain v2 status); untracked files are "discarded" by
   moving them to the Trash, never deleted outright.
 - Theme follows macOS by default (`nativeTheme` + `systemPreferences.getAccentColor`).
@@ -108,3 +109,24 @@ survive app restarts.
 npm run dev        # development (hot reload); scripts/devctl.sh start = dev + debug endpoint
 npm run build:mac  # produce dist/mac-arm64/ClaudeGUI.app (quit a running ClaudeGUI first)
 ```
+
+### v1.0.4
+- [x] 1. "ClaudeGUI" label removed from the sidebar top (Groups / Recent switch, view options, settings)
+- [x] 2. One-line statistics bar (counts per state, tasks, unread, Start all; click = jump)
+- [x] 3. Model / permissions / effort on one line (PopupSelect: short closed label, full-text list)
+- [x] 4. Folder panel shown / hidden per chat (header button, ⌘⇧E, remembered per chat)
+- [x] 5. Group colours (auto from the macOS palette, changeable; rail, name, tags)
+- [x] 6. Pointer-event drag & drop with ghost (verified with synthetic pointer events: move to
+      group, manual reorder, pin by drop, group reorder, Escape / cleanup)
+- [x] 7. Groups / Recent views ordered by the user's last prompt (`lastPromptAt` on send, transcript
+      backfill verified against a 30 MB transcript)
+- [x] 8. Visible header buttons (Terminal, Finder, editor, GitHub, panel, pin, start / stop, …)
+- [ ] 9. Colour plan: proposal in docs/design/colour-plan.md — waiting for the user's choices
+- [x] 10. Option fields: abbreviated when closed, full text in the list
+- [x] 11. Multi-selection (⌘/⇧-click, ⌘⇧A) with bulk start / stop / pin / archive / move; Start all
+- [x] 12. Model name under the chat name; folder name only while the chat's folder panel is shown
+
+### Open after v1.0.4
+- Colour plan (docs/design/colour-plan.md): implement the items the user picks.
+- The user updates through ClaudeGUI → Check for Updates… (first run on their machine: `npm ci`
+  in ~/Library/Caches/ClaudeGUI/update, a few minutes). No staged bundle in dist/ this time.

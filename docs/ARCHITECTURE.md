@@ -6,7 +6,8 @@ src/
     types.ts               IPC contract: session records/groups, live state, chat message model,
                            settings, git, plan-usage, context-usage, host, update, permission views
     defaults.ts            DEFAULT_SETTINGS (shared by the window and the session host)
-    util.ts                splitList, version comparison, compareRecords (sidebar order)
+    util.ts                splitList, version comparison, compareRecords / compareByLastPrompt
+    colors.ts              Group colour palette (macOS system colours), next free colour
   main/                    Electron window process
     index.ts               App lifecycle, window (+ saved bounds), menu, theme, notifications,
                            session-host connection and replacement, quit / restart-for-update
@@ -36,7 +37,9 @@ src/
   preload/index.ts         contextBridge -> window.api
   renderer/src/
     store.ts               zustand store (records, live, groups, messages, update, sent-prompt
-                           queue for interrupt restore, files/panel state persisted per session)
+                           queue for interrupt restore, files/panel state persisted per session,
+                           sidebar sections for the groups / recent views, multi-selection, bulk
+                           start / stop)
     lib/sessionState.ts    Visual state of a session (working / attention / idle-tasks / …)
     lib/sessionMenu.ts     Context-menu entries shared by sidebar, status board and chat header
     lib/options.ts         Full-name labels for permission modes and effort levels
@@ -44,12 +47,16 @@ src/
     lib/tasks.ts           Task counts and context-percentage helpers
     App.tsx                Layout: sidebar | (status board / chat | files), tooltip layer
     components/
-      Sidebar.tsx          Groups, drag & drop ordering, coloured rows, indicators, search
-      StatusBoard.tsx      Overview strip with one chip per session
+      Sidebar.tsx          Groups / Recent views, pointer-event drag & drop, group colours,
+                           multi-selection toolbar, view options menu
+      StatusBoard.tsx      One-line statistics bar (counts per state, tasks, unread, Start all)
       common/Tooltip.tsx   Global hover explanations for elements with data-tip
       common/ContextMenu.tsx  Menus with submenus ("Move to group")
-      chat/                ChatView (+ ContextBar, toolbar info), MessageList, ToolCallCard,
-                           PermissionPrompt, Composer (ranking, clear, restore)
+      common/PopupSelect.tsx  Drop-down with a short closed label and full-text options
+      common/GroupColorPicker.tsx  Palette popover for group colours
+      chat/                ChatView (header with action buttons, one-line configuration row,
+                           status row + ContextBar), MessageList, ToolCallCard, PermissionPrompt,
+                           Composer (ranking, clear, restore)
       files/               FilePanel (tabs), FileTree, FileViewer, TasksPanel
       git/                 GitPanel, useGitAutoRefresh
       status/              UsageStatus (top-right pills + popover), UpdatePill
@@ -103,11 +110,24 @@ src/
 - Fallbacks: the structured `/usage` of a running session (through the host), then the
   `rate_limit_event` messages every API response carries (merged per window).
 
-## Sidebar order and groups
-- `SessionRecord.groupId` / `order`; `SessionGroup {id, name, order, collapsed}` in sessions.json.
-- `compareRecords`: pinned first, then `order`, then newest first for records without a position.
-  Only `moveSession` (drag & drop, "Move to group") renumbers positions; activity never reorders.
-- Drag & drop uses HTML5 DnD with custom MIME types for sessions and group headers.
+## Sidebar order, views and groups
+- `SessionRecord.groupId` / `order` / `lastPromptAt` / `lastModel`; `SessionGroup {id, name, order,
+  collapsed, color}` in sessions.json. `lastPromptAt` is set by `SessionRuntime.send`; records from
+  older versions get it from the transcript (`lastPromptTimeFromFile`, scanning the file backwards
+  in 1 MB chunks for the last user line that is a real prompt) or from the loaded history.
+- Settings `sidebarView` ('groups' | 'recent') and `sidebarSort` ('lastPrompt' | 'manual').
+  `sidebarSections` (renderer store) builds the sections: per group + ungrouped, or Pinned + Recent;
+  inside a section `compareByLastPrompt` (pinned first, newest prompt first) or `compareRecords`
+  (pinned first, manual `order`). Only `moveSession` renumbers `order`.
+- Group colours: `nextGroupColor` picks the first unused palette colour; groups without a colour
+  get one when the host starts (`assignMissingGroupColors`). The renderer maps a palette colour to
+  its dark variant in dark mode (`groupColorFor`).
+- Drag & drop is implemented with pointer events (no HTML5 DnD): `pointerdown` arms, a 6 px move
+  starts the drag (pointer capture, `body.is-dragging`), `elementsFromPoint` finds the target
+  (`data-drop-row`, `data-drop-section`, `data-section-group`), a fixed-position ghost shows the
+  outcome, `pointerup` commits (`moveSession`, `setPinned`, `moveGroup`), Escape cancels.
+- Multi-selection lives in the store (`selectedIds`); bulk start is staggered (800 ms) because
+  each Claude process loads settings, MCP servers and its transcript.
 
 ## Permissions
 - `PermissionService` probes folder access with async `readdir` (a blocked folder returns EPERM;

@@ -330,8 +330,11 @@ export class HostClient extends EventEmitter {
   list(): Promise<{ records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] }> {
     return this.call('list')
   }
-  createGroup(name: string): Promise<SessionGroup> {
-    return this.call('createGroup', name)
+  createGroup(name: string, color?: string): Promise<SessionGroup> {
+    return this.call('createGroup', name, color ?? null)
+  }
+  setGroupColor(id: string, color: string): Promise<void> {
+    return this.call('setGroupColor', id, color)
   }
   renameGroup(id: string, name: string): Promise<void> {
     return this.call('renameGroup', id, name)
