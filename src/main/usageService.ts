@@ -76,7 +76,7 @@ export class UsageService {
   private async doRefresh(reason: string): Promise<UsageSnapshot> {
     this.snapshot = { ...this.snapshot, checking: true }
     this.deps.emit(this.snapshot)
-    const warn = Number(this.deps.getSettings().usageWarnPercent) || 80
+    const warn = Number(this.deps.getSettings().usageWarnPercent) || 50
     let next: UsageSnapshot | null = null
     let error: string | undefined
     try {
@@ -112,7 +112,7 @@ export class UsageService {
   applyRateLimitEvent(info: { rateLimitType?: string; utilization?: number; resetsAt?: number; status?: string }, ts: number): void {
     const key = eventKey(info.rateLimitType)
     if (!key || info.utilization == null) return
-    const warn = Number(this.deps.getSettings().usageWarnPercent) || 80
+    const warn = Number(this.deps.getSettings().usageWarnPercent) || 50
     const percent = info.utilization <= 1 ? Math.round(info.utilization * 100) : Math.round(info.utilization)
     const windows = this.snapshot.windows.slice()
     const idx = windows.findIndex((w) => w.key === key)
@@ -202,10 +202,17 @@ function sortWindows(list: UsageWindow[]): UsageWindow[] {
   return list.slice().sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group] || a.label.localeCompare(b.label))
 }
 
+/**
+ * Same thresholds as the Claude Code status line in the terminal
+ * (~/.claude/statusline-command.sh: green up to 50 %, yellow up to 90 %, red above).
+ * `warn` is the amber cut-off from the settings; red starts at CRITICAL_PERCENT.
+ */
+const CRITICAL_PERCENT = 90
+
 function severityFor(percent: number | null, warn: number): UsageSeverity {
   if (percent == null) return 'unknown'
   if (percent >= 100) return 'locked'
-  if (percent >= 95) return 'critical'
+  if (percent >= CRITICAL_PERCENT) return 'critical'
   if (percent >= warn) return 'warning'
   return 'normal'
 }

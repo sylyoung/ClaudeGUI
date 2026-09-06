@@ -149,8 +149,8 @@ a:hover { text-decoration: underline; }
 .pill.blue { color: var(--blue); border-color: rgba(88, 166, 255, 0.4); background: rgba(88, 166, 255, 0.1); }
 .pill.clickable { cursor: pointer; }
 .pill.clickable:hover { background: var(--bg-hover); color: var(--text); }
-/* Context colours: the same three values the terminal status line prints
-   (statusline-command.sh: #3fb950 green, #d29922 yellow, #da3633 red). */
+/* Colours of the terminal status line (statusline-command.sh: #3fb950 green, #d29922 yellow,
+   #da3633 red), used for the context indicators and the plan-usage bars. */
 :root, [data-theme='light'] { --ctx-ok: #3fb950; --ctx-warn: #d29922; --ctx-high: #da3633; }
 .pill.ctx-ok { color: var(--ctx-ok); }
 .pill.ctx-warn { color: var(--ctx-warn); }
@@ -319,7 +319,17 @@ code .file-link { border: none; background: none; }
 .thinking .body { margin-top: 6px; white-space: pre-wrap; line-height: 1.5; max-height: 400px; overflow: auto; font-style: italic; }
 
 /* tool cards */
-.tool { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); overflow: hidden; }
+.tool { border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: 8px; background: var(--bg-elev); overflow: hidden; }
+/* Left edge by tool kind: shell grey, reading blue, writing amber, subagents purple, web green,
+   notes teal, questions red (they wait for you), MCP violet. */
+.tool.kind-shell { border-left-color: var(--text-faint); }
+.tool.kind-read { border-left-color: var(--blue); }
+.tool.kind-write { border-left-color: var(--amber); }
+.tool.kind-agent { border-left-color: var(--purple); }
+.tool.kind-web { border-left-color: var(--green); }
+.tool.kind-note { border-left-color: var(--teal); }
+.tool.kind-ask { border-left-color: var(--red); }
+.tool.kind-mcp { border-left-color: var(--pink); }
 .tool.error { border-color: rgba(248, 81, 73, 0.35); }
 .tool.denied { border-color: rgba(227, 179, 65, 0.35); }
 .tool.running { border-color: rgba(63, 185, 80, 0.3); }
@@ -402,11 +412,11 @@ code .file-link { border: none; background: none; }
 .usage-pill .u-label { font-weight: 600; letter-spacing: 0.02em; }
 .usage-pill .u-pct { font-family: var(--mono); text-align: right; }
 .usage-pill .u-bar { grid-column: 1 / span 2; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
-.usage-pill .u-bar > span { display: block; height: 100%; background: var(--green); }
-.usage-pill.sev-warning { color: var(--amber); border-color: rgba(227, 179, 65, 0.5); }
-.usage-pill.sev-warning .u-bar > span { background: var(--amber); }
-.usage-pill.sev-critical, .usage-pill.sev-locked { color: var(--red); border-color: rgba(248, 81, 73, 0.5); }
-.usage-pill.sev-critical .u-bar > span, .usage-pill.sev-locked .u-bar > span { background: var(--red); }
+.usage-pill .u-bar > span { display: block; height: 100%; background: var(--ctx-ok); }
+.usage-pill.sev-warning { color: var(--ctx-warn); border-color: rgba(210, 153, 34, 0.5); }
+.usage-pill.sev-warning .u-bar > span { background: var(--ctx-warn); }
+.usage-pill.sev-critical, .usage-pill.sev-locked { color: var(--ctx-high); border-color: rgba(218, 54, 51, 0.5); }
+.usage-pill.sev-critical .u-bar > span, .usage-pill.sev-locked .u-bar > span { background: var(--ctx-high); }
 .usage-pill.sev-unknown { display: inline-flex; gap: 4px; }
 .usage-checked { display: inline-flex; align-items: center; gap: 2px; font-size: 10px; color: var(--text-faint); font-family: var(--mono); padding: 0 2px; white-space: nowrap; }
 .popover { position: fixed; z-index: 250; background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 12px 40px var(--shadow); padding: 12px 14px; user-select: text; max-height: calc(100vh - 80px); overflow: auto; }
@@ -417,12 +427,12 @@ code .file-link { border: none; background: none; }
 .u-name { font-weight: 500; }
 .u-val { font-family: var(--mono); font-weight: 600; }
 .u-track { position: relative; height: 8px; border-radius: 4px; background: var(--bg-elev2); border: 1px solid var(--border); overflow: hidden; }
-.u-fill { height: 100%; background: var(--green); transition: width 0.3s; }
+.u-fill { height: 100%; background: var(--ctx-ok); transition: width 0.3s; }
 .u-mark { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--amber); opacity: 0.6; }
-.usage-row.sev-warning .u-fill, .usage-row.sev-warning .u-val { background-color: var(--amber); }
+.usage-row.sev-warning .u-fill, .usage-row.sev-warning .u-val { background-color: var(--ctx-warn); }
 .usage-row.sev-warning .u-val { background: none; color: var(--amber); }
-.usage-row.sev-critical .u-fill, .usage-row.sev-locked .u-fill { background: var(--red); }
-.usage-row.sev-critical .u-val, .usage-row.sev-locked .u-val { color: var(--red); }
+.usage-row.sev-critical .u-fill, .usage-row.sev-locked .u-fill { background: var(--ctx-high); }
+.usage-row.sev-critical .u-val, .usage-row.sev-locked .u-val { color: var(--ctx-high); }
 .u-sub { font-size: 11.5px; color: var(--text-faint); }
 .u-footer { font-size: 11px; line-height: 1.5; border-top: 1px solid var(--border); padding-top: 8px; }
 
@@ -484,7 +494,13 @@ code .file-link { border: none; background: none; }
 .tasks { padding: 10px; display: flex; flex-direction: column; gap: 12px; overflow: auto; font-size: 12.5px; }
 .tasks h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
 .tasks-summary { display: flex; gap: 6px; flex-wrap: wrap; }
-.task-item { display: flex; flex-direction: column; gap: 3px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.task-item { display: flex; flex-direction: column; gap: 3px; padding: 8px; border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: 6px; background: var(--bg); }
+/* Outcome of a background task: running neutral, finished green, failed or killed red. */
+.task-item.out-done { border-left-color: var(--ctx-ok); }
+.task-item.out-done .t-title { color: var(--ctx-ok); }
+.task-item.out-failed { border-left-color: var(--ctx-high); }
+.task-item.out-failed .t-title { color: var(--ctx-high); }
+.task-item.out-running { border-left-color: var(--blue); }
 .task-item .t-title { display: flex; align-items: center; gap: 6px; font-weight: 500; }
 .task-item .t-sub { color: var(--text-dim); font-size: 12px; }
 
@@ -697,6 +713,9 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .composer-clear { position: absolute; top: 6px; right: 8px; width: 20px; height: 20px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); background: var(--bg-elev2); z-index: 2; }
 .composer-clear:hover { color: var(--text); background: var(--bg-hover); }
 .chat-header .chip { cursor: pointer; }
+.permission.destructive { border-color: rgba(218, 54, 51, 0.55); background: rgba(218, 54, 51, 0.07); }
+.permission.destructive .p-title { color: var(--ctx-high); }
+.permission.destructive .p-title svg { color: var(--ctx-high); }
 .perm-list { display: flex; flex-direction: column; gap: 6px; }
 .perm-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
 .perm-row > svg { margin-top: 2px; flex-shrink: 0; }
@@ -854,4 +873,13 @@ button.cs-item:hover { color: var(--accent); }
 .pill .mark { min-width: 14px; height: 12px; font-size: 12px; }
 .stat .mark { margin-right: 1px; }
 .cs-item.push { color: var(--blue); font-weight: 600; }
+.cs-item.level-warn { color: var(--ctx-warn); }
+.cs-item.level-high { color: var(--ctx-high); font-weight: 600; }
 .cs-item.push:disabled { opacity: 0.6; }
+
+/* ---- model family tints (Fable violet, Opus blue, Sonnet teal, Haiku green) ---- */
+.m-fable .ps-value, .session-item .model.m-fable { color: var(--purple); }
+.m-opus .ps-value, .session-item .model.m-opus { color: var(--blue); }
+.m-sonnet .ps-value, .session-item .model.m-sonnet { color: var(--teal); }
+.m-haiku .ps-value, .session-item .model.m-haiku { color: var(--green); }
+.edited-mark { width: 6px; height: 6px; border-radius: 3px; background: var(--accent); flex-shrink: 0; margin-left: 2px; }

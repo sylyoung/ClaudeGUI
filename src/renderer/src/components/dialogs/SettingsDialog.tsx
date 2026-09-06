@@ -316,7 +316,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 <Check label="Show the session / weekly / per-model limits in the top-right corner" checked={draft.showUsageStatus} onChange={(v) => upd({ showUsageStatus: v })} />
                 <div className="grid2">
                   <Field label="Check the limits every (minutes)" hint="They also refresh after every finished turn (at most every 20 s) and from every API response."><Num value={draft.usageRefreshMinutes} min={1} max={120} onChange={(v) => upd({ usageRefreshMinutes: v })} /></Field>
-                  <Field label="Turn a limit amber from (%)"><Num value={draft.usageWarnPercent} min={10} max={99} onChange={(v) => upd({ usageWarnPercent: v })} /></Field>
+                  <Field label="Turn a limit amber from (%)" hint="Red always starts at 90 %, like the status line in the terminal."><Num value={draft.usageWarnPercent} min={10} max={99} onChange={(v) => upd({ usageWarnPercent: v })} /></Field>
                 </div>
               </Section>
               <Section title="Session indicators">

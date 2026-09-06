@@ -13,6 +13,35 @@ interface Question {
   options: { label: string; description: string; preview?: string }[]
 }
 
+/**
+ * Commands and edits that cannot be taken back: deleting files, force-pushing, resetting a
+ * repository, overwriting devices, dropping database objects, changing ownership of a whole tree.
+ * Such a request is shown in red instead of amber so it is not approved by reflex.
+ */
+const DESTRUCTIVE_PATTERNS: RegExp[] = [
+  /\brm\s+(-[a-z]*[rf][a-z]*\s+)/i,
+  /\brmdir\b|\bunlink\b|\bshred\b/i,
+  /\bgit\s+push\b[^|;]*(--force\b|-f\b)/i,
+  /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*[fd]|checkout\s+--\s+\.)/i,
+  /\bgit\s+branch\s+-D\b|\bgit\s+tag\s+-d\b/i,
+  /\b(mkfs|fdisk|diskutil\s+erase|dd\s+if=)/i,
+  /\b(drop\s+(table|database|schema)|truncate\s+table|delete\s+from)\b/i,
+  /\b(chown|chmod)\s+-R\b/i,
+  /\bkillall\b|\bpkill\s+-9\b/i,
+  /\bsudo\b/i,
+  />\s*\/dev\/(disk|sd)/i,
+  /\bnpm\s+publish\b|\bgh\s+repo\s+delete\b/i
+]
+
+export function isDestructiveRequest(request: PendingPermission): boolean {
+  const i = request.input
+  const command = typeof i.command === 'string' ? i.command : ''
+  if (command && DESTRUCTIVE_PATTERNS.some((re) => re.test(command))) return true
+  // Emptying a file counts as destructive; writing a new file does not.
+  if (request.toolName === 'Write' && typeof i.content === 'string' && i.content.trim() === '') return true
+  return false
+}
+
 export function PermissionPrompt({ request, onAnswer }: { request: PendingPermission; onAnswer: (d: PermissionDecision) => void }) {
   if (request.toolName === 'AskUserQuestion') return <QuestionPrompt request={request} onAnswer={onAnswer} />
   return <ToolPermission request={request} onAnswer={onAnswer} />
@@ -27,11 +56,13 @@ function ToolPermission({ request, onAnswer }: { request: PendingPermission; onA
   const filePath = typeof i.file_path === 'string' ? i.file_path : undefined
   const canAlways = Boolean(request.suggestions?.length)
   const title = request.title || (isPlan ? 'Claude wants to exit plan mode and start implementing' : `Claude wants to use ${request.displayName || request.toolName}`)
+  const destructive = isDestructiveRequest(request)
 
   return (
-    <div className="permission">
-      <div className="p-title">
+    <div className={`permission ${destructive ? 'destructive' : ''}`}>
+      <div className="p-title" data-tip={destructive ? 'This request cannot be undone (deleting, force-pushing, resetting, overwriting) — read it before approving' : undefined}>
         <ShieldAlert size={16} /> {title}
+        {destructive && <span className="pill red" style={{ marginLeft: 6 }}>cannot be undone</span>}
       </div>
       {request.description && <div className="p-desc">{request.description}</div>}
       {request.decisionReason && <div className="p-desc faint">{request.decisionReason}</div>}

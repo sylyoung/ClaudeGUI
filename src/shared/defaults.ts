@@ -65,7 +65,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gitCommitTemplate: '',
   // Usage
   usageRefreshMinutes: 5,
-  usageWarnPercent: 80,
+  usageWarnPercent: 50,
   showUsageStatus: true,
   showContextInSidebar: true,
   showTaskCountsInSidebar: true,

@@ -88,6 +88,19 @@ export function modelLabel(model: string | undefined): string {
   return (nice[base] ?? base) + (m.endsWith('(1M)') ? ' (1M)' : '')
 }
 
+/**
+ * Model family of an id, used to tint the model name (Fable violet, Opus blue, Sonnet teal,
+ * Haiku green) so the model of a chat is recognizable without reading it.
+ */
+export function modelFamily(model: string | undefined): 'fable' | 'opus' | 'sonnet' | 'haiku' | 'other' {
+  const m = (model ?? '').toLowerCase()
+  if (m.includes('fable')) return 'fable'
+  if (m.includes('opus')) return 'opus'
+  if (m.includes('sonnet')) return 'sonnet'
+  if (m.includes('haiku')) return 'haiku'
+  return 'other'
+}
+
 /** "just now", "2m ago", "3h ago", "2d ago". */
 export function relativeTime(ts: number): string {
   if (!ts) return 'never'

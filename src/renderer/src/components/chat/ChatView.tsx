@@ -15,13 +15,15 @@ import { ContextBar } from './ContextBar'
 import { ChatProvider, type ChatCtx } from './ChatContext'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
 import { UsageStatus } from '../status/UsageStatus'
-import { formatBytes, formatDateTime, modelLabel, shortenPath, timeAgo } from '@/lib/format'
+import { formatBytes, formatDateTime, modelFamily, modelLabel, shortenPath, timeAgo } from '@/lib/format'
 import { visualState } from '@/lib/sessionState'
 import { sessionMenuItems } from '@/lib/sessionMenu'
 
 import { EFFORTS, EFFORT_LABELS, EFFORT_SHORT, MODES } from '@/lib/options'
 
 const EMPTY_MESSAGES: never[] = []
+/** Folder-size thresholds of the status row: amber above 5 GB, red above 20 GB. */
+const GB = 1024 * 1024 * 1024
 const FALLBACK_MODELS = [
   { value: '', label: 'Default (settings.json)' },
   { value: 'claude-fable-5-1', label: 'Fable 5.1 (claude-fable-5-1)' },
@@ -65,6 +67,10 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const openBinaryExternally = useStore((s) => s.settings?.openBinaryWithSystemApp ?? true)
   const gitBranch = useStore((s) => s.git[record.id]?.status?.info.branch)
   const gitInfo = useStore((s) => s.git[record.id]?.status?.info)
+  const gitConflicts = useStore((s) => {
+    const st = s.git[record.id]?.status
+    return st?.files.some((f) => f.index === 'conflicted' || f.worktree === 'conflicted') ?? false
+  })
   const gitChanges = useStore((s) => {
     const st = s.git[record.id]?.status
     if (!st?.info.isRepo) return 0
@@ -341,7 +347,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           </div>
         )}
         <div className="chat-config">
-          <PopupSelect label="model" value={currentModel} options={modelOptions} tip="Model used for this session's next turns. The list shows the full model ids." onChange={(v) => window.api.sessions.setModel(record.id, v).catch(fail)} minWidth={340} />
+          <PopupSelect className={`m-${modelFamily(live?.model || record.model || record.lastModel)}`} label="model" value={currentModel} options={modelOptions} tip="Model used for this session's next turns. The list shows the full model ids." onChange={(v) => window.api.sessions.setModel(record.id, v).catch(fail)} minWidth={340} />
           <PopupSelect label="permissions" value={live?.permissionMode ?? record.permissionMode} options={modeOptions} tip="Permission mode: what Claude may do without asking. The list explains every mode." onChange={(v) => window.api.sessions.setPermissionMode(record.id, v as PermissionMode).catch(fail)} minWidth={380} />
           <PopupSelect label="effort" value={record.effort ?? ''} options={effortOptions} tip="Effort level: how much reasoning the model spends per turn (higher = slower, more thorough)" onChange={(v) => window.api.sessions.setEffort(record.id, v as EffortLevel | '').catch(fail)} minWidth={280} />
           <span className="spacer" />
@@ -365,7 +371,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
             <span className="ellipsis">{shortenPath(record.cwd, appInfo?.homeDir)}</span>
           </button>
           {gitBranch && (
-            <button className="cs-item" data-tip={`Git branch ${gitBranch} — click to open the Git panel`} onClick={() => showPanelTab('git')}>
+            <button className={`cs-item ${gitConflicts ? 'level-high' : (gitInfo?.ahead || gitInfo?.behind) ? 'level-warn' : ''}`} data-tip={`Git branch ${gitBranch} — click to open the Git panel`} onClick={() => showPanelTab('git')}>
               <GitBranch size={11} /> {gitBranch}
               {gitInfo && (gitInfo.ahead || gitInfo.behind) ? <span className="faint">{gitInfo.ahead ? ` ↑${gitInfo.ahead}` : ''}{gitInfo.behind ? ` ↓${gitInfo.behind}` : ''}</span> : null}
             </button>
@@ -386,7 +392,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
             </button>
           )}
           {dirInfo?.exists && dirInfo.bytes !== undefined && (
-            <span className="cs-item" data-tip={`Size of the working directory (du -sk, refreshed after each turn and every 5 minutes; checked ${formatDateTime(dirInfo.checkedAt)})`}>
+            <span className={`cs-item ${dirInfo.bytes > 20 * GB ? 'level-high' : dirInfo.bytes > 5 * GB ? 'level-warn' : ''}`} data-tip={`Size of the working directory (du -sk, refreshed after each turn and every 5 minutes; checked ${formatDateTime(dirInfo.checkedAt)})${dirInfo.bytes > 5 * GB ? '\nAmber above 5 GB, red above 20 GB.' : ''}`}>
               <HardDrive size={11} /> {formatBytes(dirInfo.bytes)}
             </span>
           )}

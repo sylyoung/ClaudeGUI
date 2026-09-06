@@ -6,7 +6,7 @@ import { lastPromptOf } from '@shared/util'
 import { sidebarSections, useStore, type SidebarSection } from '@/store'
 import { ContextMenu, type MenuItem } from './common/ContextMenu'
 import { GroupColorPicker } from './common/GroupColorPicker'
-import { basename, formatDateTime, sessionModelName, shortenPath, timeAgo } from '@/lib/format'
+import { basename, formatDateTime, modelFamily, sessionModelName, shortenPath, timeAgo } from '@/lib/format'
 import { CONTEXT_COLOUR_RULE, contextLevel, contextPercent } from '@/lib/tasks'
 import { StateMark } from './common/StateMark'
 import { visualState } from '@/lib/sessionState'
@@ -484,7 +484,7 @@ export function Sidebar() {
               ● {g.name} ·{' '}
             </span>
           )}
-          <span className="model">{modelName}</span>
+          <span className={`model m-${modelFamily(l?.model || r.model || r.lastModel || settings?.defaultModel)}`}>{modelName}</span>
           <span className="faint"> · </span>
           <span className={`state-text vs-${vs.key}`}>{busy ? (busy === 'start' ? 'starting…' : 'stopping…') : vs.key === 'idle' && l?.lastPreview ? l.lastPreview : vs.label}</span>
           {!busy && vs.key === 'unread' && l?.lastPreview && <span className="faint"> · {l.lastPreview}</span>}

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.7 — 2026-09-06
+
+### Colours
+- **Plan usage follows the terminal status line** as the context indicators already do: a limit turns
+  amber from 50 % and red from 90 % (instead of 80 % / 95 %), in the same three colours (#3fb950,
+  #d29922, #da3633). The amber threshold stays adjustable in Settings → Usage; a stored 80 (the old
+  default nobody chose) is moved to 50 once, a value you set yourself is kept.
+- **Tool cards are marked by kind** with a coloured left edge: shell grey, Read/Grep/Glob blue,
+  Edit/Write/NotebookEdit amber, subagents purple, web green, notes and skills teal, questions red,
+  MCP pink.
+- **Requests that cannot be undone are red** instead of amber, with a "cannot be undone" tag: `rm -r`
+  / `rm -f`, `shred`, force pushes, `git reset --hard`, `git clean -fd`, deleting branches or tags,
+  `mkfs` / `dd` / `diskutil erase`, `DROP`/`TRUNCATE`/`DELETE FROM`, recursive `chown`/`chmod`,
+  `killall`, anything with `sudo`, writing to a device, `npm publish`, `gh repo delete`, and writing
+  an empty file over an existing one.
+- **The model name is tinted** by family in the chat configuration row and in the sidebar rows:
+  Fable violet, Opus blue, Sonnet teal, Haiku green.
+- **The status row warns**: the git branch turns amber when the repository is ahead of or behind the
+  remote and red when there are conflicts; the working-directory size turns amber above 5 GB and red
+  above 20 GB.
+- **Folder panel**: files Claude edited or wrote in this chat (subagents included) get an accent dot
+  in the file tree, and background tasks are coloured by outcome — running blue, finished green,
+  failed or killed red.
+
 ## 1.0.6 — 2026-09-06
 
 ### Session states

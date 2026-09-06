@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, File, FileCode, FileImage, FileText, Folder, FolderOpen, RefreshCw } from 'lucide-react'
 import type { FsEntry, GitFileState, GitFileStatus, GitStatusResult } from '@shared/types'
 import { useStore } from '@/store'
+import { editedFiles } from '@/lib/editedFiles'
 import { basename, formatBytes } from '@/lib/format'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
 import { gitLetter } from '../git/GitPanel'
@@ -87,6 +88,8 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
   const gitStatus = useStore((s) => s.git[sessionId]?.status)
   const messages = useStore((s) => s.messages[sessionId])
   const gitIndex = useMemo(() => (gitBadges ? buildGitIndex(gitStatus) : { byPath: new Map(), dirs: new Map() }), [gitStatus, gitBadges])
+  // Files Claude changed in this chat get a dot; recomputed only when the transcript changes.
+  const edited = useMemo(() => editedFiles(messages, root), [messages, root])
   const [children, setChildren] = useState<Record<string, FsEntry[]>>({})
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -252,6 +255,7 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
             <span className={`name ${e.isDir ? 'dir' : 'file'}`}>{e.name}</span>
             {dirMark && !g.state && <span className={`dir-mark ${dirMark}`} data-tip={dirMark === 'untracked' ? 'contains untracked files' : 'contains changes'} />}
             {g.state && !(e.isDir && !isBundle && g.state !== 'untracked' && g.state !== 'ignored') && <span className={`g-badge st-${g.state}`}>{gitLetter(g.state)}</span>}
+            {!e.isDir && edited.has(e.path) && <span className="edited-mark" data-tip="Claude edited this file in this chat" />}
             {!e.isDir && showSizes && <span className="size">{formatBytes(e.size)}</span>}
           </div>
           {isOpen && renderDir(e.path, depth + 1)}

@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-06 (session 4, v1.0.6)
+Last updated: 2026-09-06 (session 4, v1.0.7)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -157,13 +157,24 @@ npm run build:mac  # produce dist/mac-arm64/ClaudeGUI.app (quit a running Claude
 - [x] Checked in an isolated instance (`CLAUDEGUI_USER_DATA=sandbox/dev-userdata`, debug port 45199)
       with injected example sessions; screenshots in `sandbox/shots/`
 
+### v1.0.7
+- [x] Plan-usage limits use the status-line thresholds (amber 50 %, red 90 %) and colours; settings
+      migration moves the untouched old default 80 to 50 (`SETTINGS_VERSION` 3)
+- [x] Tool cards coloured by kind; permission requests that cannot be undone are red with a tag
+- [x] Model name tinted by family (Fable violet, Opus blue, Sonnet teal, Haiku green)
+- [x] Status row: branch amber when ahead/behind and red on conflicts, folder size amber >5 GB,
+      red >20 GB
+- [x] File tree marks files Claude edited in this chat; tasks panel coloured by outcome
+- [x] The user picks design options through questions in the chat, not through documents in docs/
+
 ### Open after v1.0.6
 - The user updates their installed app themselves (Settings → About → check for updates); do not
   touch `dist/mac-arm64` while it runs. Their host is a 1.0.5 one since this session.
-- Plan-usage pills still use the app's own `usageWarnPercent` (their stored value is 80) and 95 % for
-  critical, not the status line's 50 / 90. Offer to align it if they want the same thresholds there.
-- Colour plan (docs/design/colour-plan.md): the state colours are settled (section A1/B1/C1); the
-  remaining items still wait for the user's choices.
+- Colour plan (docs/design/colour-plan.md) is a record only — the user does not read documents and
+  said to ask them in the chat instead. Chosen in 1.0.7: tool cards by kind, red destructive
+  approvals, tinted model names, branch/folder-size warnings, edited-file marks, task outcomes.
+  Declined: colouring the permission mode by risk. Still unasked: pinned icon colour, group-coloured
+  folders, message bubbles, thinking blocks, turn-footer check marks, window-level accents.
 - Restart-free updates were discussed and rejected for now: the window can only be replaced by
   restarting it (sessions survive because they live in the host); migrating sessions one by one to a
   new host would be needed to avoid the host restart. The user said not to build it.

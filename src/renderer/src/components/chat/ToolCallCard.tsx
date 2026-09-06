@@ -32,6 +32,23 @@ function toolIcon(name: string) {
   }
 }
 
+/**
+ * Colour family of a tool card's left edge, so the kind of work is recognizable while scrolling:
+ * reading blue, writing amber, shell grey, subagents purple, web green, notes teal.
+ */
+export function toolKind(name: string): string {
+  switch (name) {
+    case 'Bash': case 'BashOutput': case 'KillShell': return 'shell'
+    case 'Read': case 'Grep': case 'Glob': case 'NotebookRead': return 'read'
+    case 'Edit': case 'MultiEdit': case 'Write': case 'NotebookEdit': return 'write'
+    case 'Agent': case 'Task': case 'SendMessage': return 'agent'
+    case 'WebFetch': case 'WebSearch': return 'web'
+    case 'TodoWrite': case 'Skill': return 'note'
+    case 'AskUserQuestion': case 'ExitPlanMode': return 'ask'
+    default: return name.startsWith('mcp__') ? 'mcp' : 'other'
+  }
+}
+
 function str(v: unknown, max = 200): string {
   if (v == null) return ''
   const s = typeof v === 'string' ? v : JSON.stringify(v)
@@ -92,7 +109,7 @@ export function ToolCallCard({ block, depth = 0, renderChild }: { block: ToolUse
     }
   })()
 
-  const cls = `tool ${isError ? 'error' : ''} ${block.status === 'denied' ? 'denied' : ''} ${block.status === 'running' ? 'running' : ''}`
+  const cls = `tool kind-${toolKind(block.name)} ${isError ? 'error' : ''} ${block.status === 'denied' ? 'denied' : ''} ${block.status === 'running' ? 'running' : ''}`
   const displayName = block.name.startsWith('mcp__') ? 'MCP' : block.name
 
   return (

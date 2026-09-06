@@ -67,7 +67,7 @@ export class JsonFile<T> {
 }
 
 /** Bumped when a default changes in a way that should also apply to settings saved by older versions. */
-const SETTINGS_VERSION = 2
+const SETTINGS_VERSION = 3
 
 /** settings.json — owned by the app window process. */
 export class SettingsStore {
@@ -77,7 +77,12 @@ export class SettingsStore {
     const cur = this.settings.get() as AppSettings & { settingsVersion?: number }
     if ((cur.settingsVersion ?? 1) < 2) {
       // 1.0.3: folder header rows in the sidebar are off by default (sessions have their own groups now).
-      this.settings.update((s) => ({ ...s, groupSessionsByFolder: false, settingsVersion: SETTINGS_VERSION }) as AppSettings)
+      this.settings.update((s) => ({ ...s, groupSessionsByFolder: false, settingsVersion: 2 }) as AppSettings)
+    }
+    if ((this.settings.get() as AppSettings & { settingsVersion?: number }).settingsVersion !== SETTINGS_VERSION) {
+      // 1.0.7: plan-usage limits follow the terminal status line (amber from 50 %, red from 90 %).
+      // Only the untouched old default (80) is moved; a value the user chose themselves is kept.
+      this.settings.update((s) => ({ ...s, usageWarnPercent: s.usageWarnPercent === 80 ? 50 : s.usageWarnPercent, settingsVersion: SETTINGS_VERSION }) as AppSettings)
     }
   }
   get(): AppSettings {

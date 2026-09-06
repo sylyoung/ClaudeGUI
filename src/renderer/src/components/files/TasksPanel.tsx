@@ -10,6 +10,12 @@ function typeLabel(t: BackgroundTaskView): string {
   return s === 'bash' ? 'shell' : s
 }
 
+/** How a task ended, for its colour: running (blue/purple), done (green), failed or killed (red). */
+function taskOutcome(t: BackgroundTaskView): 'running' | 'done' | 'failed' {
+  if (isTaskActive(t)) return 'running'
+  return t.status === 'completed' ? 'done' : 'failed'
+}
+
 export function TasksPanel({ live, sessionId }: { live: SessionLiveState | undefined; sessionId: string }) {
   if (!live) return <div className="tasks faint">Session is not running.</div>
   const tasks = live.backgroundTasks.filter((t) => !t.ambient)
@@ -30,7 +36,7 @@ export function TasksPanel({ live, sessionId }: { live: SessionLiveState | undef
         <h4>Background tasks & subagents</h4>
         {tasks.length === 0 && <div className="faint">None running.</div>}
         {tasks.map((t) => (
-          <div className="task-item" key={t.taskId}>
+          <div className={`task-item out-${taskOutcome(t)}`} key={t.taskId}>
             <div className="t-title">
               {isTaskActive(t) ? <Loader2 size={12} className="spin" /> : null}
               {isAgentTask(t) ? <Bot size={12} /> : <TerminalSquare size={12} />}
