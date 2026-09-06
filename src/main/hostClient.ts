@@ -20,7 +20,9 @@ import type {
   PermissionDecision,
   PermissionMode,
   SdkUsage,
+  SessionGroup,
   SessionLiveState,
+  SessionMove,
   SessionRecord,
   SlashCommandView,
   ContextUsageView
@@ -325,13 +327,34 @@ export class HostClient extends EventEmitter {
 
   // ---------------------------------------------------------- typed helpers
 
-  list(): Promise<{ records: SessionRecord[]; live: SessionLiveState[] }> {
+  list(): Promise<{ records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] }> {
     return this.call('list')
+  }
+  createGroup(name: string): Promise<SessionGroup> {
+    return this.call('createGroup', name)
+  }
+  renameGroup(id: string, name: string): Promise<void> {
+    return this.call('renameGroup', id, name)
+  }
+  deleteGroup(id: string): Promise<void> {
+    return this.call('deleteGroup', id)
+  }
+  setGroupCollapsed(id: string, collapsed: boolean): Promise<void> {
+    return this.call('setGroupCollapsed', id, collapsed)
+  }
+  moveGroup(id: string, beforeId?: string): Promise<void> {
+    return this.call('moveGroup', id, beforeId ?? null)
+  }
+  moveSession(id: string, move: SessionMove): Promise<void> {
+    return this.call('moveSession', id, move)
+  }
+  relocate(id: string, cwd: string): Promise<SessionRecord> {
+    return this.call('relocate', id, cwd)
   }
   history(id: string): Promise<ChatMessage[]> {
     return this.call('history', id)
   }
-  create(opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }): Promise<SessionRecord> {
+  create(opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): Promise<SessionRecord> {
     return this.call('create', opts)
   }
   importCli(sessionId: string, cwd: string, title?: string): Promise<SessionRecord> {

@@ -245,12 +245,12 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
             onClick={(ev) => (ev.altKey || ev.metaKey ? void window.api.shell.openInEditor(e.path) : void activate(e))}
             onDoubleClick={() => onDouble(e)}
             onContextMenu={(ev) => entryMenu(ev, e)}
-            title={`${e.path}${g.state ? `\n(git: ${g.state}${g.staged ? ', staged' : ''})` : ''}`}
+            data-tip={`${e.path}${g.state ? `\n(git: ${g.state}${g.staged ? ', staged' : ''})` : ''}`}
           >
             <span className="chev">{e.isDir && !isBundle ? isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : null}</span>
             {iconFor(e, isOpen)}
             <span className={`name ${e.isDir ? 'dir' : 'file'}`}>{e.name}</span>
-            {dirMark && !g.state && <span className={`dir-mark ${dirMark}`} title={dirMark === 'untracked' ? 'contains untracked files' : 'contains changes'} />}
+            {dirMark && !g.state && <span className={`dir-mark ${dirMark}`} data-tip={dirMark === 'untracked' ? 'contains untracked files' : 'contains changes'} />}
             {g.state && !(e.isDir && !isBundle && g.state !== 'untracked' && g.state !== 'ignored') && <span className={`g-badge st-${g.state}`}>{gitLetter(g.state)}</span>}
             {!e.isDir && showSizes && <span className="size">{formatBytes(e.size)}</span>}
           </div>
@@ -262,10 +262,10 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
 
   return (
     <div className="tree" ref={containerRef}>
-      <div className="tree-root" title={root}>
+      <div className="tree-root" data-tip={root}>
         <Folder size={13} color="var(--folder)" /> <span className="ellipsis">{basename(root)}</span>
         {gitBadges && gitStatus?.info.isRepo && gitStatus.info.branch && <span className="faint mono" style={{ fontSize: 10.5, fontWeight: 400 }}>⎇ {gitStatus.info.branch}</span>}
-        <button className="btn ghost icon" style={{ marginLeft: 'auto' }} title="Refresh" onClick={() => { void load(root); for (const d of expanded) void load(d) }}>
+        <button className="btn ghost icon" style={{ marginLeft: 'auto' }} data-tip="Refresh" onClick={() => { void load(root); for (const d of expanded) void load(d) }}>
           <RefreshCw size={12} />
         </button>
       </div>

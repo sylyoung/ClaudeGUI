@@ -5,19 +5,13 @@ import { useStore } from '@/store'
 import { Modal } from '../common/Modal'
 import { shortenPath } from '@/lib/format'
 
-const MODES: { value: PermissionMode; label: string }[] = [
-  { value: 'default', label: 'Ask' },
-  { value: 'acceptEdits', label: 'Accept edits' },
-  { value: 'auto', label: 'Auto' },
-  { value: 'plan', label: 'Plan' },
-  { value: 'dontAsk', label: "Don't ask" },
-  { value: 'bypassPermissions', label: 'Bypass' }
-]
+import { EFFORTS, EFFORT_LABELS, MODES } from '@/lib/options'
 
 export function NewSessionDialog({ onClose }: { onClose: () => void }) {
   const settings = useStore((s) => s.settings)
   const appInfo = useStore((s) => s.appInfo)
   const records = useStore((s) => s.records)
+  const groups = useStore((s) => s.groups)
   const activeId = useStore((s) => s.activeId)
   const selectSession = useStore((s) => s.selectSession)
   const toast = useStore((s) => s.toast)
@@ -27,6 +21,7 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<PermissionMode>(settings?.defaultPermissionMode ?? 'default')
   const [effort, setEffort] = useState<EffortLevel | ''>(settings?.defaultEffort ?? '')
   const [prompt, setPrompt] = useState('')
+  const [groupId, setGroupId] = useState<string>(() => (activeId ? records[activeId]?.groupId ?? '' : ''))
   const [busy, setBusy] = useState(false)
 
   const recent = Array.from(new Set([...(settings?.recentDirectories ?? []), ...Object.values(records).map((r) => r.cwd)])).slice(0, 12)
@@ -44,7 +39,7 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
     if (!cwd.trim()) return
     setBusy(true)
     try {
-      const record = await window.api.sessions.create({ cwd: cwd.trim(), title: title || undefined, model: model || undefined, permissionMode: mode, effort })
+      const record = await window.api.sessions.create({ cwd: cwd.trim(), title: title || undefined, model: model || undefined, permissionMode: mode, effort, groupId: groupId || undefined })
       await selectSession(record.id)
       onClose()
       if (prompt.trim()) await window.api.sessions.send(record.id, prompt.trim())
@@ -68,7 +63,7 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
         {recent.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
             {recent.map((d) => (
-              <span key={d} className={`chip ${d === cwd ? 'active' : ''}`} onClick={() => setCwd(d)} title={d}>
+              <span key={d} className={`chip ${d === cwd ? 'active' : ''}`} onClick={() => setCwd(d)} data-tip={d}>
                 {shortenPath(d, appInfo?.homeDir)}
               </span>
             ))}
@@ -95,15 +90,24 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
           <label>Permission mode</label>
           <select className="select" style={{ maxWidth: 'none' }} value={mode} onChange={(e) => setMode(e.target.value as PermissionMode)}>
             {MODES.map((m) => (
-              <option key={m.value} value={m.value}>{m.label}</option>
+              <option key={m.value} value={m.value} title={m.hint}>{m.label}</option>
             ))}
           </select>
         </div>
         <div className="field">
           <label>Effort</label>
           <select className="select" style={{ maxWidth: 'none' }} value={effort} onChange={(e) => setEffort(e.target.value as EffortLevel | '')}>
-            {['', 'low', 'medium', 'high', 'xhigh', 'max'].map((e) => (
-              <option key={e} value={e}>{e || 'default'}</option>
+            {EFFORTS.map((e) => (
+              <option key={e} value={e}>{EFFORT_LABELS[e] ?? e}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Group</label>
+          <select className="select" style={{ maxWidth: 'none' }} value={groupId} onChange={(e) => setGroupId(e.target.value)} data-tip="Sidebar category for this session (create groups with the folder-plus button in the sidebar)">
+            <option value="">No group</option>
+            {[...groups].sort((a, b) => a.order - b.order).map((g) => (
+              <option key={g.id} value={g.id}>{g.name}</option>
             ))}
           </select>
         </div>

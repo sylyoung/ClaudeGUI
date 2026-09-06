@@ -2,12 +2,14 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import os from 'os'
 import path from 'path'
 import fs from 'fs'
-import type { AppInfo, AppSettings, EffortLevel, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, StartupNotice, ThemeInfo } from '@shared/types'
+import { execFile } from 'child_process'
+import type { AppInfo, AppSettings, DirInfo, EffortLevel, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, SessionMove, StartupNotice, ThemeInfo } from '@shared/types'
 import { splitList } from '@shared/util'
 import type { SettingsStore } from './store'
 import type { HostClient } from './hostClient'
 import type { UsageService } from './usageService'
 import type { Updater } from './updater'
+import type { PermissionService } from './permissions'
 import { DirWatcher, listDir, pathExists, probeFile, readFileContent, resolveMentionedPath } from './fsService'
 import { openExternal, openInEditor, openPath, openTerminal, openWithApp, showItemInFolder } from './shellService'
 import { getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache, getLoginShellEnv } from './env'
@@ -18,6 +20,7 @@ export interface IpcContext {
   host: HostClient
   usage: UsageService
   updater: Updater
+  permissions: PermissionService
   getWindow(): BrowserWindow | null
   resolveExecutable(): string
   sdkVersion: string
@@ -154,6 +157,54 @@ export function registerIpc(ctx: IpcContext): void {
   handle('sessions:commands', (id: string) => host.commands(id))
   handle('sessions:models', (id: string) => host.models(id))
   handle('sessions:contextUsage', (id: string, full?: boolean) => host.contextUsage(id, full))
+  handle('sessions:createGroup', (name: string) => host.createGroup(name))
+  handle('sessions:renameGroup', (id: string, name: string) => host.renameGroup(id, name))
+  handle('sessions:deleteGroup', (id: string) => host.deleteGroup(id))
+  handle('sessions:setGroupCollapsed', (id: string, collapsed: boolean) => host.setGroupCollapsed(id, collapsed))
+  handle('sessions:moveGroup', (id: string, beforeId?: string) => host.moveGroup(id, beforeId))
+  handle('sessions:moveSession', (id: string, move: SessionMove) => host.moveSession(id, move))
+  handle('sessions:relocate', async (id: string, cwd?: string) => {
+    let target = cwd
+    if (!target) {
+      const win = ctx.getWindow()
+      const current = (await host.list()).records.find((r) => r.id === id)
+      const res = await dialog.showOpenDialog(win ?? (undefined as never), {
+        title: 'Choose the new working directory for this session',
+        properties: ['openDirectory', 'createDirectory'],
+        defaultPath: current ? path.dirname(current.cwd) : settings().defaultCwd || os.homedir()
+      })
+      if (res.canceled || !res.filePaths.length) return null
+      target = res.filePaths[0]
+    }
+    return host.relocate(id, target)
+  })
+
+  // ---- working directory size (du), cached per folder for five minutes
+  const dirCache = new Map<string, DirInfo>()
+  handle('fs:dirInfo', async (dir: string, force?: boolean): Promise<DirInfo> => {
+    const cached = dirCache.get(dir)
+    if (cached && !force && Date.now() - cached.checkedAt < 5 * 60_000) return cached
+    if (!fs.existsSync(dir)) {
+      const info: DirInfo = { path: dir, exists: false, checkedAt: Date.now() }
+      dirCache.set(dir, info)
+      return info
+    }
+    const info = await new Promise<DirInfo>((resolve) => {
+      execFile('/usr/bin/du', ['-sk', '-x', dir], { timeout: 45_000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        const m = /^(\d+)/.exec(String(stdout || '').trim())
+        const kb = m ? Number(m[1]) : undefined
+        resolve({ path: dir, exists: true, bytes: kb !== undefined ? kb * 1024 : undefined, checkedAt: Date.now(), partial: Boolean(err) })
+      })
+    })
+    dirCache.set(dir, info)
+    return info
+  })
+
+  // ---- macOS privacy permissions
+  handle('perm:list', () => ctx.permissions.list())
+  handle('perm:request', (key: string) => ctx.permissions.request(key))
+  handle('perm:requestAll', () => ctx.permissions.requestAll())
+  handle('perm:openPane', (key: string) => ctx.permissions.openPane(key))
 
   // ---- filesystem
   handle('fs:list', (dir: string, showHidden: boolean) => listDir(dir, showHidden, splitList(settings().excludePatterns)))

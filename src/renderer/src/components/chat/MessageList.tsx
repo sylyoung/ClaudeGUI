@@ -50,7 +50,7 @@ export function MessageList({
     <div className="messages" ref={ref} onScroll={onScroll}>
       <div className="messages-inner">
         {hidden > 0 && (
-          <button className="btn ghost" style={{ alignSelf: 'center' }} onClick={() => setLimit((l) => l + PAGE * 2)}>
+          <button data-tip="Show earlier messages" className="btn ghost" style={{ alignSelf: 'center' }} onClick={() => setLimit((l) => l + PAGE * 2)}>
             Show {Math.min(hidden, PAGE * 2)} earlier messages ({hidden} hidden)
           </button>
         )}
@@ -63,7 +63,7 @@ export function MessageList({
         ))}
       </div>
       {!stick && (
-        <button className="jump-bottom" onClick={() => { setStick(true); if (ref.current) ref.current.scrollTop = ref.current.scrollHeight }}>
+        <button data-tip="Jump to the newest message and follow new output" className="jump-bottom" onClick={() => { setStick(true); if (ref.current) ref.current.scrollTop = ref.current.scrollHeight }}>
           <ArrowDown size={12} style={{ verticalAlign: -2 }} /> latest
         </button>
       )}

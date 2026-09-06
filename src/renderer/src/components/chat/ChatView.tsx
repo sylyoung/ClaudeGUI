@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Bot, ChevronDown, Ellipsis, FolderOpen, GitBranch, Loader2, Power, Square, TerminalSquare } from 'lucide-react'
-import type { EffortLevel, PermissionDecision, PermissionMode, SessionLiveState, SessionRecord } from '@shared/types'
+import { AlertTriangle, Bot, ChevronDown, Ellipsis, FolderOpen, GitBranch, Github, HardDrive, Loader2, Power, Square, TerminalSquare } from 'lucide-react'
+import type { DirInfo, EffortLevel, PermissionDecision, PermissionMode, SessionLiveState, SessionRecord } from '@shared/types'
 import { useStore } from '@/store'
 import { MessageList } from './MessageList'
 import { Composer } from './Composer'
@@ -8,26 +8,40 @@ import { ContextBar } from './ContextBar'
 import { ChatProvider, type ChatCtx } from './ChatContext'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
 import { UsageStatus } from '../status/UsageStatus'
-import { formatCost, modelLabel, shortenPath } from '@/lib/format'
-import { taskCounts } from '@/lib/tasks'
+import { formatBytes, formatDateTime, modelLabel, shortenPath, timeAgo } from '@/lib/format'
+import { visualState } from '@/lib/sessionState'
+import { sessionMenuItems } from '@/lib/sessionMenu'
 
-const MODES: { value: PermissionMode; label: string; hint: string }[] = [
-  { value: 'default', label: 'Ask', hint: 'Ask before risky actions' },
-  { value: 'acceptEdits', label: 'Accept edits', hint: 'Auto-accept file edits' },
-  { value: 'auto', label: 'Auto', hint: 'Classifier approves safe actions' },
-  { value: 'plan', label: 'Plan', hint: 'Read-only planning' },
-  { value: 'dontAsk', label: "Don't ask", hint: 'Deny anything not pre-approved' },
-  { value: 'bypassPermissions', label: 'Bypass', hint: 'Skip all permission checks' }
-]
+import { EFFORTS, EFFORT_LABELS, MODES } from '@/lib/options'
+
 const EMPTY_MESSAGES: never[] = []
-const EFFORTS: (EffortLevel | '')[] = ['', 'low', 'medium', 'high', 'xhigh', 'max']
 const FALLBACK_MODELS = [
   { value: '', label: 'Default (settings.json)' },
-  { value: 'claude-fable-5-1', label: 'Fable 5.1' },
-  { value: 'claude-opus-5', label: 'Opus 5' },
-  { value: 'claude-sonnet-5', label: 'Sonnet 5' },
-  { value: 'claude-haiku-4-5', label: 'Haiku 4.5' }
+  { value: 'claude-fable-5-1', label: 'Fable 5.1 (claude-fable-5-1)' },
+  { value: 'claude-opus-5', label: 'Opus 5 (claude-opus-5)' },
+  { value: 'claude-sonnet-5', label: 'Sonnet 5 (claude-sonnet-5)' },
+  { value: 'claude-haiku-4-5', label: 'Haiku 4.5 (claude-haiku-4-5)' }
 ]
+
+/** Size of the working directory (du), refreshed when a turn ends and every five minutes. */
+function useDirInfo(cwd: string, status: string | undefined): DirInfo | null {
+  const [info, setInfo] = useState<DirInfo | null>(null)
+  const idle = status === 'idle' || status === 'stopped' || status === 'error'
+  useEffect(() => {
+    let cancelled = false
+    const load = (force?: boolean) => window.api.fs.dirInfo(cwd, force).then((i) => !cancelled && setInfo(i)).catch(() => undefined)
+    void load()
+    const t = setInterval(() => void load(true), 5 * 60_000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [cwd])
+  useEffect(() => {
+    if (idle) window.api.fs.dirInfo(cwd, true).then(setInfo).catch(() => undefined)
+  }, [idle, cwd])
+  return info
+}
 
 export function ChatView({ record, live }: { record: SessionRecord; live: SessionLiveState | undefined }) {
   const messages = useStore((s) => s.messages[record.id] ?? EMPTY_MESSAGES)
@@ -37,6 +51,9 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const showPanelTab = useStore((s) => s.showPanelTab)
   const openBinaryExternally = useStore((s) => s.settings?.openBinaryWithSystemApp ?? true)
   const gitBranch = useStore((s) => s.git[record.id]?.status?.info.branch)
+  const gitInfo = useStore((s) => s.git[record.id]?.status?.info)
+  const groups = useStore((s) => s.groups)
+  const interruptSession = useStore((s) => s.interruptSession)
   const send = useStore((s) => s.send)
   const answer = useStore((s) => s.answerPermission)
   const toast = useStore((s) => s.toast)
@@ -47,6 +64,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const [editingTitle, setEditingTitle] = useState(false)
 
   const status = live?.status ?? 'stopped'
+  const dirInfo = useDirInfo(record.cwd, live?.status)
 
   const openPath = useCallback<ChatCtx['openPath']>(
     async (raw, line, opts) => {
@@ -100,7 +118,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const ctx = useMemo<ChatCtx>(() => ({ sessionId: record.id, cwd: record.cwd, openPath, showPathMenu }), [record.id, record.cwd, openPath, showPathMenu])
 
   const onSend = useCallback((text: string, images: { mediaType: string; data: string; name?: string }[]) => void send(record.id, text, images), [record.id, send])
-  const onInterrupt = useCallback(() => window.api.sessions.interrupt(record.id).catch((e) => toast(e.message, 'error')), [record.id, toast])
+  const onInterrupt = useCallback(() => void interruptSession(record.id), [record.id, interruptSession])
   const onAnswer = useCallback((requestId: string, d: PermissionDecision) => void answer(record.id, requestId, d), [record.id, answer])
 
   useEffect(() => {
@@ -122,41 +140,33 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     return () => window.removeEventListener('keydown', onKey)
   }, [live?.pendingPermissions, onAnswer])
 
-  const models = live?.models?.length ? live.models.map((m) => ({ value: m.value, label: m.displayName })) : FALLBACK_MODELS
+  const models = live?.models?.length ? live.models.map((m) => ({ value: m.value, label: `${m.displayName} (${m.value})` })) : FALLBACK_MODELS
   const currentModel = record.model ?? ''
-  const defaultLabel = live?.model && !record.model ? `Default (${modelLabel(live.model)})` : 'Default (settings.json)'
+  const defaultLabel = live?.model && !record.model ? `Default — ${modelLabel(live.model)} (${live.model})` : 'Default (from settings.json)'
   const withDefault = [{ value: '', label: defaultLabel }, ...models.filter((m) => m.value !== '')]
-  const modelOptions = withDefault.some((m) => m.value === currentModel) ? withDefault : [...withDefault, { value: currentModel, label: modelLabel(currentModel) }]
-  const counts = taskCounts(live)
+  const modelOptions = withDefault.some((m) => m.value === currentModel) ? withDefault : [...withDefault, { value: currentModel, label: `${modelLabel(currentModel)} (${currentModel})` }]
+  const vs = visualState(live)
+  const counts = { background: vs.background, subagents: vs.subagents }
 
   const statusPill = (() => {
-    switch (status) {
-      case 'running': return <span className="pill green"><Loader2 size={11} className="spin" /> {live?.activity === 'compacting' ? 'compacting' : live?.activeTools?.length ? `running ${live.activeTools[live.activeTools.length - 1].toolName}` : 'working'}</span>
-      case 'requires_action': return <span className="pill amber">needs your input</span>
-      case 'starting': return <span className="pill blue"><Loader2 size={11} className="spin" /> starting</span>
-      case 'idle': return <span className="pill green">idle</span>
-      case 'error': return <span className="pill red" title={live?.error}>error</span>
-      default: return <span className="pill">not running</span>
+    const tip = vs.description
+    switch (vs.key) {
+      case 'working': return <span className="pill blue" data-tip={tip}><Loader2 size={11} className="spin" /> working</span>
+      case 'attention': return <span className="pill amber" data-tip={tip}>needs your input</span>
+      case 'starting': return <span className="pill blue" data-tip={tip}><Loader2 size={11} className="spin" /> starting</span>
+      case 'idle-tasks': return <span className="pill teal" data-tip={tip}>idle · tasks running</span>
+      case 'idle': return <span className="pill green" data-tip={tip}>idle</span>
+      case 'error': return <span className="pill red" data-tip={tip}>error</span>
+      default: return <span className="pill" data-tip={tip}>not running</span>
     }
   })()
 
   const moreMenu = (e: React.MouseEvent) => {
-    const items: MenuItem[] = [
-      { label: 'Rename…', onClick: () => setEditingTitle(true) },
-      { label: record.pinned ? 'Unpin' : 'Pin to top', onClick: () => window.api.sessions.setPinned(record.id, !record.pinned) },
-      { label: record.archived ? 'Unarchive' : 'Archive', onClick: () => window.api.sessions.setArchived(record.id, !record.archived) },
-      { label: '', onClick: () => undefined, separator: true },
-      { label: 'Open folder in Terminal', onClick: () => window.api.shell.openTerminal(record.cwd) },
-      { label: 'Reveal folder in Finder', onClick: () => window.api.shell.openPath(record.cwd) },
-      { label: 'Copy resume command', onClick: async () => { await window.api.shell.copy(`cd "${record.cwd}" && claude --resume ${record.claudeSessionId}`); toast('Copied: claude --resume …', 'success') } },
-      { label: 'Copy session id', onClick: async () => { await window.api.shell.copy(record.claudeSessionId); toast('Session id copied', 'success') } },
-      { label: '', onClick: () => undefined, separator: true },
-      { label: live?.processAlive ? 'Stop process (keeps history)' : 'Start process', onClick: () => (live?.processAlive ? window.api.sessions.stop(record.id) : window.api.sessions.start(record.id)).catch((err) => toast(err.message, 'error')) },
-      { label: 'Delete session…', danger: true, onClick: () => { if (confirm(`Delete "${record.title}" from ClaudeGUI?\n\nThe Claude Code transcript on disk is kept unless you also choose to delete it next.`)) { const del = confirm('Also delete the transcript file from ~/.claude/projects? (Cancel = keep it)'); void window.api.sessions.remove(record.id, del) } } }
-    ]
-    setMenu({ x: e.clientX, y: e.clientY, items })
+    setMenu({ x: e.clientX, y: e.clientY, items: sessionMenuItems(record, live, { groups, toast, onRename: () => setEditingTitle(true) }) })
   }
 
+  const remoteLabel = gitInfo?.remoteWebUrl ? gitInfo.remoteWebUrl.replace(/^https?:\/\//, '') : gitInfo?.remoteUrl ? gitInfo.remoteUrl.replace(/^.*@/, '').replace(/\.git$/, '') : undefined
+  const lastTs = live?.lastActivityAt ?? record.lastActiveAt
   const rl = live?.rateLimit
   return (
     <ChatProvider value={ctx}>
@@ -176,81 +186,104 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
               if (e.key === 'Enter') { e.preventDefault(); (e.currentTarget as HTMLElement).blur() }
               if (e.key === 'Escape') { e.currentTarget.textContent = record.title; (e.currentTarget as HTMLElement).blur() }
             }}
-            title="Double-click to rename"
+            data-tip="Double-click to rename this session"
           >
             {record.title}
           </span>
           {statusPill}
           {counts.background > 0 && (
-            <button className="pill no-drag clickable" title={`${counts.background} background task(s) — click to open Tasks`} onClick={() => showPanelTab('tasks')}>
-              <TerminalSquare size={11} /> {counts.background} bg
+            <button className="chip bg no-drag" data-tip={`${counts.background} background shell${counts.background === 1 ? '' : 's'} / monitor${counts.background === 1 ? '' : 's'} running — click to open the Tasks tab`} onClick={() => showPanelTab('tasks')}>
+              <TerminalSquare size={12} /> {counts.background} background
             </button>
           )}
           {counts.subagents > 0 && (
-            <button className="pill no-drag clickable" title={`${counts.subagents} subagent(s) running — click to open Tasks`} onClick={() => showPanelTab('tasks')}>
-              <Bot size={11} /> {counts.subagents} agent{counts.subagents === 1 ? '' : 's'}
+            <button className="chip agent no-drag" data-tip={`${counts.subagents} subagent${counts.subagents === 1 ? '' : 's'} working — click to open the Tasks tab`} onClick={() => showPanelTab('tasks')}>
+              <Bot size={12} /> {counts.subagents} subagent{counts.subagents === 1 ? '' : 's'}
             </button>
           )}
-          <span className="cwd no-drag" title={record.cwd} onClick={() => window.api.shell.openPath(record.cwd)}>
+          <span className="cwd no-drag" data-tip={`Working directory: ${record.cwd}\nClick to reveal it in Finder`} onClick={() => window.api.shell.openPath(record.cwd)}>
             <FolderOpen size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
             {shortenPath(record.cwd, appInfo?.homeDir)}
           </span>
           {gitBranch && (
-            <button className="cwd no-drag" title="Open the Git panel" onClick={() => showPanelTab('git')}>
+            <button className="cwd no-drag" data-tip={`Git branch ${gitBranch} — click to open the Git panel`} onClick={() => showPanelTab('git')}>
               <GitBranch size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
               {gitBranch}
             </button>
           )}
           <span className="spacer" />
           {!filesOpen && <UsageStatus compact />}
-          <button className="btn ghost icon no-drag" title="Open folder in terminal" onClick={() => window.api.shell.openTerminal(record.cwd)}>
+          <button className="btn ghost icon no-drag" data-tip="Open the working directory in a Terminal window" onClick={() => window.api.shell.openTerminal(record.cwd)}>
             <TerminalSquare size={15} />
           </button>
           {live?.processAlive ? (
-            <button className="btn ghost icon no-drag" title="Stop the Claude process (history is kept; it resumes on next message)" onClick={() => window.api.sessions.stop(record.id)}>
+            <button className="btn ghost icon no-drag" data-tip="Stop the Claude process and its background tasks (history is kept; the next message starts it again)" onClick={() => window.api.sessions.stop(record.id)}>
               <Power size={15} />
             </button>
           ) : null}
-          <button className="btn ghost icon no-drag" title="More" onClick={moreMenu}>
+          <button className="btn ghost icon no-drag" data-tip="More actions: rename, pin, archive, move to group, change working directory, delete…" onClick={moreMenu}>
             <Ellipsis size={15} />
           </button>
         </div>
+        {live?.cwdMissing && (
+          <div className="cwd-missing">
+            <AlertTriangle size={14} />
+            <div className="body">
+              This session's folder no longer exists: <code>{record.cwd}</code>. Point it at the folder's new location; the transcript moves along so nothing is lost.
+            </div>
+            <button className="btn sm primary" onClick={() => window.api.sessions.relocate(record.id).then((r) => r && toast(`Working directory is now ${r.cwd}`, 'success')).catch((err) => toast(err.message, 'error'))}>
+              Choose folder…
+            </button>
+          </div>
+        )}
         <div className="chat-toolbar">
-          <label>
+          <label data-tip="Model used for this session's next turns (full model id in parentheses)">
             model
-            <select className="select" style={{ marginLeft: 6 }} value={currentModel} onChange={(e) => window.api.sessions.setModel(record.id, e.target.value).catch((err) => toast(err.message, 'error'))}>
+            <select className="select" style={{ marginLeft: 6, maxWidth: 320 }} value={currentModel} onChange={(e) => window.api.sessions.setModel(record.id, e.target.value).catch((err) => toast(err.message, 'error'))}>
               {modelOptions.map((m) => (
                 <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
           </label>
-          <label>
+          <label data-tip={`Permission mode: what Claude may do without asking.\n${MODES.map((m) => `${m.value}: ${m.hint}`).join('\n')}`}>
             permissions
-            <select className="select" style={{ marginLeft: 6 }} value={live?.permissionMode ?? record.permissionMode} onChange={(e) => window.api.sessions.setPermissionMode(record.id, e.target.value as PermissionMode).catch((err) => toast(err.message, 'error'))}>
+            <select className="select" style={{ marginLeft: 6, maxWidth: 380 }} value={live?.permissionMode ?? record.permissionMode} onChange={(e) => window.api.sessions.setPermissionMode(record.id, e.target.value as PermissionMode).catch((err) => toast(err.message, 'error'))}>
               {MODES.map((m) => (
                 <option key={m.value} value={m.value} title={m.hint}>{m.label}</option>
               ))}
             </select>
           </label>
-          <label>
+          <label data-tip="Effort level: how much reasoning the model spends per turn (higher = slower, more thorough)">
             effort
-            <select className="select" style={{ marginLeft: 6 }} value={record.effort ?? ''} onChange={(e) => window.api.sessions.setEffort(record.id, e.target.value as EffortLevel | '').catch((err) => toast(err.message, 'error'))}>
+            <select className="select" style={{ marginLeft: 6, maxWidth: 240 }} value={record.effort ?? ''} onChange={(e) => window.api.sessions.setEffort(record.id, e.target.value as EffortLevel | '').catch((err) => toast(err.message, 'error'))}>
               {EFFORTS.map((e) => (
-                <option key={e} value={e}>{e || 'default'}</option>
+                <option key={e} value={e}>{EFFORT_LABELS[e] ?? e}</option>
               ))}
             </select>
           </label>
           <span className="spacer" />
+          <span className="tb-info" data-tip={`Last activity in this chat: ${formatDateTime(lastTs)}`}>
+            {formatDateTime(lastTs)} <span className="faint">({timeAgo(lastTs)})</span>
+          </span>
+          {dirInfo?.exists && dirInfo.bytes !== undefined && (
+            <span className="tb-info" data-tip={`Size of the working directory (du -sk, refreshed after each turn and every 5 minutes; checked ${formatDateTime(dirInfo.checkedAt)})`}>
+              <HardDrive size={11} /> {formatBytes(dirInfo.bytes)}
+            </span>
+          )}
+          {remoteLabel && (
+            <button className="tb-info clickable" data-tip={`Git remote ${gitInfo?.remoteName ?? 'origin'}: ${gitInfo?.remoteUrl ?? ''}${gitInfo?.remoteWebUrl ? '\nClick to open it in the browser' : ''}`} onClick={() => gitInfo?.remoteWebUrl && window.api.shell.openExternal(gitInfo.remoteWebUrl)}>
+              <Github size={11} /> {remoteLabel}
+              {gitInfo && (gitInfo.ahead || gitInfo.behind) ? <span className="faint"> {gitInfo.ahead ? `↑${gitInfo.ahead}` : ''}{gitInfo.behind ? ` ↓${gitInfo.behind}` : ''}</span> : null}
+            </button>
+          )}
           <ContextBar sessionId={record.id} live={live} />
-          {live?.totalCostUsd ? <span title="Estimated cost of this session's turns">{formatCost(live.totalCostUsd)}</span> : null}
           {rl && rl.status !== 'allowed' && (
-            <span className={rl.status === 'rejected' ? 'pill red' : 'pill amber'} title={`Rate limit (${rl.rateLimitType})`}>
+            <span className={rl.status === 'rejected' ? 'pill red' : 'pill amber'} data-tip={`Rate limit (${rl.rateLimitType})`}>
               {rl.status === 'rejected' ? 'rate limited' : 'near limit'}
             </span>
           )}
-          {live?.claudeVersion ? <span className="faint">v{live.claudeVersion}</span> : null}
-          {status === 'running' && (
-            <button className="btn danger sm" onClick={onInterrupt}>
+          {(status === 'running' || status === 'requires_action') && (
+            <button className="btn danger sm" onClick={onInterrupt} data-tip="Stop the current turn (⌘.). The prompt you sent goes back into the input box.">
               <Square size={11} /> Stop
             </button>
           )}

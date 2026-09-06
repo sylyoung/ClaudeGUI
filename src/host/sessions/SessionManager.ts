@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import fs from 'fs'
+import { compareRecords } from '@shared/util'
 import { deleteSession, listSessions } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AppSettings,
@@ -13,6 +14,8 @@ import type {
   SessionEvent,
   SessionLiveState,
   SdkUsage,
+  SessionGroup,
+  SessionMove,
   SessionRecord
 } from '@shared/types'
 import type { SessionsStore } from '../../main/store'
@@ -92,15 +95,100 @@ export class SessionManager {
 
   // ---------------------------------------------------------------- queries
 
-  list(): { records: SessionRecord[]; live: SessionLiveState[] } {
+  list(): { records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] } {
     const records: SessionRecord[] = []
     const live: SessionLiveState[] = []
     for (const rt of this.runtimes.values()) {
+      if (!rt.isAlive) rt.live.cwdMissing = !dirExists(rt.record.cwd)
       records.push(rt.record)
       live.push(rt.live)
     }
-    records.sort((a, b) => b.lastActiveAt - a.lastActiveAt)
-    return { records, live }
+    records.sort(compareRecords)
+    return { records, live, groups: this.store.listGroups() }
+  }
+
+  // ------------------------------------------------------------------ groups
+
+  private broadcastGroups(): void {
+    this.host.broadcast({ type: 'groups', groups: this.store.listGroups() })
+  }
+
+  createGroup(name: string): SessionGroup {
+    const groups = this.store.listGroups()
+    const group: SessionGroup = { id: randomUUID(), name: name.trim() || 'New group', order: (groups[groups.length - 1]?.order ?? -1) + 1 }
+    this.store.setGroups([...groups, group])
+    this.broadcastGroups()
+    return group
+  }
+
+  renameGroup(id: string, name: string): void {
+    const groups = this.store.listGroups().map((g) => (g.id === id ? { ...g, name: name.trim() || g.name } : g))
+    this.store.setGroups(groups)
+    this.broadcastGroups()
+  }
+
+  setGroupCollapsed(id: string, collapsed: boolean): void {
+    this.store.setGroups(this.store.listGroups().map((g) => (g.id === id ? { ...g, collapsed } : g)))
+    this.broadcastGroups()
+  }
+
+  /** Reorder a group: put it before `beforeId` (or last when omitted). */
+  moveGroup(id: string, beforeId?: string): void {
+    const groups = this.store.listGroups()
+    const moving = groups.find((g) => g.id === id)
+    if (!moving) return
+    const rest = groups.filter((g) => g.id !== id)
+    const idx = beforeId ? rest.findIndex((g) => g.id === beforeId) : -1
+    rest.splice(idx >= 0 ? idx : rest.length, 0, moving)
+    this.store.setGroups(rest.map((g, i) => ({ ...g, order: i })))
+    this.broadcastGroups()
+  }
+
+  /** Delete a group; its sessions become ungrouped (nothing is removed). */
+  deleteGroup(id: string): void {
+    this.store.setGroups(this.store.listGroups().filter((g) => g.id !== id).map((g, i) => ({ ...g, order: i })))
+    for (const rt of this.runtimes.values()) {
+      if (rt.record.groupId === id) {
+        rt.record.groupId = undefined
+        this.store.upsertSession(rt.record)
+        this.host.broadcast({ type: 'record', record: rt.record })
+      }
+    }
+    this.broadcastGroups()
+  }
+
+  /** Place a session inside a group at a position (drag & drop, "Move to group"). */
+  moveSession(id: string, move: SessionMove): void {
+    const rt = this.get(id)
+    const target = move.groupId || undefined
+    const members = [...this.runtimes.values()].filter((r) => r.id !== id && (r.record.groupId || undefined) === target).sort((a, b) => compareRecords(a.record, b.record))
+    const idx = move.beforeId ? members.findIndex((r) => r.id === move.beforeId) : -1
+    members.splice(idx >= 0 ? idx : members.length, 0, rt)
+    rt.record.groupId = target
+    members.forEach((r, i) => {
+      r.record.order = i
+    })
+    this.store.replaceSessions((list) => list.map((s) => this.runtimes.get(s.id)?.record ?? s))
+    for (const r of members) this.host.broadcast({ type: 'record', record: r.record })
+  }
+
+  /** Point a session at another folder (e.g. after the folder was renamed) and move its transcript along. */
+  async relocate(id: string, newCwd: string): Promise<SessionRecord> {
+    const rt = this.get(id)
+    const cwd = newCwd.replace(/\/+$/, '') || '/'
+    if (!dirExists(cwd)) throw new Error(`Directory does not exist: ${cwd}`)
+    if (rt.isAlive) await rt.stop(true)
+    rt.moveTranscript(cwd)
+    rt.record.cwd = cwd
+    rt.live.cwd = cwd
+    rt.live.cwdMissing = false
+    rt.live.error = undefined
+    if (rt.live.status === 'error') rt.live.status = 'stopped'
+    this.store.upsertSession(rt.record)
+    this.host.broadcast({ type: 'record', record: rt.record })
+    this.host.broadcast({ type: 'state', state: { ...rt.live } })
+    this.host.log(`[manager] relocated ${id} -> ${cwd}`)
+    return rt.record
   }
 
   get(id: string): SessionRuntime {
@@ -115,12 +203,22 @@ export class SessionManager {
 
   // --------------------------------------------------------------- mutations
 
-  create(opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }): SessionRecord {
+  /** New sessions go to the top of their group; the position only changes by drag & drop. */
+  private topOrder(groupId: string | undefined): number {
+    let min = 0
+    for (const rt of this.runtimes.values()) {
+      if ((rt.record.groupId || undefined) === (groupId || undefined) && typeof rt.record.order === 'number' && rt.record.order < min) min = rt.record.order
+    }
+    return min - 1
+  }
+
+  create(opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): SessionRecord {
     const cwd = opts.cwd.replace(/\/+$/, '') || '/'
-    if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error(`Directory does not exist: ${cwd}`)
+    if (!dirExists(cwd)) throw new Error(`Directory does not exist: ${cwd}`)
     const id = randomUUID()
     const now = Date.now()
     const settings = this.host.getSettings()
+    const groupId = opts.groupId && this.store.listGroups().some((g) => g.id === opts.groupId) ? opts.groupId : undefined
     const record: SessionRecord = {
       id,
       claudeSessionId: id,
@@ -132,7 +230,9 @@ export class SessionManager {
       effort: (opts.effort ?? settings.defaultEffort) || undefined,
       createdAt: now,
       lastActiveAt: now,
-      source: 'gui'
+      source: 'gui',
+      groupId,
+      order: this.topOrder(groupId)
     }
     this.store.upsertSession(record)
     const rt = this.makeRuntime(record)
@@ -158,7 +258,8 @@ export class SessionManager {
       effort: settings.defaultEffort || undefined,
       createdAt: now,
       lastActiveAt: now,
-      source: 'cli-import'
+      source: 'cli-import',
+      order: this.topOrder(undefined)
     }
     this.store.upsertSession(record)
     const rt = this.makeRuntime(record)
@@ -297,5 +398,13 @@ export class SessionManager {
       rt.ensureStarted().catch((err) => this.host.log(`[manager] resume ${rt.id} failed: ${(err as Error).message}`))
       await new Promise((r) => setTimeout(r, 1500))
     }
+  }
+}
+
+function dirExists(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
   }
 }

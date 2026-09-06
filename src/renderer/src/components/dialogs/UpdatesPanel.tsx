@@ -191,7 +191,7 @@ export function UpdatesPanel({ draft, upd }: { draft: AppSettings; upd: (patch: 
           <button
             className="btn sm"
             disabled={!host?.connected || (host?.aliveSessions ?? 0) > 0}
-            title={(host?.aliveSessions ?? 0) > 0 ? 'Stop all sessions first' : 'Start a fresh session host process'}
+            data-tip={(host?.aliveSessions ?? 0) > 0 ? 'Stop all sessions first' : 'Start a fresh session host process'}
             onClick={() => run(() => window.api.host.restart().then(refreshHost), 'Restart host')}
           >
             <RotateCw size={12} /> Restart session host

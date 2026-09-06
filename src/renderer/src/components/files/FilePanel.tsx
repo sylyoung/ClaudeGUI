@@ -48,7 +48,7 @@ export function FilePanel({ record, live }: { record: SessionRecord; live: Sessi
   const tasksN = counts.background + counts.subagents
   const effective: PanelTab = tab === 'git' && !gitEnabled ? 'files' : tab
   const tabBtn = (id: PanelTab, icon: React.ReactNode, label: string, count?: number, title?: string) => (
-    <button className={`tab no-drag ${effective === id ? 'active' : ''}`} onClick={() => setFilesTab(record.id, id)} title={title ?? label}>
+    <button className={`tab no-drag ${effective === id ? 'active' : ''}`} onClick={() => setFilesTab(record.id, id)} data-tip={title ?? label}>
       {icon}
       <span className="tab-label">{label}</span>
       {count ? <span className="count">{count}</span> : null}

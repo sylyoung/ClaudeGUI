@@ -15,9 +15,39 @@ mac:
       arch: [arm64]
   category: public.app-category.developer-tools
   icon: resources/icon.png
-  identity: null
+  # Signed with an "Apple Development" identity when one is in the keychain (a stable identity keeps
+  # macOS privacy grants across updates); otherwise electron-builder skips signing and the app runs unsigned.
+  type: development
+  # No timestamp server round-trip: codesign ignores proxy variables and would wait for
+  # timestamp.apple.com; timestamps only matter for distribution, not for a local build.
+  timestamp: none
   hardenedRuntime: false
   gatekeeperAssess: false
   extendInfo:
     NSHumanReadableCopyright: Local Claude Code session manager
+    # Usage descriptions: without them macOS silently denies (or terminates) access from the app and
+    # from the Claude Code processes it is responsible for.
+    NSAppleEventsUsageDescription: ClaudeGUI and the Claude Code sessions it runs control other apps through AppleScript when you ask them to.
+    NSDesktopFolderUsageDescription: Claude Code sessions read and write files on your Desktop when you work there.
+    NSDocumentsFolderUsageDescription: Claude Code sessions read and write files in Documents when you work there.
+    NSDownloadsFolderUsageDescription: Claude Code sessions read and write files in Downloads when you work there.
+    NSRemovableVolumesUsageDescription: Claude Code sessions read and write files on external disks when you work there.
+    NSNetworkVolumesUsageDescription: Claude Code sessions read and write files on network volumes when you work there.
+    NSFileProviderDomainUsageDescription: Claude Code sessions read and write files in cloud folders (iCloud Drive, Dropbox…) when you work there.
+    NSCameraUsageDescription: Only used when a tool you run asks for the camera.
+    NSMicrophoneUsageDescription: Only used when a tool you run records audio.
+    NSSpeechRecognitionUsageDescription: Only used when a tool you run transcribes speech.
+    NSLocalNetworkUsageDescription: Tools you run may talk to devices and servers on your local network.
+    NSBluetoothAlwaysUsageDescription: Only used when a tool you run accesses Bluetooth devices.
+    NSCalendarsUsageDescription: Only used when a tool you run reads your calendars.
+    NSRemindersUsageDescription: Only used when a tool you run reads your reminders.
+    NSContactsUsageDescription: Only used when a tool you run reads your contacts.
+    NSPhotoLibraryUsageDescription: Only used when a tool you run reads your photo library.
+    NSLocationUsageDescription: Only used when a tool you run needs your location.
+    NSLocationWhenInUseUsageDescription: Only used when a tool you run needs your location.
+    NSMotionUsageDescription: Only used when a tool you run reads motion data.
+    NSAppleMusicUsageDescription: Only used when a tool you run reads your music library.
+    NSHomeKitUsageDescription: Only used when a tool you run controls HomeKit accessories.
+    NSSystemAdministrationUsageDescription: Some tools you run need administrator privileges.
+    NSUserTrackingUsageDescription: ClaudeGUI does not track you; this text only satisfies macOS.
 npmRebuild: false

@@ -6,8 +6,9 @@ import { Modal } from '../common/Modal'
 import { ACCENTS, applyTheme, isDarkTheme } from '@/lib/theme'
 import { UsageDetails } from '../status/UsageStatus'
 import { UpdatesPanel } from './UpdatesPanel'
+import { PermissionsPanel } from './PermissionsPanel'
 
-type Tab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
+type Tab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'permissions' | 'advanced' | 'about'
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'appearance', label: 'Appearance' },
@@ -15,6 +16,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'files', label: 'Files' },
   { id: 'git', label: 'Git' },
   { id: 'usage', label: 'Usage & status' },
+  { id: 'permissions', label: 'Permissions' },
   { id: 'advanced', label: 'Advanced' },
   { id: 'about', label: 'About' }
 ]
@@ -149,11 +151,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 </div>
                 <Field label="Accent colour" hint="'System' follows the accent colour chosen in macOS System Settings → Appearance.">
                   <div className="swatches">
-                    <button className={`swatch ${draft.accent === 'system' ? 'active' : ''}`} style={{ background: theme.accent }} title="System accent" onClick={() => upd({ accent: 'system' })}>
+                    <button className={`swatch ${draft.accent === 'system' ? 'active' : ''}`} style={{ background: theme.accent }} data-tip="System accent" onClick={() => upd({ accent: 'system' })}>
                       {draft.accent === 'system' && <CheckIcon size={12} />}
                     </button>
                     {(Object.keys(ACCENTS) as Exclude<AccentColor, 'system'>[]).map((k) => (
-                      <button key={k} className={`swatch ${draft.accent === k ? 'active' : ''}`} style={{ background: dark ? ACCENTS[k].dark : ACCENTS[k].light }} title={ACCENTS[k].label} onClick={() => upd({ accent: k })}>
+                      <button key={k} className={`swatch ${draft.accent === k ? 'active' : ''}`} style={{ background: dark ? ACCENTS[k].dark : ACCENTS[k].light }} data-tip={ACCENTS[k].label} onClick={() => upd({ accent: k })}>
                         {draft.accent === k && <CheckIcon size={12} />}
                       </button>
                     ))}
@@ -187,7 +189,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   </select>
                 </Field>
                 <Check label="Expand every tool call card by default" hint="Off: only edits, writes, subagents and questions start expanded." checked={draft.toolCardsExpanded} onChange={(v) => upd({ toolCardsExpanded: v })} />
-                <Check label="Group sessions by project folder in the sidebar" checked={draft.groupSessionsByFolder} onChange={(v) => upd({ groupSessionsByFolder: v })} />
+                <Check label="Status board above the chat" hint="One chip per session with its colour-coded state and task counts. ⌘⇧S toggles it." checked={draft.showStatusBoard} onChange={(v) => upd({ showStatusBoard: v })} />
+                <Check label="Hover explanations (tooltips)" hint="Explain buttons, indicators and options when the mouse rests on them." checked={draft.showTooltips} onChange={(v) => upd({ showTooltips: v })} />
+                <Check label="Folder header rows inside groups" hint="Off (default): each row shows its folder name inline. On: sessions are additionally grouped under their project folder." checked={draft.groupSessionsByFolder} onChange={(v) => upd({ groupSessionsByFolder: v })} />
               </Section>
             </>
           )}
@@ -353,6 +357,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               </div>
             </Section>
           )}
+          {tab === 'permissions' && <PermissionsPanel />}
           {tab === 'about' && <UpdatesPanel draft={draft} upd={upd} />}
         </div>
       </div>

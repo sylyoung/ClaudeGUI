@@ -39,7 +39,7 @@ export function UpdatePill() {
   const label =
     u.status === 'available' ? `Update ${u.latestVersion}` : u.status === 'building' ? `Building ${u.latestVersion}…` : u.status === 'ready' ? `Restart to ${u.latestVersion}` : 'Restarting…'
   return (
-    <button className={`update-pill no-drag st-${u.status}`} onClick={() => openSettings('about')} title="Open the update details (Settings → About)">
+    <button className={`update-pill no-drag st-${u.status}`} onClick={() => openSettings('about')} data-tip="Open the update details (Settings → About)">
       {u.status === 'building' || u.status === 'applying' ? <RotateCw size={11} className="spin" /> : <ArrowUpCircle size={11} />}
       <span>{label}</span>
     </button>
@@ -59,14 +59,14 @@ export function UsageStatus({ compact }: { compact?: boolean }) {
   return (
     <>
       <UpdatePill />
-      <button ref={ref} className={`usage-cluster no-drag ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)} title="Plan usage limits (click for details)">
+      <button ref={ref} className={`usage-cluster no-drag ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)} data-tip="Plan usage limits (click for details)">
         {shown.length === 0 && (
           <span className={`usage-pill sev-${usage.error ? 'warning' : 'unknown'}`}>
             <Gauge size={11} /> {usage.checking ? 'checking limits…' : usage.error ? 'limits unavailable' : 'limits'}
           </span>
         )}
         {shown.map((w) => (
-          <span key={w.key} className={`usage-pill sev-${w.severity}`} title={`${w.label}: ${formatPercent(w.percent)} used${w.resetsAt ? ` · resets ${timeUntil(w.resetsAt)}` : ''}`}>
+          <span key={w.key} className={`usage-pill sev-${w.severity}`} data-tip={`${w.label}: ${formatPercent(w.percent)} used${w.resetsAt ? ` · resets ${timeUntil(w.resetsAt)}` : ''}`}>
             <span className="u-label">{shortLabel(w)}</span>
             <span className="u-pct">{formatPercent(w.percent)}</span>
             <span className="u-bar">
@@ -74,7 +74,7 @@ export function UsageStatus({ compact }: { compact?: boolean }) {
             </span>
           </span>
         ))}
-        <span className="usage-checked" title={usage.fetchedAt ? `Last check ${formatDateTime(usage.fetchedAt)}` : 'Not checked yet'}>
+        <span className="usage-checked" data-tip={usage.fetchedAt ? `Last check ${formatDateTime(usage.fetchedAt)}` : 'Not checked yet'}>
           {usage.checking ? <RefreshCw size={10} className="spin" /> : usage.error ? <AlertTriangle size={10} /> : <span>✓</span>}
           <span>{checked}</span>
         </span>
@@ -121,7 +121,7 @@ export function UsageDetails() {
           </div>
           <div className="u-track">
             <div className="u-fill" style={{ width: `${Math.min(100, Math.max(0, w.percent ?? 0))}%` }} />
-            <div className="u-mark" style={{ left: `${warn}%` }} title={`warning threshold ${warn}%`} />
+            <div className="u-mark" style={{ left: `${warn}%` }} data-tip={`warning threshold ${warn}%`} />
           </div>
           <div className="u-sub">
             {w.resetsAt ? `resets ${timeUntil(w.resetsAt)} · ${formatDateTime(w.resetsAt)}` : 'no reset time reported'}

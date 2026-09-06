@@ -16,10 +16,10 @@ export function CodeBlock({ code, language, title }: { code: string; language?: 
       <div className="cb-head">
         <span>{title ?? language ?? 'text'}</span>
         <span style={{ display: 'flex', gap: 4 }}>
-          <button className="copy-btn" onClick={() => setWrap((w) => !w)} title="Toggle line wrap">
+          <button className="copy-btn" onClick={() => setWrap((w) => !w)} data-tip="Toggle line wrap">
             <WrapText size={12} />
           </button>
-          <button className="copy-btn" onClick={copy} title="Copy">
+          <button className="copy-btn" onClick={copy} data-tip="Copy">
             {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'copied' : 'copy'}
           </button>
         </span>

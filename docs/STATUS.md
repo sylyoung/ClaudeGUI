@@ -1,36 +1,44 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-06 (session 2, v1.0.1)
+Last updated: 2026-09-06 (session 2, v1.0.3)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
-Claude Code sessions in one window: sidebar of sessions with live status, rendered chat
-(markdown, tables, diffs, tool cards), permission prompts in the GUI, clickable URL/file links,
-a file explorer + viewer rooted at each session's working directory, git integration, and
-always-visible plan-usage / context meters.
+Claude Code sessions in one window: sidebar of sessions in user-defined groups with a stable order,
+a status board, rendered chat (markdown, tables, diffs, tool cards), permission prompts in the GUI,
+clickable URL/file links, a file explorer + viewer rooted at each session's working directory, git
+integration, always-visible plan-usage / context meters, one-click self-updates, and sessions that
+survive app restarts.
 
 ## Key decisions
 - Sessions are driven through `@anthropic-ai/claude-agent-sdk` (0.3.263, same version as the
   installed `claude` CLI 2.1.263) in **streaming input mode**, so one CLI process per session stays
   alive between turns (background shells / monitors keep running).
+- Since 1.0.2 the Claude processes are owned by a detached **session host** process
+  (`out/main/host.mjs`, the app binary started with `ELECTRON_RUN_AS_NODE`), reached over a Unix
+  socket. The window can restart (updates) without stopping sessions; `⌘Q` stops everything.
 - Transcript source of truth = Claude Code's own JSONL under `~/.claude/projects/` (read via the
-  SDK's `getSessionMessages`). The app only persists a small session index + settings in
-  `~/Library/Application Support/ClaudeGUI/` (`CLAUDEGUI_USER_DATA` overrides the folder; the dev
-  scripts use `sandbox/userdata` so a dev instance never collides with an installed copy).
+  SDK's `getSessionMessages`). The app only persists a small session index (records, groups, manual
+  order) + settings in `~/Library/Application Support/ClaudeGUI/` (`CLAUDEGUI_USER_DATA` overrides
+  the folder; the dev scripts use `sandbox/userdata`).
 - Our session id == Claude session id (we pass `sessionId` when creating, `resume` when reopening).
-- The CLI subprocess gets the environment the user's terminal `claude` command would get: the app
+- The CLI subprocess gets the environment the user's terminal `claude` command would get: the host
   runs the login shell and invokes `claude` with a stand-in executable first on PATH that dumps its
-  environment. This reproduces the `claude()` wrapper function in `~/.zshrc` (which injects
-  `HTTP_PROXY=http://127.0.0.1:18118` etc.). Without this, a Finder-launched app got HTTP 403
-  from the API. Settings has an "extra environment variables" box as a manual override. The same
-  environment is used for `git`, `gh` and the usage check.
-- Settings sources: user + project + local (configurable) and the `claude_code` system prompt
-  preset, so skills, CLAUDE.md, hooks and MCP servers behave exactly as in the terminal.
+  environment (this reproduces the `claude()` wrapper function in `~/.zshrc`, which injects
+  `HTTP_PROXY=http://127.0.0.1:18118` etc.). The same environment is used for `git`, `gh`, the usage
+  check and the updater's `git`/`npm` runs.
 - Plan usage limits come from the claude.ai usage endpoint (the one the CLI's `/usage` reads) using
   the OAuth token Claude Code stores in the Keychain; the request goes through `curl` so the proxy
-  applies. Verified response: `limits[]` with `session`, `weekly_all`, `weekly_scoped` (model
-  "Fable"), plus `extra_usage` / `spend` for credits. Rate-limit events from API responses are
-  merged into the same windows.
+  applies. Rate-limit events from API responses are merged into the same windows.
+- Updates = git tags of the repository (Settings → About → repository). The updater clones/fetches
+  into `~/Library/Caches/ClaudeGUI/update/src`, runs `npm ci` only when the lock file hash changed,
+  builds into `…/update/staging` and hands over to `apply-update.sh`, which waits for the app to
+  quit, swaps the bundle in place, deletes the old one and reopens the app (`open --env …` keeps
+  `CLAUDEGUI_*` overrides). The quit for an update leaves the host running (`updating` flag).
+- Builds are signed with an "Apple Development" identity when electron-builder finds one
+  (`mac.type: development`), so macOS privacy grants persist across updates; otherwise unsigned.
+- Sidebar order: pinned first, then `record.order` (set only by drag & drop / "Move to group"),
+  newest first for records without a position. Groups live in `sessions.json` (`groups[]`).
 - Git is driven through the `git` CLI (porcelain v2 status); untracked files are "discarded" by
   moving them to the Trash, never deleted outright.
 - Theme follows macOS by default (`nativeTheme` + `systemPreferences.getAccentColor`).
@@ -38,34 +46,46 @@ always-visible plan-usage / context meters.
 ## Progress checklist
 
 ### v1.0.0
-- [x] Environment inspected (node 24, claude 2.1.263 native binary, proxy wrapper, session JSONL format)
-- [x] SDK API verified from `sdk.d.ts`
 - [x] Main process: env, store, session runtime/manager, fs, shell, ipc, debug server
-- [x] Preload bridge; renderer: sidebar, chat, tool cards, permissions, composer, file tree, viewer, dialogs
-- [x] Live tests passed: streaming text, Bash tool, Write permission prompt, AskUserQuestion,
-      Explore subagent (nested transcript), background Bash task + wake-up, stop/resume,
-      app restart restoring history, CLI session import, interrupt, `/cost`, concurrent sessions
+- [x] Renderer: sidebar, chat, tool cards, permissions, composer, file tree, viewer, dialogs
+- [x] Live tests: streaming, Bash tool, Write permission, AskUserQuestion, Explore subagent,
+      background Bash task + wake-up, stop/resume, restart restoring history, CLI import, `/cost`
 - [x] Packaged `.app`, README, public GitHub repository (github.com/sylyoung/ClaudeGUI)
 
 ### v1.0.1
-- [x] 1. Non-text files open with the default macOS app (verified: clicking `notes.docx` launched
-      Microsoft Word, no viewer tab opened); "Open with…" app picker; double-click action setting;
-      chat links use the same rule.
-- [x] 2. Git: `gitService.ts` + Git tab + tree badges. Verified through the IPC layer on a sandbox
-      repo: stage, commit, undo last commit, unstage, add to .gitignore, discard untracked (moved to
-      Trash), binary diff detection, branches; verified visually: changes/untracked/ignored sections,
-      inline diff, commit list, branch/remote header, badges in the tree.
-- [x] 3. Themes: system/light/dark + accent (system accent read as #007aff), translucent sidebar
-      (verified visually), macOS-style dark grey palette.
-- [x] 4. Settings in eight tabs; every option is wired (notifications kinds/sound, Dock badge,
-      resume on launch — verified: restart auto-started the active session —, quit confirmation,
-      default cwd, SDK options, tool lists, settings sources, auto-title, files/git/usage options,
-      tool-result truncation, debug server).
-- [x] 5. Plan usage in the top-right corner with last-check time and popover (verified:
-      Session 10 %, Weekly 23 %, Fable 13 %, subscription "pro", reset times).
-- [x] 6. Context bar per chat (verified: 26k / 1.00M · 3 % with category breakdown), sidebar
-      context % and task/subagent counts, header pills.
-- [x] Version 1.0.1, CHANGELOG.md, docs, packaged build in `dist/mac-arm64/` (tags `v1.0.0`, `v1.0.1` pushed to GitHub).
+- [x] Default-app file opening, "Open with…", double-click action
+- [x] Git tab + tree badges, stage/unstage/untrack/discard/ignore/delete, commit/push/pull, diff,
+      commits, branches, stash, publish
+- [x] Themes (system/light/dark, accent), translucent sidebar, tabbed settings (8 tabs)
+- [x] Plan-usage pills with last-check time; context bar; sidebar context % and task counts
+
+### v1.0.2
+- [x] Session host process; window reattaches with live state, pending permissions and transcript
+      (verified: stop-gui → host + Claude process + `sleep` task survived → new window attached)
+- [x] In-app updater (check/build/apply) — verified end to end on an isolated packaged copy against
+      a local release repo: 1.0.2 → 1.0.3 built in 13 s (deps unchanged), auto-restart, same host
+      pid, background task still running, old bundle removed, "Updated to 1.0.3" notice
+- [x] Window bounds, open files, expanded folders and panel tab persist
+- [x] Fix: nested `app.quit()` inside `before-quit` was ignored → quit continues on the next tick
+
+### v1.0.3
+- [x] 1. Stable order + drag & drop (verified with synthetic drag events: move into group, reorder)
+- [x] 2. Groups: create/rename/reorder/collapse/delete, Move to group, group field in New session
+- [x] 3. Folder header rows off by default (settings migration `settingsVersion: 2`)
+- [x] 4. Status board above the chat (chips per session, summary, ⌘⇧S)
+- [x] 5. Hover explanations: global `data-tip` tooltip layer, ~60 titles converted + new tips
+- [x] 6. Slash-command ranking (exact → prefix → alias → word start → substring → subsequence)
+- [x] 7. Missing working directory: clear error + banner, "Change working directory…" moves the
+      transcript (verified: renamed `sandbox/proj-old` → `proj-new`, relocate, resumed with history)
+- [x] 8. Session state colours (working / needs input / idle+tasks / idle / not running / error)
+- [x] Interrupt puts the sent prompt(s) back into the composer (verified through the store)
+- [x] Search box clears after picking a result; clear (×) buttons on search box and composer
+- [x] Bigger coloured chips for background shells (blue) and subagents (purple)
+- [x] Toolbar: full names for model/permissions/effort; last-activity time, folder size, git remote;
+      no cost, no Claude version
+- [x] macOS permissions panel (probe/request/open pane), Info.plist usage descriptions,
+      Apple Development signing (verified: signed bundle passes `codesign --verify --deep --strict`,
+      re-signed `claude` binary runs a session)
 
 ## Known limitations / ideas for next iterations
 - No embedded terminal (xterm.js + node-pty) yet; "Open folder in Terminal" opens Ghostty instead.
@@ -74,10 +94,14 @@ always-visible plan-usage / context meters.
 - "Publish to GitHub…" needs the `gh` CLI logged in.
 - The claude.ai usage endpoint is not a documented API; if its shape changes, the widget falls
   back to the running session's `/usage` data and to rate-limit events.
-- Cost shown is the SDK's estimate accumulated across processes of a session; the CLI's own
-  `/cost` output is authoritative.
 - Git diffs are line-based (no word-level highlighting) and the Git panel shows one repository
   per session (the repo containing the session's working directory).
+- Updates rebuild from source on the Mac (git, node, npm needed); a prebuilt-zip channel would need
+  GitHub Actions and a way around Gatekeeper's quarantine for unsigned downloads.
+- The Apple Development certificate expires (currently March 2027); after renewal, builds are signed
+  with the new one and macOS asks for the manual grants again.
+- Permission states for Automation, Notifications and Local Network are remembered from the last
+  request, not read from the system.
 
 ## How to run
 ```

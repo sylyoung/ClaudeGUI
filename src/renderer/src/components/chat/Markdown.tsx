@@ -57,7 +57,7 @@ export function Markdown({ text }: { text: string }) {
                 e.preventDefault()
                 ctx?.showPathMenu(path, line, e.clientX, e.clientY)
               }}
-              title="Click to open · ⌘-click to open in editor · right-click for options"
+              data-tip="Click to open · ⌘-click to open in editor · right-click for options"
             >
               {children}
             </span>
@@ -70,7 +70,7 @@ export function Markdown({ text }: { text: string }) {
               e.preventDefault()
               if (h) window.api.shell.openExternal(h)
             }}
-            title={h}
+            data-tip={h}
           >
             {children}
           </a>
@@ -95,7 +95,7 @@ export function Markdown({ text }: { text: string }) {
                 e.preventDefault()
                 ctx.showPathMenu(path, line, e.clientX, e.clientY)
               }}
-              title="Click to open · ⌘-click to open in editor"
+              data-tip="Click to open · ⌘-click to open in editor"
             >
               {text}
             </code>

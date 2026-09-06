@@ -40,8 +40,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   thinkingDisplay: 'collapsed',
   toolCardsExpanded: false,
   chatMaxWidth: 980,
-  groupSessionsByFolder: true,
+  groupSessionsByFolder: false,
   translucentSidebar: false,
+  showStatusBoard: true,
+  showTooltips: true,
   // Files
   editorCommand: '',
   showHiddenFiles: false,

@@ -6,8 +6,10 @@ import type {
   GitCommitInfo,
   GitDiffResult,
   GitStatusResult,
+  ImageAttachment,
   PermissionDecision,
   SessionEvent,
+  SessionGroup,
   SessionLiveState,
   SessionRecord,
   ThemeInfo,
@@ -15,6 +17,7 @@ import type {
   UsageSnapshot
 } from '@shared/types'
 import { applyTheme } from './lib/theme'
+import { compareRecords } from '@shared/util'
 
 export type DialogKind = null | 'new-session' | 'import-session' | 'settings'
 export type SettingsTab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
@@ -70,7 +73,12 @@ interface State {
   update: UpdateState
   records: Record<string, SessionRecord>
   live: Record<string, SessionLiveState>
+  groups: SessionGroup[]
   messages: Record<string, ChatMessage[]>
+  /** Prompts sent during the current turn (restored into the composer when the turn is interrupted). */
+  sentQueue: Record<string, { text: string; images: ImageAttachment[] }[]>
+  /** Text to put back into the composer of a session (set by interruptSession). */
+  composerRestore: Record<string, { text: string; images: ImageAttachment[]; nonce: number }>
   historyLoaded: Record<string, boolean>
   activeId?: string
   dialog: DialogKind
@@ -93,6 +101,8 @@ interface State {
   selectSession: (id: string | undefined) => Promise<void>
   ensureHistory: (id: string) => Promise<void>
   send: (id: string, text: string, images?: { mediaType: string; data: string; name?: string }[]) => Promise<void>
+  /** Stop the current turn and put the prompts of that turn back into the composer. */
+  interruptSession: (id: string) => Promise<void>
   answerPermission: (id: string, requestId: string, decision: PermissionDecision) => Promise<void>
   setDialog: (d: DialogKind) => void
   openSettings: (tab?: SettingsTab) => void
@@ -148,7 +158,10 @@ export const useStore = create<State>((set, get) => ({
   update: { status: 'idle', currentVersion: '', log: [], autoRestart: true },
   records: {},
   live: {},
+  groups: [],
   messages: {},
+  sentQueue: {},
+  composerRestore: {},
   historyLoaded: {},
   dialog: null,
   settingsTab: null,
@@ -178,7 +191,7 @@ export const useStore = create<State>((set, get) => ({
     for (const r of list.records) records[r.id] = r
     for (const l of list.live) live[l.id] = l
     applyTheme(settings, theme)
-    set({ appInfo: info, settings, theme, usage, update, records, live, ready: true })
+    set({ appInfo: info, settings, theme, usage, update, records, live, groups: list.groups ?? [], ready: true })
     const last = localStorage.getItem('activeId')
     const initial = last && records[last] ? last : list.records[0]?.id
     if (initial) await get().selectSession(initial)
@@ -196,7 +209,7 @@ export const useStore = create<State>((set, get) => ({
     const live: Record<string, SessionLiveState> = {}
     for (const r of list.records) records[r.id] = r
     for (const l of list.live) live[l.id] = l
-    set({ records, live, messages: {}, historyLoaded: {} })
+    set({ records, live, groups: list.groups ?? [], messages: {}, historyLoaded: {} })
     const id = get().activeId
     if (id && records[id]) await get().ensureHistory(id)
     else if (id) set({ activeId: undefined })
@@ -205,10 +218,20 @@ export const useStore = create<State>((set, get) => ({
   applyEvent: (e) => {
     switch (e.type) {
       case 'state':
-        set((s) => ({ live: { ...s.live, [e.state.id]: e.state } }))
+        set((s) => {
+          const prev = s.live[e.state.id]
+          const wasBusy = prev && (prev.status === 'running' || prev.status === 'requires_action' || prev.status === 'starting')
+          const nowQuiet = e.state.status === 'idle' || e.state.status === 'stopped' || e.state.status === 'error'
+          const patch: Partial<State> = { live: { ...s.live, [e.state.id]: e.state } }
+          if (wasBusy && nowQuiet && s.sentQueue[e.state.id]?.length) patch.sentQueue = { ...s.sentQueue, [e.state.id]: [] }
+          return patch
+        })
         break
       case 'record':
         set((s) => ({ records: { ...s.records, [e.record.id]: e.record } }))
+        break
+      case 'groups':
+        set({ groups: e.groups })
         break
       case 'record-removed':
         set((s) => {
@@ -263,10 +286,29 @@ export const useStore = create<State>((set, get) => ({
   },
 
   send: async (id, text, images) => {
+    set((s) => ({ sentQueue: { ...s.sentQueue, [id]: [...(s.sentQueue[id] ?? []), { text, images: images ?? [] }] } }))
     try {
       await window.api.sessions.send(id, text, images)
     } catch (err) {
+      set((s) => ({ sentQueue: { ...s.sentQueue, [id]: (s.sentQueue[id] ?? []).filter((q) => q.text !== text) } }))
       get().toast(`Send failed: ${(err as Error).message}`, 'error')
+    }
+  },
+
+  interruptSession: async (id) => {
+    const queued = get().sentQueue[id] ?? []
+    if (queued.length) {
+      const text = queued.map((q) => q.text).filter(Boolean).join('\n\n')
+      const images = queued.flatMap((q) => q.images)
+      set((s) => ({
+        sentQueue: { ...s.sentQueue, [id]: [] },
+        composerRestore: { ...s.composerRestore, [id]: { text, images, nonce: (s.composerRestore[id]?.nonce ?? 0) + 1 } }
+      }))
+    }
+    try {
+      await window.api.sessions.interrupt(id)
+    } catch (err) {
+      get().toast(`Interrupt failed: ${(err as Error).message}`, 'error')
     }
   },
 
@@ -442,16 +484,32 @@ export const useStore = create<State>((set, get) => ({
   }
 }))
 
-/** Sessions ordered: pinned first, then by last activity. */
-export function orderedSessions(records: Record<string, SessionRecord>, live: Record<string, SessionLiveState>, showArchived: boolean): SessionRecord[] {
+/** Sessions of one group in sidebar order: pinned first, then the manual (drag & drop) position. */
+export function orderedSessions(records: Record<string, SessionRecord>, showArchived: boolean, groupId?: string): SessionRecord[] {
   return Object.values(records)
-    .filter((r) => showArchived || !r.archived)
-    .sort((a, b) => {
-      if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
-      const la = live[a.id]?.lastActivityAt ?? a.lastActiveAt
-      const lb = live[b.id]?.lastActivityAt ?? b.lastActiveAt
-      return lb - la
-    })
+    .filter((r) => (showArchived || !r.archived) && (groupId === undefined || (r.groupId || undefined) === groupId))
+    .sort(compareRecords)
+}
+
+export interface SidebarSection {
+  group: SessionGroup | null
+  sessions: SessionRecord[]
+}
+
+/** Groups in order, each with its sessions, then the ungrouped sessions (`group: null`). */
+export function sidebarSections(records: Record<string, SessionRecord>, groups: SessionGroup[], showArchived: boolean): SidebarSection[] {
+  const known = new Set(groups.map((g) => g.id))
+  const sections: SidebarSection[] = [...groups].sort((a, b) => a.order - b.order).map((g) => ({ group: g, sessions: orderedSessions(records, showArchived, g.id) }))
+  const loose = Object.values(records)
+    .filter((r) => (showArchived || !r.archived) && (!r.groupId || !known.has(r.groupId)))
+    .sort(compareRecords)
+  sections.push({ group: null, sessions: loose })
+  return sections
+}
+
+/** Every visible session in sidebar order (used for ⌘1…9 and next/previous). */
+export function flattenSessions(records: Record<string, SessionRecord>, groups: SessionGroup[], showArchived: boolean): SessionRecord[] {
+  return sidebarSections(records, groups, showArchived).flatMap((sec) => sec.sessions)
 }
 
 // ---------------------------------------------------------------------------

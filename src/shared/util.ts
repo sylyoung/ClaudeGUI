@@ -1,3 +1,17 @@
+import type { SessionRecord } from './types'
+
+/**
+ * Sidebar order: pinned first, then the manual position (`order`, set by drag & drop), then
+ * newest first for records that never got a position. Activity never reorders sessions.
+ */
+export function compareRecords(a: SessionRecord, b: SessionRecord): number {
+  if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
+  const ao = a.order ?? Number.POSITIVE_INFINITY
+  const bo = b.order ?? Number.POSITIVE_INFINITY
+  if (ao !== bo) return ao - bo
+  return b.createdAt - a.createdAt
+}
+
 /** Split a comma/newline separated setting into trimmed, non-empty items. */
 export function splitList(text: string | undefined): string[] {
   return (text ?? '')

@@ -53,7 +53,7 @@ function ToolPermission({ request, onAnswer }: { request: PendingPermission; onA
       {request.toolName === 'Edit' && <DiffView before={String(i.old_string ?? '')} after={String(i.new_string ?? '')} />}
       {request.toolName === 'MultiEdit' &&
         ((i.edits as { old_string: string; new_string: string }[] | undefined) ?? []).map((e, k) => <DiffView key={k} before={e.old_string} after={e.new_string} />)}
-      {request.toolName === 'Write' && <CodeBlock code={String(i.content ?? '')} title={`write ${String(i.content ?? '').split('\n').length} lines`} />}
+      {request.toolName === 'Write' && <CodeBlock code={String(i.content ?? '')} data-tip={`write ${String(i.content ?? '').split('\n').length} lines`} />}
       {isPlan && typeof i.plan === 'string' && <Markdown text={i.plan} />}
       {!['Bash', 'Edit', 'MultiEdit', 'Write', 'ExitPlanMode'].includes(request.toolName) && Object.keys(i).length > 0 && (
         <div className="kv">
@@ -68,11 +68,11 @@ function ToolPermission({ request, onAnswer }: { request: PendingPermission; onA
         </div>
       )}
       <div className="p-actions">
-        <button className="btn primary" onClick={() => onAnswer({ behavior: 'allow' })}>
+        <button data-tip="Allow this action once (⌘⏎)" className="btn primary" onClick={() => onAnswer({ behavior: 'allow' })}>
           {isPlan ? 'Approve plan' : 'Allow'} <span className="kbd" style={{ marginLeft: 4 }}>⌘⏎</span>
         </button>
         {canAlways && !isPlan && (
-          <button className="btn" onClick={() => onAnswer({ behavior: 'allow', alwaysAllow: true })} title="Add a permission rule so this is not asked again">
+          <button className="btn" onClick={() => onAnswer({ behavior: 'allow', alwaysAllow: true })} data-tip="Add a permission rule so this is not asked again">
             Always allow
           </button>
         )}

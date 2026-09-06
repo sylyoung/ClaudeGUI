@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react'
-import { orderedSessions, useStore } from './store'
+import { flattenSessions, useStore } from './store'
 import { Sidebar } from './components/Sidebar'
 import { ChatView } from './components/chat/ChatView'
 import { FilePanel } from './components/files/FilePanel'
@@ -7,6 +7,8 @@ import { NewSessionDialog } from './components/dialogs/NewSessionDialog'
 import { ImportSessionDialog } from './components/dialogs/ImportSessionDialog'
 import { SettingsDialog } from './components/dialogs/SettingsDialog'
 import { UsageStatus } from './components/status/UsageStatus'
+import { StatusBoard } from './components/StatusBoard'
+import { TooltipLayer } from './components/common/Tooltip'
 
 function Resizer({ onDrag, onEnd }: { onDrag: (dx: number) => void; onEnd: () => void }) {
   const [dragging, setDragging] = React.useState(false)
@@ -45,6 +47,7 @@ export default function App() {
   const filesWidth = useStore((s) => s.filesWidth)
   const setWidths = useStore((s) => s.setWidths)
   const toasts = useStore((s) => s.toasts)
+  const showBoard = useStore((s) => s.settings?.showStatusBoard ?? true)
   const widthRef = useRef({ sidebarWidth, filesWidth })
   widthRef.current = { sidebarWidth, filesWidth }
 
@@ -65,7 +68,7 @@ export default function App() {
   useEffect(() => {
     const cycle = (dir: 1 | -1) => {
       const s = useStore.getState()
-      const list = orderedSessions(s.records, s.live, s.showArchived)
+      const list = flattenSessions(s.records, s.groups, s.showArchived)
       if (!list.length) return
       const idx = list.findIndex((r) => r.id === s.activeId)
       const next = list[(idx + dir + list.length) % list.length]
@@ -84,7 +87,8 @@ export default function App() {
         case 'menu:toggle-files': s.toggleFiles(); break
         case 'menu:toggle-git': s.showPanelTab('git'); break
         case 'menu:search': s.focusSearch(); break
-        case 'menu:interrupt': if (s.activeId) void window.api.sessions.interrupt(s.activeId); break
+        case 'menu:interrupt': if (s.activeId) void s.interruptSession(s.activeId); break
+        case 'menu:toggle-board': void s.setSettings({ showStatusBoard: !(s.settings?.showStatusBoard ?? true) }); break
         case 'menu:check-updates':
           s.openSettings('about')
           window.api.update.check().catch((err) => s.toast(`Update check failed: ${(err as Error).message}`, 'error'))
@@ -94,7 +98,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey && !e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
         const s = useStore.getState()
-        const list = orderedSessions(s.records, s.live, s.showArchived)
+        const list = flattenSessions(s.records, s.groups, s.showArchived)
         const target = list[Number(e.key) - 1]
         if (target) {
           e.preventDefault()
@@ -122,35 +126,41 @@ export default function App() {
           <Resizer onDrag={(dx) => setWidths({ sidebarWidth: Math.min(480, Math.max(200, widthRef.current.sidebarWidth + dx)) })} onEnd={() => undefined} />
         </>
       )}
-      {record ? (
-        <ChatView key={record.id} record={record} live={live} />
-      ) : (
-        <div className="chat">
-          <div className="chat-header drag" style={{ paddingLeft: sidebarOpen ? 12 : 84 }}>
-            <span className="title">ClaudeGUI</span>
-            <span className="spacer" />
-            <UsageStatus compact />
-          </div>
-          <div className="empty-state">
-            <h2>No session selected</h2>
-            <div className="hint">
-              Create a new session with <span className="kbd">⌘N</span>, or import your existing Claude Code terminal sessions with <span className="kbd">⌘⇧I</span>. Switch sessions with <span className="kbd">⌘1</span>…<span className="kbd">⌘9</span> or <span className="kbd">⌘⇧[</span> / <span className="kbd">⌘⇧]</span>.
+      <div className="main">
+        {showBoard && <StatusBoard />}
+        <div className="main-row">
+          {record ? (
+            <ChatView key={record.id} record={record} live={live} />
+          ) : (
+            <div className="chat">
+              <div className="chat-header drag" style={{ paddingLeft: sidebarOpen || showBoard ? 12 : 84 }}>
+                <span className="title">ClaudeGUI</span>
+                <span className="spacer" />
+                <UsageStatus compact />
+              </div>
+              <div className="empty-state">
+                <h2>No session selected</h2>
+                <div className="hint">
+                  Create a new session with <span className="kbd">⌘N</span>, or import your existing Claude Code terminal sessions with <span className="kbd">⌘⇧I</span>. Switch sessions with <span className="kbd">⌘1</span>…<span className="kbd">⌘9</span> or <span className="kbd">⌘⇧[</span> / <span className="kbd">⌘⇧]</span>.
+                </div>
+                <div className="row" style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn primary" onClick={() => setDialog('new-session')}>New session</button>
+                  <button className="btn" onClick={() => setDialog('import-session')}>Import CLI session</button>
+                </div>
+              </div>
             </div>
-            <div className="row" style={{ display: 'flex', gap: 8 }}>
-              <button className="btn primary" onClick={() => setDialog('new-session')}>New session</button>
-              <button className="btn" onClick={() => setDialog('import-session')}>Import CLI session</button>
-            </div>
-          </div>
+          )}
+          {record && filesOpen && (
+            <>
+              <Resizer onDrag={(dx) => setWidths({ filesWidth: Math.min(1100, Math.max(260, widthRef.current.filesWidth - dx)) })} onEnd={() => undefined} />
+              <div style={{ width: filesWidth, flexShrink: 0, minWidth: 0, display: 'flex' }}>
+                <FilePanel record={record} live={live} />
+              </div>
+            </>
+          )}
         </div>
-      )}
-      {record && filesOpen && (
-        <>
-          <Resizer onDrag={(dx) => setWidths({ filesWidth: Math.min(1100, Math.max(260, widthRef.current.filesWidth - dx)) })} onEnd={() => undefined} />
-          <div style={{ width: filesWidth, flexShrink: 0, minWidth: 0, display: 'flex' }}>
-            <FilePanel record={record} live={live} />
-          </div>
-        </>
-      )}
+      </div>
+      <TooltipLayer />
       {dialog === 'new-session' && <NewSessionDialog onClose={() => setDialog(null)} />}
       {dialog === 'import-session' && <ImportSessionDialog onClose={() => setDialog(null)} />}
       {dialog === 'settings' && <SettingsDialog onClose={() => setDialog(null)} />}

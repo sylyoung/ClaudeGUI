@@ -17,7 +17,7 @@ export function FileViewer({ sessionId }: { sessionId: string }) {
     <div className="viewer">
       <div className="viewer-tabs">
         {open.map((t) => (
-          <div key={t.path} className={`viewer-tab ${t.path === active?.path ? 'active' : ''}`} onClick={() => setActiveFile(sessionId, t.path)} title={t.path}>
+          <div key={t.path} className={`viewer-tab ${t.path === active?.path ? 'active' : ''}`} onClick={() => setActiveFile(sessionId, t.path)} data-tip={t.path}>
             <span>{basename(t.path)}</span>
             <span className="close" onClick={(e) => { e.stopPropagation(); closeFile(sessionId, t.path) }}>
               <X size={12} />
@@ -69,23 +69,23 @@ function FileBody({ tab }: { tab: FileTab }) {
   return (
     <>
       <div className="viewer-toolbar">
-        <span className="path" title={tab.path}>{tab.path}</span>
+        <span className="path" data-tip={tab.path}>{tab.path}</span>
         {content && content.kind !== 'missing' && <span>{formatBytes(content.size)}</span>}
         {isMarkdown && (
-          <button className="btn ghost icon" title={preview ? 'Show source' : 'Preview markdown'} onClick={() => setPreview((p) => !p)}>
+          <button className="btn ghost icon" data-tip={preview ? 'Show source' : 'Preview markdown'} onClick={() => setPreview((p) => !p)}>
             {preview ? <Code size={13} /> : <Eye size={13} />}
           </button>
         )}
-        <button className="btn ghost icon" title="Open with the default app" onClick={openExternal}>
+        <button className="btn ghost icon" data-tip="Open with the default app" onClick={openExternal}>
           <ExternalLink size={13} />
         </button>
-        <button className="btn ghost icon" title="Open with…" onClick={() => window.api.shell.openWith(tab.path)}>
+        <button className="btn ghost icon" data-tip="Open with…" onClick={() => window.api.shell.openWith(tab.path)}>
           <Ellipsis size={13} />
         </button>
-        <button className="btn ghost icon" title="Open in editor" onClick={() => window.api.shell.openInEditor(tab.path, tab.line)}>
+        <button className="btn ghost icon" data-tip="Open in editor" onClick={() => window.api.shell.openInEditor(tab.path, tab.line)}>
           <Pencil size={13} />
         </button>
-        <button className="btn ghost icon" title="Reveal in Finder" onClick={() => window.api.shell.showInFolder(tab.path)}>
+        <button className="btn ghost icon" data-tip="Reveal in Finder" onClick={() => window.api.shell.showInFolder(tab.path)}>
           <FolderOpen size={13} />
         </button>
       </div>
@@ -99,7 +99,7 @@ function FileBody({ tab }: { tab: FileTab }) {
               {openBinaryExternally ? ' — opened with its default app.' : '.'}
             </div>
             <div className="row" style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button className="btn sm" onClick={openExternal}><ExternalLink size={12} /> Open with default app</button>
+              <button data-tip="Open with the default macOS app" className="btn sm" onClick={openExternal}><ExternalLink size={12} /> Open with default app</button>
               <button className="btn sm" onClick={() => window.api.shell.openWith(tab.path)}><Ellipsis size={12} /> Open with…</button>
               <button className="btn sm" onClick={() => window.api.shell.showInFolder(tab.path)}><FolderOpen size={12} /> Reveal</button>
             </div>
@@ -110,7 +110,7 @@ function FileBody({ tab }: { tab: FileTab }) {
             <div className="faint">File too large to preview ({formatBytes(content.size)}).</div>
             <div className="row" style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               <button className="btn sm" onClick={openExternal}><ExternalLink size={12} /> Open with default app</button>
-              <button className="btn sm" onClick={() => window.api.shell.openInEditor(tab.path)}><Pencil size={12} /> Open in editor</button>
+              <button data-tip="Open this file in your editor (Settings → Files)" className="btn sm" onClick={() => window.api.shell.openInEditor(tab.path)}><Pencil size={12} /> Open in editor</button>
             </div>
           </div>
         )}

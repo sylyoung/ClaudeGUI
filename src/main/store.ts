@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import type { AppSettings, SessionRecord } from '@shared/types'
+import type { AppSettings, SessionGroup, SessionRecord } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/defaults'
 
 export { DEFAULT_SETTINGS }
@@ -66,11 +66,19 @@ export class JsonFile<T> {
   }
 }
 
+/** Bumped when a default changes in a way that should also apply to settings saved by older versions. */
+const SETTINGS_VERSION = 2
+
 /** settings.json — owned by the app window process. */
 export class SettingsStore {
   readonly settings: JsonFile<AppSettings>
   constructor(dir: string) {
     this.settings = new JsonFile<AppSettings>(dir, 'settings.json', DEFAULT_SETTINGS)
+    const cur = this.settings.get() as AppSettings & { settingsVersion?: number }
+    if ((cur.settingsVersion ?? 1) < 2) {
+      // 1.0.3: folder header rows in the sidebar are off by default (sessions have their own groups now).
+      this.settings.update((s) => ({ ...s, groupSessionsByFolder: false, settingsVersion: SETTINGS_VERSION }) as AppSettings)
+    }
   }
   get(): AppSettings {
     return this.settings.get()
@@ -91,6 +99,7 @@ export class SettingsStore {
 
 interface SessionsFile {
   sessions: SessionRecord[]
+  groups?: SessionGroup[]
   activeSessionId?: string
 }
 
@@ -123,6 +132,16 @@ export class SessionsStore {
   }
   getActiveSession(): string | undefined {
     return this.sessions.get().activeSessionId
+  }
+  listGroups(): SessionGroup[] {
+    return [...(this.sessions.get().groups ?? [])].sort((a, b) => a.order - b.order)
+  }
+  setGroups(groups: SessionGroup[]): void {
+    this.sessions.update((d) => ({ ...d, groups }))
+  }
+  /** Rewrite several records at once (used when re-numbering the manual order). */
+  replaceSessions(fn: (sessions: SessionRecord[]) => SessionRecord[]): void {
+    this.sessions.update((d) => ({ ...d, sessions: fn(d.sessions) }))
   }
   flush(): void {
     this.sessions.flush()

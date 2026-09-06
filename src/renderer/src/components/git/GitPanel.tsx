@@ -233,7 +233,7 @@ export function GitPanel({ record }: { record: SessionRecord }) {
           <GitBranch size={28} />
           <b>Not a git repository</b>
           <div className="faint">{cwd}</div>
-          <button className="btn primary" disabled={Boolean(busy)} onClick={() => run('Init', () => window.api.git.init(cwd), 'Repository initialized')}>
+          <button data-tip="Create a new git repository in this folder" className="btn primary" disabled={Boolean(busy)} onClick={() => run('Init', () => window.api.git.init(cwd), 'Repository initialized')}>
             <Plus size={13} /> Initialize repository
           </button>
         </div>
@@ -249,7 +249,7 @@ export function GitPanel({ record }: { record: SessionRecord }) {
     const state = staged ? f.index : f.worktree
     const { dir, base } = splitPath(f.path)
     return (
-      <div key={`${staged ? 's' : 'w'}:${f.path}`} className={`git-row st-${state} ${isSelected(f, staged) ? 'selected' : ''}`} onClick={() => select(f, staged)} onDoubleClick={() => !f.isDir && openFile(record.id, f.absPath)} onContextMenu={(e) => fileMenu(e, f, staged)} title={f.origPath ? `${f.origPath} → ${f.path}` : f.path}>
+      <div key={`${staged ? 's' : 'w'}:${f.path}`} className={`git-row st-${state} ${isSelected(f, staged) ? 'selected' : ''}`} onClick={() => select(f, staged)} onDoubleClick={() => !f.isDir && openFile(record.id, f.absPath)} onContextMenu={(e) => fileMenu(e, f, staged)} data-tip={f.origPath ? `${f.origPath} → ${f.path}` : f.path}>
         <span className={`g-badge st-${state}`}>{gitLetter(state)}</span>
         <span className="g-path">
           {dir && <span className="g-dir">{dir}</span>}
@@ -260,7 +260,7 @@ export function GitPanel({ record }: { record: SessionRecord }) {
     )
   }
   const iconBtn = (title: string, icon: React.ReactNode, onClick: () => void, danger = false) => (
-    <button className={`btn ghost icon ${danger ? 'danger' : ''}`} title={title} disabled={Boolean(busy)} onClick={(e) => { e.stopPropagation(); onClick() }}>
+    <button className={`btn ghost icon ${danger ? 'danger' : ''}`} data-tip={title} disabled={Boolean(busy)} onClick={(e) => { e.stopPropagation(); onClick() }}>
       {icon}
     </button>
   )
@@ -268,7 +268,7 @@ export function GitPanel({ record }: { record: SessionRecord }) {
   return (
     <div className="git">
       <div className="git-head">
-        <button className="git-branch" onClick={branchMenu} title="Switch branch">
+        <button className="git-branch" onClick={branchMenu} data-tip="Switch branch">
           <GitBranch size={13} />
           <span className="ellipsis">{info.branch ?? '(no branch)'}</span>
           {info.detached && <span className="faint">detached</span>}
@@ -276,34 +276,34 @@ export function GitPanel({ record }: { record: SessionRecord }) {
         </button>
         <span className="spacer" />
         {info.remoteUrl ? (
-          <button className="git-remote" title={info.remoteUrl} onClick={() => info.remoteWebUrl && window.api.shell.openExternal(info.remoteWebUrl)}>
+          <button className="git-remote" data-tip={info.remoteUrl} onClick={() => info.remoteWebUrl && window.api.shell.openExternal(info.remoteWebUrl)}>
             <ExternalLink size={11} /> {info.remoteName}
             {info.upstream ? '' : ' · no upstream'}
           </button>
         ) : (
-          <button className="git-remote" title="Create a GitHub repository for this folder and push" onClick={() => { setFormName(basename(cwd)); setForm({ kind: 'publish' }) }}>
+          <button className="git-remote" data-tip="Create a GitHub repository for this folder and push" onClick={() => { setFormName(basename(cwd)); setForm({ kind: 'publish' }) }}>
             <Upload size={11} /> publish
           </button>
         )}
-        {(info.ahead ?? 0) > 0 && <span className="pill blue" title="Commits not yet pushed"><ArrowUp size={10} /> {info.ahead}</span>}
-        {(info.behind ?? 0) > 0 && <span className="pill amber" title="Commits on the remote not yet pulled"><ArrowDown size={10} /> {info.behind}</span>}
+        {(info.ahead ?? 0) > 0 && <span className="pill blue" data-tip="Commits not yet pushed"><ArrowUp size={10} /> {info.ahead}</span>}
+        {(info.behind ?? 0) > 0 && <span className="pill amber" data-tip="Commits on the remote not yet pulled"><ArrowDown size={10} /> {info.behind}</span>}
       </div>
       <div className="git-actions-bar">
-        <button className="btn sm" disabled={Boolean(busy)} title="git fetch --prune" onClick={() => run('Fetch', () => window.api.git.fetch(cwd), 'Fetched')}>
+        <button className="btn sm" disabled={Boolean(busy)} data-tip="git fetch --prune" onClick={() => run('Fetch', () => window.api.git.fetch(cwd), 'Fetched')}>
           <RefreshCw size={12} /> Fetch
         </button>
-        <button className="btn sm" disabled={Boolean(busy)} title="git pull" onClick={() => run('Pull', () => window.api.git.pull(cwd, false), 'Pulled')}>
+        <button className="btn sm" disabled={Boolean(busy)} data-tip="git pull" onClick={() => run('Pull', () => window.api.git.pull(cwd, false), 'Pulled')}>
           <Download size={12} /> Pull
         </button>
-        <button className={`btn sm ${(info.ahead ?? 0) > 0 ? 'primary' : ''}`} disabled={Boolean(busy)} title={info.upstream ? 'git push' : `git push -u ${info.remoteName ?? 'origin'} ${info.branch}`} onClick={() => run('Push', () => window.api.git.push(cwd), 'Pushed')}>
+        <button className={`btn sm ${(info.ahead ?? 0) > 0 ? 'primary' : ''}`} disabled={Boolean(busy)} data-tip={info.upstream ? 'git push' : `git push -u ${info.remoteName ?? 'origin'} ${info.branch}`} onClick={() => run('Push', () => window.api.git.push(cwd), 'Pushed')}>
           <Upload size={12} /> Push{(info.ahead ?? 0) > 0 ? ` ${info.ahead}` : ''}
         </button>
         <span className="spacer" />
         {busy ? <span className="faint" style={{ fontSize: 11.5 }}><Loader2 size={11} className="spin" /> {busy}…</span> : git?.loading ? <Loader2 size={12} className="spin faint" /> : null}
-        <button className="btn ghost icon" title="Refresh status" onClick={() => refreshGit(record.id, { log: true })}>
+        <button className="btn ghost icon" data-tip="Refresh status" onClick={() => refreshGit(record.id, { log: true })}>
           <RefreshCw size={13} />
         </button>
-        <button className="btn ghost icon" title="More" onClick={moreMenu}>
+        <button className="btn ghost icon" data-tip="More" onClick={moreMenu}>
           <Ellipsis size={14} />
         </button>
       </div>
@@ -325,15 +325,15 @@ export function GitPanel({ record }: { record: SessionRecord }) {
       <div className="git-commit">
         <textarea className="input" rows={2} placeholder={info.hasCommits === false ? 'Initial commit message' : 'Commit message (⌘⏎ to commit)'} value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void commit(pushAfterCommit) } }} spellCheck={true} />
         <div className="git-commit-row">
-          <label className="faint" title="Replace the last commit instead of creating a new one">
+          <label className="faint" data-tip="Replace the last commit instead of creating a new one">
             <input type="checkbox" checked={amend} onChange={(e) => setAmend(e.target.checked)} /> amend
           </label>
-          {!info.userName && <span className="pill amber" title="Set git config user.name / user.email">no git identity</span>}
+          {!info.userName && <span className="pill amber" data-tip="Set git config user.name / user.email">no git identity</span>}
           <span className="spacer" />
-          <button className="btn sm" disabled={Boolean(busy)} onClick={() => commit(true)} title="Commit, then push">
+          <button className="btn sm" disabled={Boolean(busy)} onClick={() => commit(true)} data-tip="Commit, then push">
             Commit & push
           </button>
-          <button className="btn primary sm" disabled={Boolean(busy)} onClick={() => commit(false)}>
+          <button data-tip="Create a commit from the staged changes (⌘⏎ in the message box)" className="btn primary sm" disabled={Boolean(busy)} onClick={() => commit(false)}>
             Commit{groups.staged.length ? ` (${groups.staged.length})` : ''}
           </button>
         </div>
@@ -425,7 +425,7 @@ export function GitPanel({ record }: { record: SessionRecord }) {
             </div>
             {showLog &&
               (git?.log ?? []).map((c) => (
-                <div key={c.hash} className={`commit-row ${commitDetail?.hash === c.hash ? 'selected' : ''}`} onClick={async () => { setCommitDetail({ hash: c.hash, text: await window.api.git.showCommit(cwd, c.hash).catch((err) => String(err.message)) }); void selectGitFile(record.id, undefined) }} onContextMenu={(e) => commitMenu(e, c)} title={`${c.hash}\n${c.author} · ${new Date(c.time).toLocaleString()}`}>
+                <div key={c.hash} className={`commit-row ${commitDetail?.hash === c.hash ? 'selected' : ''}`} onClick={async () => { setCommitDetail({ hash: c.hash, text: await window.api.git.showCommit(cwd, c.hash).catch((err) => String(err.message)) }); void selectGitFile(record.id, undefined) }} onContextMenu={(e) => commitMenu(e, c)} data-tip={`${c.hash}\n${c.author} · ${new Date(c.time).toLocaleString()}`}>
                   <span className="c-hash">{c.shortHash}</span>
                   <span className="c-subject ellipsis">{c.subject}</span>
                   {c.refs && <span className="c-refs ellipsis">{c.refs}</span>}
@@ -466,11 +466,11 @@ function DiffPane({ sel, sessionId }: { sel: GitSelection; sessionId: string }) 
     <>
       <div className="git-diff-head">
         <span className={`g-badge ${sel.staged ? 'st-added' : 'st-modified'}`}>{sel.staged ? 'S' : 'W'}</span>
-        <span className="ellipsis mono" title={sel.path}>{sel.path}</span>
+        <span className="ellipsis mono" data-tip={sel.path}>{sel.path}</span>
         <span className="faint">{sel.staged ? 'staged vs HEAD' : 'working tree vs staged'}</span>
         <span className="spacer" />
         {git?.diffLoading && <Loader2 size={12} className="spin" />}
-        <span className="faint" title="Last status check">{git?.status ? relativeTime(git.status.checkedAt) : ''}</span>
+        <span className="faint" data-tip="Last status check">{git?.status ? relativeTime(git.status.checkedAt) : ''}</span>
       </div>
       <div className="git-diff-body">
         {d && d.path === sel.path && (d.binary ? <div className="faint" style={{ padding: 12 }}>Binary file.</div> : d.tooLarge ? <div className="faint" style={{ padding: 12 }}>File too large to diff.</div> : d.before === d.after ? <div className="faint" style={{ padding: 12 }}>No textual difference.</div> : <DiffView before={d.before} after={d.after} context={3} />)}

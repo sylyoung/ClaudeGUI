@@ -101,7 +101,7 @@ export function ToolCallCard({ block, depth = 0, renderChild }: { block: ToolUse
         <span className="faint">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
         <span className="faint">{toolIcon(block.name)}</span>
         <span className="tname">{displayName}</span>
-        <span className="tsummary" title={toolSummary(block)}>
+        <span className="tsummary" data-tip={toolSummary(block)}>
           {toolSummary(block)}
         </span>
         {block.task?.usage && (
@@ -140,7 +140,7 @@ export function ToolCallCard({ block, depth = 0, renderChild }: { block: ToolUse
               <div className="label" style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span>{block.result.isError ? 'error' : 'result'}</span>
                 {block.result.content.length > 1500 && (
-                  <button className="copy-btn" onClick={() => setResultExpanded((v) => !v)}>
+                  <button data-tip="Expand or collapse the full tool output" className="copy-btn" onClick={() => setResultExpanded((v) => !v)}>
                     {resultExpanded ? 'collapse' : 'expand'}
                   </button>
                 )}
@@ -178,7 +178,7 @@ function ToolInput({ block }: { block: ToolUseBlockView }) {
     case 'Bash':
       return (
         <>
-          <CodeBlock code={String(i.command ?? '')} language="bash" title={i.run_in_background ? 'bash · background' : 'bash'} />
+          <CodeBlock code={String(i.command ?? '')} language="bash" data-tip={i.run_in_background ? 'bash · background' : 'bash'} />
         </>
       )
     case 'Edit':
@@ -194,7 +194,7 @@ function ToolInput({ block }: { block: ToolUseBlockView }) {
       )
     }
     case 'Write':
-      return <CodeBlock code={String(i.content ?? '')} language={extOf(i.file_path)} title={`write · ${String(i.content ?? '').split('\n').length} lines`} />
+      return <CodeBlock code={String(i.content ?? '')} language={extOf(i.file_path)} data-tip={`write · ${String(i.content ?? '').split('\n').length} lines`} />
     case 'Read':
       return null
     case 'Agent':

@@ -164,6 +164,22 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.get(a[0]).getModels()
     case 'contextUsage':
       return manager.get(a[0]).refreshContextUsage(a[1] ? 'full' : 'summary')
+    case 'groups':
+      return manager.list().groups
+    case 'createGroup':
+      return manager.createGroup(a[0])
+    case 'renameGroup':
+      return manager.renameGroup(a[0], a[1])
+    case 'deleteGroup':
+      return manager.deleteGroup(a[0])
+    case 'setGroupCollapsed':
+      return manager.setGroupCollapsed(a[0], a[1])
+    case 'moveGroup':
+      return manager.moveGroup(a[0], a[1] ?? undefined)
+    case 'moveSession':
+      return manager.moveSession(a[0], a[1] ?? {})
+    case 'relocate':
+      return manager.relocate(a[0], a[1])
     case 'planUsage':
       return manager.planUsageFromAnySession()
     case 'resumeOnLaunch':

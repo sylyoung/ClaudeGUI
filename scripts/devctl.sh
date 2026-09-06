@@ -29,7 +29,7 @@ case "$1" in
     (CLAUDEGUI_DEBUG=1 CLAUDEGUI_USER_DATA="$DATA_DIR" nohup npx electron-vite dev > /tmp/claudegui-dev.log 2>&1 &)
     for i in $(seq 1 60); do curl -s -m 2 "$BASE/state" >/dev/null 2>&1 && { echo "up after ${i}s"; exit 0; }; sleep 1; done
     echo "failed to start"; tail -20 /tmp/claudegui-dev.log; exit 1;;
-  stop) kill_gui; pkill -f "out/main/host.mjs" 2>/dev/null; echo "stopped (gui + session host)";;
+  stop) kill_gui; HP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "${CLAUDEGUI_USER_DATA:-$PWD/sandbox/userdata}/session-host.json" 2>/dev/null); [ -n "$HP" ] && kill "$HP" 2>/dev/null; echo "stopped (gui + dev session host ${HP:-none})";;
   state) curl -s "$BASE/state";;
   host) curl -s "$BASE/host";;
   update) curl -s "$BASE/update";;

@@ -26,6 +26,26 @@ export interface SessionRecord {
   conversationId?: string
   /** Estimated USD cost accumulated across all processes of this session. */
   totalCostUsd?: number
+  /** User-defined group (see SessionGroup); undefined = ungrouped. */
+  groupId?: string
+  /** Manual position inside its group (lower first); only drag & drop changes it. */
+  order?: number
+}
+
+/** User-defined category of sessions ("Papers", "Utilities", "Tasks", …). */
+export interface SessionGroup {
+  id: string
+  name: string
+  /** Position among groups (lower first). */
+  order: number
+  collapsed?: boolean
+}
+
+/** Where to drop a session when moving it (drag & drop / "Move to group"). */
+export interface SessionMove {
+  groupId?: string
+  /** Insert before this session id; omitted = append at the end of the group. */
+  beforeId?: string
 }
 
 export type SessionStatus = 'stopped' | 'starting' | 'idle' | 'running' | 'requires_action' | 'error'
@@ -121,6 +141,10 @@ export interface SessionLiveState {
   lastActivityAt: number
   lastPreview?: string
   error?: string
+  /** The working directory does not exist (renamed or deleted); the process cannot start. */
+  cwdMissing?: boolean
+  /** When the current process was started (epoch ms). */
+  processStartedAt?: number
   slashCommands?: SlashCommandView[]
   models?: ModelInfoView[]
   queuedCount: number
@@ -225,6 +249,7 @@ export type ChatMessage = UserChatMessage | AssistantChatMessage | SystemChatMes
 export type SessionEvent =
   | { type: 'state'; state: SessionLiveState }
   | { type: 'record'; record: SessionRecord }
+  | { type: 'groups'; groups: SessionGroup[] }
   | { type: 'record-removed'; id: string }
   | { type: 'message'; sessionId: string; message: ChatMessage }
   | { type: 'messages-reset'; sessionId: string; messages: ChatMessage[] }
@@ -326,6 +351,10 @@ export interface AppSettings {
   chatMaxWidth: number
   groupSessionsByFolder: boolean
   translucentSidebar: boolean
+  /** Overview strip with one chip per session above the chat. */
+  showStatusBoard: boolean
+  /** Hover explanations on buttons and indicators. */
+  showTooltips: boolean
 
   // ---- Files
   /** Command used for "open in editor"; supports {path} and {line} placeholders. */
@@ -579,4 +608,37 @@ export interface UpdateState {
 export interface StartupNotice {
   kind: 'info' | 'error' | 'success'
   text: string
+}
+
+// ---------------------------------------------------------------------------
+// Working-directory info and macOS privacy permissions
+// ---------------------------------------------------------------------------
+
+export interface DirInfo {
+  path: string
+  exists: boolean
+  /** Total size in bytes (du -sk), undefined while unknown or when the folder is missing. */
+  bytes?: number
+  /** Number of files (find -type f), undefined when not counted. */
+  files?: number
+  checkedAt: number
+  /** True when the size computation was cut short. */
+  partial?: boolean
+}
+
+export type PermissionState = 'granted' | 'denied' | 'not-determined' | 'restricted' | 'unknown' | 'unsupported'
+
+export interface PermissionInfo {
+  key: string
+  label: string
+  description: string
+  state: PermissionState
+  /** Whether the app can trigger the system prompt itself. */
+  canRequest: boolean
+  /** Whether a System Settings pane exists for it. */
+  hasPane: boolean
+  /** Extra text (e.g. probe result). */
+  detail?: string
+  /** True when granting needs a manual toggle in System Settings. */
+  manual?: boolean
 }

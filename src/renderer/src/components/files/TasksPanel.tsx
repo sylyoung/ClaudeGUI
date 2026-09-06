@@ -22,9 +22,9 @@ export function TasksPanel({ live, sessionId }: { live: SessionLiveState | undef
   return (
     <div className="tasks">
       <div className="tasks-summary">
-        <span className="pill" title="Background shells, monitors and workflows"><TerminalSquare size={11} /> {counts.background} background</span>
-        <span className="pill" title="Subagents currently running"><Bot size={11} /> {counts.subagents} subagent{counts.subagents === 1 ? '' : 's'}</span>
-        <span className={`pill ctx-${level}`} title="Context window in use"><Cpu size={11} /> context {pct == null ? '–' : `${pct}%`}</span>
+        <span className="pill" data-tip="Background shells, monitors and workflows"><TerminalSquare size={11} /> {counts.background} background</span>
+        <span className="pill" data-tip="Subagents currently running"><Bot size={11} /> {counts.subagents} subagent{counts.subagents === 1 ? '' : 's'}</span>
+        <span className={`pill ctx-${level}`} data-tip="Context window in use"><Cpu size={11} /> context {pct == null ? '–' : `${pct}%`}</span>
       </div>
       <div>
         <h4>Background tasks & subagents</h4>
@@ -36,7 +36,7 @@ export function TasksPanel({ live, sessionId }: { live: SessionLiveState | undef
               {isAgentTask(t) ? <Bot size={12} /> : <TerminalSquare size={12} />}
               <span className="ellipsis" style={{ flex: 1 }}>{t.description || t.taskType}</span>
               {isTaskActive(t) && (
-                <button className="btn ghost icon" title="Stop this task" onClick={() => window.api.sessions.stopTask(sessionId, t.taskId)}>
+                <button className="btn ghost icon" data-tip="Stop this task" onClick={() => window.api.sessions.stopTask(sessionId, t.taskId)}>
                   <Square size={11} />
                 </button>
               )}
@@ -79,7 +79,7 @@ export function TasksPanel({ live, sessionId }: { live: SessionLiveState | undef
             {cu.categories
               .filter((c) => c.tokens > 0)
               .map((c) => (
-                <div className="cat-row" key={c.name} title={`${c.name}: ${c.tokens.toLocaleString()} tokens`}>
+                <div className="cat-row" key={c.name} data-tip={`${c.name}: ${c.tokens.toLocaleString()} tokens`}>
                   <span className="cat-name">{c.name}</span>
                   <span className="cat-track">
                     <span className="cat-fill" style={{ width: `${Math.min(100, (c.tokens / barScale(cu.categories)) * 100)}%`, background: c.color || 'var(--accent)' }} />

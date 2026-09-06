@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.3 — 2026-09-06
+
+### Sidebar
+- Sessions keep their position: the list no longer reorders by activity. Drag a session to reorder it or drop it on a group header; pinned sessions stay at the top of their group; new sessions appear at the top of theirs.
+- Groups (categories such as Papers, Utilities, Tasks): create them with the folder-plus button, rename by double-click or right-click, reorder (drag the header or Move up / down), collapse, delete (sessions are kept and become ungrouped). Every session menu has "Move to group"; the New session dialog has a Group field.
+- Folder header rows are off by default, also for existing installs; each row shows its folder name inline instead. Settings → Appearance can turn them back on.
+- Colour-coded states everywhere: working (blue, pulsing), needs input (amber, pulsing), idle with background tasks still running (teal), idle (green), not running (grey outline), error (red) — as a left bar, a dot and the state text of each row.
+- Background shell / monitor counts (blue chips) and subagent counts (purple chips) are larger and coloured in the sidebar, the chat header and the status board.
+- Picking a search result clears the search box; the box has a clear (×) button.
+
+### Status board
+- A strip above the chat shows every session as a chip with its state, task counts and unread count, grouped like the sidebar, plus a summary (n working, n need input, …). Click a chip to switch, right-click for the session menu. ⌘⇧S or Settings → Appearance toggles the board.
+
+### Chat
+- Toolbar: model, permission mode and effort show their full names ("Opus 5 (claude-opus-5)", "acceptEdits — accept file edits automatically", "xhigh — extra high"…). The estimated cost and the Claude version are gone; the toolbar shows the time of the last activity, the size of the working directory and the git remote (click to open it) with ahead/behind counts instead.
+- Stop (⌘.) puts the prompt(s) of the interrupted turn back into the input box so they can be edited and resent. The input box has a clear (×) button.
+- The slash-command menu ranks exact and prefix matches first: "/comp" lists /compact before /autocompact.
+- A session whose folder was renamed or deleted shows a clear "folder not found" banner instead of a misleading process error. "Change working directory…" (banner or session menu) points the session at the new location and moves its transcript along, so the history is kept.
+
+### Hover explanations
+- Nearly every button, indicator, tab, option and status now has a tooltip explaining what it does (Settings → Appearance → Hover explanations).
+
+### macOS permissions and signing
+- Settings → Permissions lists the macOS privacy grants that matter for Claude's tools (Full Disk Access, Desktop / Documents / Downloads, iCloud Drive, external and network volumes, Accessibility, Screen Recording, Camera, Microphone, Automation of System Events / Finder / Terminal, Notifications, Local Network, Developer Tools, App Management) with their state, a Request button where the app can trigger the system prompt, "Request all", and a shortcut to the right System Settings pane for the ones that must be switched on by hand.
+- The bundle carries usage-description strings for every protected resource, and the build is signed with an "Apple Development" certificate when one is in the keychain (electron-builder `type: development`), so grants survive updates. Without a certificate the build stays unsigned as before.
+
+### Fixes
+- The update restart of 1.0.2 could be ignored by Electron when triggered from inside the quit handler; the app now leaves the handler before quitting. The relaunch keeps ClaudeGUI's own environment overrides (isolated data folder, debug port) through `open --env`.
+
 ## 1.0.2 — 2026-09-06
 
 ### Session host (sessions survive app restarts)

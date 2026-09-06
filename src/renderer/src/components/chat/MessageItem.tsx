@@ -52,7 +52,7 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { m
     case 'result': {
       const s = message.stats
       return (
-        <div className={`msg-result ${message.errorText ? 'error' : ''}`} title={`in ${formatTokens(s.inputTokens)} · out ${formatTokens(s.outputTokens)} · cache read ${formatTokens(s.cacheReadTokens)} · cache write ${formatTokens(s.cacheCreationTokens)}`}>
+        <div className={`msg-result ${message.errorText ? 'error' : ''}`} data-tip={`in ${formatTokens(s.inputTokens)} · out ${formatTokens(s.outputTokens)} · cache read ${formatTokens(s.cacheReadTokens)} · cache write ${formatTokens(s.cacheCreationTokens)}`}>
           <span className="line" />
           <span>
             {message.errorText ? `⚠ ${message.errorText} · ` : ''}

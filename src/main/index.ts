@@ -13,6 +13,7 @@ import { UsageService } from './usageService'
 import { HostClient, HostProtocolMismatch } from './hostClient'
 import { Updater } from './updater'
 import { loadWindowState, trackWindowState } from './windowState'
+import { PermissionService } from './permissions'
 import type { AppSettings, SessionEvent, StartupNotice, ThemeInfo, UsageSnapshot } from '@shared/types'
 import type { HostEvent } from '../host/protocol'
 
@@ -32,6 +33,7 @@ let store: SettingsStore
 let host: HostClient
 let usage: UsageService
 let updater: Updater
+let permissions: PermissionService
 let startupNotice: StartupNotice | null = null
 let quitting = false
 let quitInProgress = false
@@ -231,6 +233,7 @@ function buildMenu(): void {
         { label: 'Toggle Sidebar', accelerator: 'Cmd+B', click: () => send('menu:toggle-sidebar') },
         { label: 'Toggle Files Panel', accelerator: 'Cmd+Shift+E', click: () => send('menu:toggle-files') },
         { label: 'Toggle Git Panel', accelerator: 'Cmd+Shift+G', click: () => send('menu:toggle-git') },
+        { label: 'Toggle Status Board', accelerator: 'Cmd+Shift+S', click: () => send('menu:toggle-board') },
         { type: 'separator' },
         {
           label: 'Appearance',
@@ -476,11 +479,13 @@ if (!gotLock) {
       log
     })
     startupNotice = updater.takeStartupNotice()
+    permissions = new PermissionService(userData, () => getSpawnEnv(parseExtraEnv(store.get().extraEnv)), log)
     registerIpc({
       store,
       host,
       usage,
       updater,
+      permissions,
       getWindow: () => mainWindow,
       resolveExecutable,
       sdkVersion: sdkVersion(),

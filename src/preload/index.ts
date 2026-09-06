@@ -20,11 +20,15 @@ import type {
   SessionEvent,
   SessionLiveState,
   SessionRecord,
+  SessionGroup,
+  SessionMove,
   SlashCommandView,
   StartupNotice,
   ThemeInfo,
   UpdateState,
   HostStatus,
+  DirInfo,
+  PermissionInfo,
   UsageSnapshot
 } from '@shared/types'
 
@@ -82,9 +86,9 @@ const api = {
     refresh: () => invoke<UsageSnapshot>('usage:refresh')
   },
   sessions: {
-    list: () => invoke<{ records: SessionRecord[]; live: SessionLiveState[] }>('sessions:list'),
+    list: () => invoke<{ records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] }>('sessions:list'),
     history: (id: string) => invoke<ChatMessage[]>('sessions:history', id),
-    create: (opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }) =>
+    create: (opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }) =>
       invoke<SessionRecord>('sessions:create', opts),
     importCli: (sessionId: string, cwd: string, title?: string) => invoke<SessionRecord>('sessions:importCli', sessionId, cwd, title),
     listCli: (dir?: string) => invoke<CliSessionSummary[]>('sessions:listCli', dir),
@@ -106,7 +110,21 @@ const api = {
     backgroundTasks: (id: string, toolUseId?: string) => invoke<boolean>('sessions:backgroundTasks', id, toolUseId),
     commands: (id: string) => invoke<SlashCommandView[]>('sessions:commands', id),
     models: (id: string) => invoke<ModelInfoView[]>('sessions:models', id),
-    contextUsage: (id: string, full?: boolean) => invoke<SessionLiveState['contextUsage'] | null>('sessions:contextUsage', id, full)
+    contextUsage: (id: string, full?: boolean) => invoke<SessionLiveState['contextUsage'] | null>('sessions:contextUsage', id, full),
+    createGroup: (name: string) => invoke<SessionGroup>('sessions:createGroup', name),
+    renameGroup: (id: string, name: string) => invoke<void>('sessions:renameGroup', id, name),
+    deleteGroup: (id: string) => invoke<void>('sessions:deleteGroup', id),
+    setGroupCollapsed: (id: string, collapsed: boolean) => invoke<void>('sessions:setGroupCollapsed', id, collapsed),
+    moveGroup: (id: string, beforeId?: string) => invoke<void>('sessions:moveGroup', id, beforeId),
+    moveSession: (id: string, move: SessionMove) => invoke<void>('sessions:moveSession', id, move),
+    /** Pick a new working directory (dialog when `cwd` is omitted) and move the transcript along. */
+    relocate: (id: string, cwd?: string) => invoke<SessionRecord | null>('sessions:relocate', id, cwd)
+  },
+  permissions: {
+    list: () => invoke<PermissionInfo[]>('perm:list'),
+    request: (key: string) => invoke<PermissionInfo[]>('perm:request', key),
+    requestAll: () => invoke<PermissionInfo[]>('perm:requestAll'),
+    openPane: (key: string) => invoke<void>('perm:openPane', key)
   },
   fs: {
     list: (dir: string, showHidden: boolean) => invoke<FsEntry[]>('fs:list', dir, showHidden),
@@ -118,7 +136,8 @@ const api = {
     unwatch: (dir: string) => invoke<void>('fs:unwatch', dir),
     home: () => invoke<string>('fs:home'),
     readImageBase64: (file: string) => invoke<string>('fs:readImageBase64', file),
-    trash: (p: string) => invoke<void>('fs:trash', p)
+    trash: (p: string) => invoke<void>('fs:trash', p),
+    dirInfo: (dir: string, force?: boolean) => invoke<DirInfo>('fs:dirInfo', dir, force)
   },
   shell: {
     openExternal: (url: string) => invoke<void>('shell:openExternal', url),
@@ -173,7 +192,7 @@ const api = {
     onMenu: (cb: (command: string) => void) => {
       const channels = [
         'menu:settings', 'menu:new-session', 'menu:import-session', 'menu:next-session', 'menu:prev-session',
-        'menu:focus-composer', 'menu:toggle-sidebar', 'menu:toggle-files', 'menu:toggle-git', 'menu:search', 'menu:interrupt', 'menu:check-updates'
+        'menu:focus-composer', 'menu:toggle-sidebar', 'menu:toggle-files', 'menu:toggle-git', 'menu:search', 'menu:interrupt', 'menu:check-updates', 'menu:toggle-board'
       ]
       const offs = channels.map((ch) => on<void>(ch, () => cb(ch)))
       return () => offs.forEach((off) => off())

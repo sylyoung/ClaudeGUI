@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, ImagePlus, Square } from 'lucide-react'
+import { ArrowUp, ImagePlus, Square, X } from 'lucide-react'
 import type { ImageAttachment, SessionLiveState, SlashCommandView } from '@shared/types'
 import { useStore } from '@/store'
 
@@ -18,7 +18,16 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null)
   const focusNonce = useStore((s) => s.composerFocusNonce)
   const sendWithEnter = useStore((s) => s.settings?.sendWithEnter ?? true)
+  const restore = useStore((s) => s.composerRestore[sessionId])
   const busy = live?.status === 'running' || live?.status === 'requires_action' || live?.status === 'starting'
+
+  // Prompts of an interrupted turn come back into the box (see store.interruptSession).
+  useEffect(() => {
+    if (!restore) return
+    setText((t) => (t.trim() ? `${t}\n\n${restore.text}` : restore.text))
+    if (restore.images.length) setImages((imgs) => [...imgs, ...restore.images])
+    setTimeout(() => ref.current?.focus(), 0)
+  }, [restore?.nonce]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     ref.current?.focus()
@@ -61,7 +70,12 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     ]
     const names = new Set(commands.map((c) => c.name))
     const all = [...commands, ...builtin.filter((b) => !names.has(b.name))]
-    return all.filter((c) => c.name.toLowerCase().includes(q) || c.aliases?.some((a) => a.toLowerCase().includes(q))).slice(0, 40)
+    return all
+      .map((c) => ({ c, rank: rankCommand(c, q) }))
+      .filter((x) => x.rank >= 0)
+      .sort((a, b) => a.rank - b.rank || a.c.name.length - b.c.name.length || a.c.name.localeCompare(b.c.name))
+      .map((x) => x.c)
+      .slice(0, 40)
   }, [slashActive, text, commands])
   useEffect(() => setSlashIndex(0), [text])
 
@@ -137,7 +151,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
       {slashActive && filtered.length > 0 && (
         <div className="slash-menu">
           {filtered.map((c, i) => (
-            <div key={c.name} className={`slash-item ${i === slashIndex ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setText('/' + c.name + (c.argumentHint ? ' ' : '')); ref.current?.focus() }}>
+            <div key={c.name} className={`slash-item ${i === slashIndex ? 'active' : ''}`} data-tip={c.description} onMouseDown={(e) => { e.preventDefault(); setText('/' + c.name + (c.argumentHint ? ' ' : '')); ref.current?.focus() }}>
               <span className="sname">/{c.name}</span>
               <span className="sdesc">{c.description}</span>
               {c.argumentHint && <span className="faint mono" style={{ fontSize: 11 }}>{c.argumentHint}</span>}
@@ -146,12 +160,26 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
         </div>
       )}
       <div className="composer-inner">
+        {(text || images.length > 0) && (
+          <button
+            className="composer-clear no-drag"
+            data-tip="Clear the input box (text and attachments)"
+            onClick={() => {
+              setText('')
+              setImages([])
+              localStorage.removeItem(`draft:${sessionId}`)
+              ref.current?.focus()
+            }}
+          >
+            <X size={13} />
+          </button>
+        )}
         {images.length > 0 && (
           <div className="attachments">
             {images.map((img, k) => (
               <div className="attachment" key={k}>
                 <img src={`data:${img.mediaType};base64,${img.data}`} alt={img.name} />
-                <button onClick={() => setImages((imgs) => imgs.filter((_, i) => i !== k))}>×</button>
+                <button data-tip="Remove this image" onClick={() => setImages((imgs) => imgs.filter((_, i) => i !== k))}>×</button>
               </div>
             ))}
           </div>
@@ -167,7 +195,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
           spellCheck
         />
         <div className="composer-row">
-          <button className="btn ghost icon" title="Attach image" onClick={pickImages}>
+          <button className="btn ghost icon" data-tip="Attach images (you can also paste or drop them here)" onClick={pickImages}>
             <ImagePlus size={15} />
           </button>
           <span className="composer-hint">
@@ -176,17 +204,40 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
           </span>
           <span className="spacer" />
           {busy && (
-            <button className="btn danger sm" onClick={onInterrupt} title="Interrupt the current turn (⌘.)">
+            <button className="btn danger sm" onClick={onInterrupt} data-tip="Stop the current turn (⌘.). The prompt you sent goes back into this box so you can edit and resend it.">
               <Square size={12} /> Stop
             </button>
           )}
-          <button className="btn primary sm" onClick={submit} disabled={!text.trim() && !images.length} title="Send">
+          <button className="btn primary sm" onClick={submit} disabled={!text.trim() && !images.length} data-tip={busy ? 'Queue this message; it is sent when the current turn ends' : 'Send the message'}>
             <ArrowUp size={14} /> {busy ? 'Queue' : 'Send'}
           </button>
         </div>
       </div>
     </div>
   )
+}
+
+/**
+ * Ranking for the slash-command menu: exact name, then name prefix, alias, word-start inside the
+ * name, substring, and finally loose subsequence matches. "/comp" therefore lists /compact before
+ * /autocompact. Lower is better; -1 = no match.
+ */
+export function rankCommand(c: SlashCommandView, q: string): number {
+  if (!q) return 0
+  const name = c.name.toLowerCase()
+  const aliases = (c.aliases ?? []).map((a) => a.toLowerCase())
+  if (name === q) return 0
+  if (name.startsWith(q)) return 1
+  if (aliases.some((a) => a === q)) return 2
+  if (aliases.some((a) => a.startsWith(q))) return 3
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (new RegExp(`[-_:/ ]${escaped}`).test(name)) return 4
+  if (name.includes(q)) return 5
+  if (aliases.some((a) => a.includes(q))) return 6
+  let i = 0
+  for (const ch of name) if (i < q.length && ch === q[i]) i += 1
+  if (i === q.length) return 7
+  return -1
 }
 
 function fileToBase64(f: File): Promise<string> {

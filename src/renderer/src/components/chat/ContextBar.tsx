@@ -32,7 +32,7 @@ export function ContextBar({ sessionId, live }: { sessionId: string; live: Sessi
   const title = pct == null ? 'Context usage is known once the session has answered once' : `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens (${pct}%)`
   return (
     <>
-      <button ref={ref} className={`ctx-bar level-${level} ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)} title={title}>
+      <button ref={ref} className={`ctx-bar level-${level} ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)} data-tip={title}>
         <Cpu size={12} />
         <span className="ctx-track">
           <span className="ctx-fill" style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
@@ -46,10 +46,10 @@ export function ContextBar({ sessionId, live }: { sessionId: string; live: Sessi
               <Cpu size={14} />
               <b>Context window</b>
               <span className="spacer" />
-              <button className="btn sm" onClick={recount} disabled={busy || !live?.processAlive} title="Re-count every category with the token-count API">
+              <button className="btn sm" onClick={recount} disabled={busy || !live?.processAlive} data-tip="Re-count every category with the token-count API">
                 <RefreshCw size={12} className={busy ? 'spin' : ''} /> Recount
               </button>
-              <button className="btn sm" onClick={() => void send(sessionId, '/compact')} disabled={!live?.processAlive} title="Summarize the conversation to free context (/compact)">
+              <button className="btn sm" onClick={() => void send(sessionId, '/compact')} disabled={!live?.processAlive} data-tip="Summarize the conversation to free context (/compact)">
                 <Shrink size={12} /> Compact
               </button>
             </div>
@@ -66,7 +66,7 @@ export function ContextBar({ sessionId, live }: { sessionId: string; live: Sessi
                 {cu.categories
                   .filter((c) => c.tokens > 0)
                   .map((c) => (
-                    <div className="cat-row" key={c.name} title={`${c.name}: ${c.tokens.toLocaleString()} tokens`}>
+                    <div className="cat-row" key={c.name} data-tip={`${c.name}: ${c.tokens.toLocaleString()} tokens`}>
                       <span className="cat-name">{c.name}</span>
                       <span className="cat-track">
                         <span className="cat-fill" style={{ width: `${Math.min(100, (c.tokens / barScale(cu.categories)) * 100)}%`, background: c.color || 'var(--accent)' }} />

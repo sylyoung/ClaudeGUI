@@ -224,6 +224,14 @@ export class SessionRuntime {
 
   private async start(): Promise<void> {
     this.stopping = false
+    if (!isDirectory(this.record.cwd)) {
+      this.live.cwdMissing = true
+      this.live.error = `Working directory not found: ${this.record.cwd}. Use "Change working directory…" to point the session at the folder's new location.`
+      this.setStatus('error')
+      this.scheduleFlush()
+      throw new Error(this.live.error)
+    }
+    this.live.cwdMissing = false
     await this.ensureHistory()
     this.setStatus('starting')
     this.live.error = undefined
@@ -272,6 +280,7 @@ export class SessionRuntime {
     const q = query({ prompt: this.queue, options })
     this.q = q
     this.live.processAlive = true
+    this.live.processStartedAt = Date.now()
     this.processCostSeen = 0
     this.tasks.clear()
     this.live.backgroundTasks = []
@@ -546,6 +555,24 @@ export class SessionRuntime {
     return (await fn.call(this.q, { skipBehaviors: true })) as SdkUsage
   }
 
+  /** Move the transcript (and subagent transcripts) to the project folder of a new working directory. */
+  moveTranscript(newCwd: string): void {
+    const from = projectDirFor(this.record.cwd)
+    const to = projectDirFor(newCwd)
+    if (from === to) return
+    fs.mkdirSync(to, { recursive: true })
+    const id = this.record.claudeSessionId
+    for (const name of [`${id}.jsonl`, id]) {
+      const src = path.join(from, name)
+      const dst = path.join(to, name)
+      try {
+        if (fs.existsSync(src) && !fs.existsSync(dst)) fs.renameSync(src, dst)
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] move ${src} -> ${dst} failed: ${(err as Error).message}`)
+      }
+    }
+  }
+
   markRead(): void {
     if (this.live.unread) {
       this.live.unread = 0
@@ -610,7 +637,7 @@ export class SessionRuntime {
         const queued = (msg as { queued_turn_count?: number }).queued_turn_count ?? this.live.queuedCount
         if (queued > 0) this.setStatus('running')
         else if (this.live.status !== 'requires_action') this.setStatus('idle')
-        const preview = msg.subtype === 'success' ? msg.result : `${msg.subtype}`
+        const preview = msg.subtype === 'success' ? msg.result : humanResultSubtype(msg.subtype, (msg as { errors?: string[] }).errors)
         const text = (this.lastAssistantText || preview || '').trim()
         this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
         this.record.lastActiveAt = ts
@@ -831,6 +858,32 @@ async function readTimestamps(file: string): Promise<Map<string, number>> {
     if (uuid && !Number.isNaN(t)) map.set(uuid, t)
   }
   return map
+}
+
+/** Sidebar-friendly wording for non-success result subtypes ("error_during_execution" → "interrupted"…). */
+function humanResultSubtype(subtype: string, errors?: string[]): string {
+  const joined = (errors ?? []).join(' ').toLowerCase()
+  if (/interrupt|abort|cancel/.test(joined)) return 'interrupted'
+  switch (subtype) {
+    case 'error_during_execution':
+      return joined ? `failed: ${(errors ?? [])[0]?.slice(0, 100)}` : 'interrupted'
+    case 'error_max_turns':
+      return 'stopped: turn limit reached'
+    case 'error_max_budget_usd':
+      return 'stopped: budget limit reached'
+    case 'error_max_structured_output_retries':
+      return 'stopped: output format retries exhausted'
+    default:
+      return subtype.replace(/^error_/, 'error: ').replace(/_/g, ' ')
+  }
+}
+
+function isDirectory(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 /** ~/.claude/projects/<encoded cwd> — Claude Code replaces every non-alphanumeric character with '-'. */
