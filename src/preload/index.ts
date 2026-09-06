@@ -21,7 +21,10 @@ import type {
   SessionLiveState,
   SessionRecord,
   SlashCommandView,
+  StartupNotice,
   ThemeInfo,
+  UpdateState,
+  HostStatus,
   UsageSnapshot
 } from '@shared/types'
 
@@ -53,7 +56,22 @@ const api = {
     info: () => invoke<AppInfo>('app:info'),
     envInfo: () => invoke<{ count: number; proxy: string[]; path: string }>('app:envInfo'),
     reloadEnv: () => invoke<number>('app:reloadEnv'),
-    theme: () => invoke<ThemeInfo>('app:theme')
+    theme: () => invoke<ThemeInfo>('app:theme'),
+    /** One-shot message left by the previous run (e.g. "updated to 1.0.2"). */
+    startupNotice: () => invoke<StartupNotice | null>('app:startupNotice')
+  },
+  host: {
+    status: () => invoke<HostStatus>('host:status'),
+    restart: () => invoke<void>('host:restart')
+  },
+  update: {
+    state: () => invoke<UpdateState>('update:state'),
+    check: () => invoke<UpdateState>('update:check'),
+    install: () => invoke<UpdateState>('update:install'),
+    apply: () => invoke<void>('update:apply'),
+    cancel: () => invoke<void>('update:cancel'),
+    openLog: () => invoke<void>('update:openLog'),
+    openWorkDir: () => invoke<void>('update:openWorkDir')
   },
   settings: {
     get: () => invoke<AppSettings>('settings:get'),
@@ -149,10 +167,13 @@ const api = {
     onUsage: (cb: (s: UsageSnapshot) => void) => on<UsageSnapshot>('usage:update', cb),
     onTheme: (cb: (t: ThemeInfo) => void) => on<ThemeInfo>('theme:changed', cb),
     onSettingsChanged: (cb: (s: AppSettings) => void) => on<AppSettings>('settings:changed', cb),
+    onUpdate: (cb: (s: UpdateState) => void) => on<UpdateState>('update:changed', cb),
+    /** The session host was replaced or reconnected: reload the session list. */
+    onSessionsReload: (cb: () => void) => on<null>('sessions:reload', () => cb()),
     onMenu: (cb: (command: string) => void) => {
       const channels = [
         'menu:settings', 'menu:new-session', 'menu:import-session', 'menu:next-session', 'menu:prev-session',
-        'menu:focus-composer', 'menu:toggle-sidebar', 'menu:toggle-files', 'menu:toggle-git', 'menu:search', 'menu:interrupt'
+        'menu:focus-composer', 'menu:toggle-sidebar', 'menu:toggle-files', 'menu:toggle-git', 'menu:search', 'menu:interrupt', 'menu:check-updates'
       ]
       const offs = channels.map((ch) => on<void>(ch, () => cb(ch)))
       return () => offs.forEach((off) => off())

@@ -4,15 +4,17 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { AppStore } from './store'
-import { SessionManager, type NotifyKind } from './sessions/SessionManager'
+import { SettingsStore } from './store'
 import { registerIpc } from './ipc'
 import { getLoginShellEnv, getSpawnEnv, parseExtraEnv } from './env'
 import { detectEditorCommand } from './shellService'
 import { startDebugServer } from './debugServer'
 import { UsageService } from './usageService'
-import { setToolResultMaxChars } from './sessions/transcript'
-import type { AppSettings, SessionEvent, ThemeInfo, UsageSnapshot } from '@shared/types'
+import { HostClient, HostProtocolMismatch } from './hostClient'
+import { Updater } from './updater'
+import { loadWindowState, trackWindowState } from './windowState'
+import type { AppSettings, SessionEvent, StartupNotice, ThemeInfo, UsageSnapshot } from '@shared/types'
+import type { HostEvent } from '../host/protocol'
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -26,10 +28,18 @@ function log(...args: unknown[]): void {
 }
 
 let mainWindow: BrowserWindow | null = null
-let store: AppStore
-let manager: SessionManager
+let store: SettingsStore
+let host: HostClient
 let usage: UsageService
+let updater: Updater
+let startupNotice: StartupNotice | null = null
 let quitting = false
+let quitInProgress = false
+/** Set when quitting to apply an update: the session host must stay alive. */
+let updating = false
+let expectDisconnect = false
+let replacingHost = false
+let staleCheckTimer: NodeJS.Timeout | null = null
 
 function sdkVersion(): string {
   try {
@@ -42,7 +52,7 @@ function sdkVersion(): string {
 }
 
 function resolveExecutable(): string {
-  const custom = store.settings.get().claudeExecutable?.trim()
+  const custom = store.get().claudeExecutable?.trim()
   if (custom && fs.existsSync(custom)) return custom
   // SDK-bundled binary (platform package). Resolve so that a packaged app can unpack it.
   try {
@@ -53,6 +63,14 @@ function resolveExecutable(): string {
     /* not installed */
   }
   return ''
+}
+
+/** /path/to/ClaudeGUI.app when running from a built bundle. */
+function bundlePath(): string | undefined {
+  if (!app.isPackaged) return undefined
+  const exe = app.getPath('exe')
+  const b = path.resolve(exe, '..', '..', '..')
+  return b.endsWith('.app') ? b : undefined
 }
 
 function broadcast(event: SessionEvent): void {
@@ -82,13 +100,13 @@ function getThemeInfo(): ThemeInfo {
 }
 
 function windowBackground(): string {
-  const s = store.settings.get()
+  const s = store.get()
   if (process.platform === 'darwin' && s.translucentSidebar) return '#00000000'
   return nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff'
 }
 
 function applyThemeSettings(): void {
-  const s = store.settings.get()
+  const s = store.get()
   nativeTheme.themeSource = s.theme || 'system'
   for (const win of BrowserWindow.getAllWindows()) {
     win.setBackgroundColor(windowBackground())
@@ -100,8 +118,10 @@ function applyThemeSettings(): void {
 function onSettingsChanged(prev: AppSettings, next: AppSettings): void {
   if (prev.theme !== next.theme || prev.translucentSidebar !== next.translucentSidebar || prev.accent !== next.accent) applyThemeSettings()
   if (prev.usageRefreshMinutes !== next.usageRefreshMinutes) usage.reschedule()
-  if (prev.toolResultMaxChars !== next.toolResultMaxChars) setToolResultMaxChars(next.toolResultMaxChars)
-  if (prev.dockBadge !== next.dockBadge) manager.refreshBadge()
+  if (host.connected) {
+    host.setSettings(next, resolveExecutable() || undefined).catch((err) => log(`[host] setSettings failed: ${(err as Error).message}`))
+    if (prev.dockBadge !== next.dockBadge) host.refreshBadge().catch(() => undefined)
+  }
   sendAll('settings:changed', next)
   buildMenu()
 }
@@ -109,10 +129,13 @@ function onSettingsChanged(prev: AppSettings, next: AppSettings): void {
 // ----------------------------------------------------------------- window
 
 function createWindow(): BrowserWindow {
-  const s = store.settings.get()
+  const s = store.get()
+  const saved = loadWindowState(app.getPath('userData'))
   const win = new BrowserWindow({
-    width: 1500,
-    height: 950,
+    width: saved?.width ?? 1500,
+    height: saved?.height ?? 950,
+    x: saved?.x,
+    y: saved?.y,
     minWidth: 900,
     minHeight: 600,
     show: false,
@@ -130,7 +153,11 @@ function createWindow(): BrowserWindow {
       backgroundThrottling: false
     }
   })
-  win.on('ready-to-show', () => win.show())
+  trackWindowState(win, app.getPath('userData'))
+  win.on('ready-to-show', () => {
+    if (saved?.maximized) win.maximize()
+    win.show()
+  })
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
@@ -142,7 +169,10 @@ function createWindow(): BrowserWindow {
     }
   })
   win.on('focus', () => {
-    manager.setActive(manager.activeSessionId)
+    if (host?.connected) host.setFocus(true).catch(() => undefined)
+  })
+  win.on('blur', () => {
+    if (host?.connected) host.setFocus(false).catch(() => undefined)
   })
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
@@ -154,10 +184,10 @@ function createWindow(): BrowserWindow {
 
 function buildMenu(): void {
   const send = (channel: string, ...args: unknown[]) => mainWindow?.webContents.send(channel, ...args)
-  const theme = store?.settings.get().theme ?? 'system'
+  const theme = store?.get().theme ?? 'system'
   const setTheme = (t: AppSettings['theme']) => {
-    const prev = store.settings.get()
-    const next = store.settings.update((s) => ({ ...s, theme: t }))
+    const prev = store.get()
+    const next = store.update((s) => ({ ...s, theme: t }))
     onSettingsChanged(prev, next)
   }
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -165,6 +195,7 @@ function buildMenu(): void {
       label: app.name,
       submenu: [
         { role: 'about' },
+        { label: 'Check for Updates…', click: () => send('menu:check-updates') },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'Cmd+,', click: () => send('menu:settings') },
         { type: 'separator' },
@@ -226,8 +257,8 @@ function buildMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-function notify(opts: { sessionId: string; title: string; body: string; kind: NotifyKind }): void {
-  const s = store.settings.get()
+function notify(opts: { sessionId: string; title: string; body: string; kind: 'turn' | 'permission' | 'error' }): void {
+  const s = store.get()
   if (!s.notifications) return
   if (opts.kind === 'turn' && !s.notifyOnTurnFinished) return
   if (opts.kind === 'permission' && !s.notifyOnPermission) return
@@ -244,6 +275,144 @@ function notify(opts: { sessionId: string; title: string; body: string; kind: No
   n.show()
 }
 
+function setBadge(count: number): void {
+  if (process.platform !== 'darwin') return
+  const show = store.get().dockBadge && count > 0
+  app.dock?.setBadge(show ? String(count) : '')
+}
+
+// ------------------------------------------------------------- session host
+
+function handleHostEvent(ev: HostEvent): void {
+  switch (ev.e) {
+    case 'session':
+      broadcast(ev.d)
+      if (ev.d.type === 'state' && host.status.stale) scheduleStaleHostCheck()
+      break
+    case 'notify':
+      notify(ev.d)
+      break
+    case 'badge':
+      setBadge(ev.d.count)
+      break
+    case 'rateLimit':
+      usage.applyRateLimitEvent(ev.d.info, ev.d.ts)
+      break
+    case 'turnFinished':
+      usage.refreshSoon('turn finished')
+      break
+    case 'exiting':
+      log(`[host] session host exiting (${ev.d.reason})`)
+      break
+    default:
+      break
+  }
+}
+
+/** Attach to the running host or start one; handles a host from an incompatible version. */
+async function connectHost(): Promise<void> {
+  try {
+    await host.connect()
+  } catch (err) {
+    if (err instanceof HostProtocolMismatch) {
+      const choice = dialog.showMessageBoxSync({
+        type: 'warning',
+        buttons: ['Stop Them and Continue', 'Quit'],
+        defaultId: 0,
+        cancelId: 1,
+        message: `A session host from ClaudeGUI ${err.hostVersion} is still running ${err.aliveSessions} session${err.aliveSessions === 1 ? '' : 's'} that this version cannot take over.`,
+        detail: 'Stopping them ends their Claude processes and background tasks. History is kept and each session resumes with your next message.'
+      })
+      if (choice === 1) {
+        quitting = true
+        app.quit()
+        return
+      }
+      await host.stopStaleHost()
+      await host.connect()
+    } else throw err
+  }
+  const st = host.status
+  log(`[host] ${st.origin} pid=${st.pid} version=${st.version} live=${st.aliveSessions}${st.stale ? ' (stale)' : ''}`)
+  if (st.stale && st.aliveSessions === 0) await replaceHost('started by an older version, no live sessions')
+}
+
+/** Stop the current host and start a fresh one from this app version (only when nothing is running). */
+async function replaceHost(reason: string): Promise<void> {
+  if (replacingHost || quitting) return
+  replacingHost = true
+  expectDisconnect = true
+  try {
+    log(`[host] replacing session host (${reason})`)
+    await host.shutdown(10_000)
+    await host.connect()
+    sendAll('sessions:reload', null)
+    log(`[host] new session host pid=${host.status.pid} version=${host.status.version}`)
+  } catch (err) {
+    log(`[host] replace failed: ${(err as Error).message}`)
+  } finally {
+    replacingHost = false
+    expectDisconnect = false
+  }
+}
+
+function scheduleStaleHostCheck(): void {
+  if (staleCheckTimer) return
+  staleCheckTimer = setTimeout(async () => {
+    staleCheckTimer = null
+    if (!host.status.stale || replacingHost || quitting || !host.connected) return
+    try {
+      if ((await host.aliveCount()) === 0) await replaceHost('all sessions of the old host stopped')
+    } catch {
+      /* ignore */
+    }
+  }, 3000)
+}
+
+// ------------------------------------------------------------------- quit
+
+async function handleQuit(): Promise<void> {
+  if (updating) {
+    quitting = true
+    usage.stop()
+    log('restarting to apply an update: leaving the session host and its sessions running')
+    expectDisconnect = true
+    host.detach()
+    store.flush()
+    app.quit()
+    return
+  }
+  let alive = 0
+  try {
+    alive = host.connected ? await host.aliveCount() : 0
+  } catch {
+    alive = 0
+  }
+  if (alive > 0 && store.get().confirmQuit) {
+    const choice = dialog.showMessageBoxSync({
+      type: 'question',
+      buttons: ['Quit', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+      message: `${alive} Claude session${alive === 1 ? ' is' : 's are'} running. Quit ClaudeGUI?`,
+      detail: 'Running processes and their background tasks are stopped. History is kept and each session resumes with your next message.'
+    })
+    if (choice === 1) return
+  }
+  quitting = true
+  usage.stop()
+  updater.cancel()
+  if (host.connected) {
+    log('quitting: stopping the session host')
+    expectDisconnect = true
+    await host.shutdown(12_000)
+  }
+  store.flush()
+  app.quit()
+}
+
+// ------------------------------------------------------------------ start
+
 app.setName('ClaudeGUI')
 // Development: CLAUDEGUI_USER_DATA=<dir> isolates settings/sessions from an installed copy.
 if (process.env.CLAUDEGUI_USER_DATA) app.setPath('userData', process.env.CLAUDEGUI_USER_DATA)
@@ -258,39 +427,75 @@ if (!gotLock) {
   })
 
   app.whenReady().then(async () => {
-    store = new AppStore()
-    nativeTheme.themeSource = store.settings.get().theme || 'system'
-    setToolResultMaxChars(store.settings.get().toolResultMaxChars)
+    const userData = app.getPath('userData')
+    store = new SettingsStore(userData)
+    nativeTheme.themeSource = store.get().theme || 'system'
     // Warm the login environment early; also pick a default editor on first run.
     const env = await getLoginShellEnv().catch(() => ({}) as Record<string, string>)
-    if (!store.settings.get().editorCommand) {
-      store.settings.update((s) => ({ ...s, editorCommand: detectEditorCommand({ ...process.env, ...env } as Record<string, string>) }))
+    if (!store.get().editorCommand) {
+      store.update((s) => ({ ...s, editorCommand: detectEditorCommand({ ...process.env, ...env } as Record<string, string>) }))
     }
+    host = new HostClient({
+      userDataPath: userData,
+      logFile: path.join(app.getPath('logs'), 'session-host.log'),
+      hostScript: path.join(__dirname, 'host.mjs'),
+      appVersion: app.getVersion(),
+      getSettings: () => store.get(),
+      getExecutable: () => resolveExecutable() || undefined,
+      isFocused: () => Boolean(mainWindow?.isFocused()),
+      log
+    })
+    host.on('event', (ev: HostEvent) => handleHostEvent(ev))
+    host.on('disconnected', ({ detached }: { detached: boolean }) => {
+      if (quitting || detached || expectDisconnect) return
+      log('[host] session host disconnected unexpectedly; reconnecting')
+      setTimeout(() => {
+        void connectHost()
+          .then(() => sendAll('sessions:reload', null))
+          .catch((err) => log(`[host] reconnect failed: ${(err as Error).message}`))
+      }, 500)
+    })
     usage = new UsageService({
-      getEnv: () => getSpawnEnv(parseExtraEnv(store.settings.get().extraEnv)),
-      getSettings: () => store.settings.get(),
-      sessionUsage: () => manager.planUsageFromAnySession(),
+      getEnv: () => getSpawnEnv(parseExtraEnv(store.get().extraEnv)),
+      getSettings: () => store.get(),
+      sessionUsage: () => (host.connected ? host.planUsage() : Promise.resolve(null)),
       emit: (snapshot: UsageSnapshot) => sendAll('usage:update', snapshot),
       log
     })
-    manager = new SessionManager(store, {
-      getEnv: () => getSpawnEnv(parseExtraEnv(store.settings.get().extraEnv)),
-      getExecutable: () => resolveExecutable() || undefined,
-      getSettings: () => store.settings.get(),
+    updater = new Updater({
       appVersion: app.getVersion(),
-      broadcast,
-      notify,
-      isWindowFocused: () => Boolean(mainWindow?.isFocused()),
-      updateBadge: (count) => {
-        if (process.platform !== 'darwin') return
-        const show = store.settings.get().dockBadge && count > 0
-        app.dock?.setBadge(show ? String(count) : '')
+      bundlePath: bundlePath(),
+      userDataPath: userData,
+      getSettings: () => store.get(),
+      getEnv: () => getSpawnEnv(parseExtraEnv(store.get().extraEnv)),
+      emit: (state) => sendAll('update:changed', state),
+      requestRestart: () => {
+        updating = true
+        app.quit()
       },
-      onRateLimit: (info, ts) => usage.applyRateLimitEvent(info, ts),
-      onTurnFinished: () => usage.refreshSoon('turn finished'),
       log
     })
-    registerIpc({ store, manager, usage, getWindow: () => mainWindow, resolveExecutable, sdkVersion: sdkVersion(), getThemeInfo, onSettingsChanged })
+    startupNotice = updater.takeStartupNotice()
+    registerIpc({
+      store,
+      host,
+      usage,
+      updater,
+      getWindow: () => mainWindow,
+      resolveExecutable,
+      sdkVersion: sdkVersion(),
+      bundlePath: bundlePath(),
+      logFile,
+      getThemeInfo,
+      onSettingsChanged,
+      takeStartupNotice: () => {
+        const n = startupNotice
+        startupNotice = null
+        return n
+      },
+      replaceHost: () => replaceHost('requested from Settings'),
+      broadcast: sendAll
+    })
     buildMenu()
     nativeTheme.on('updated', () => {
       for (const win of BrowserWindow.getAllWindows()) win.setBackgroundColor(windowBackground())
@@ -302,15 +507,21 @@ if (!gotLock) {
     const iconPath = path.join(__dirname, '../../resources/icon.png')
     if (process.platform === 'darwin' && fs.existsSync(iconPath)) app.dock?.setIcon(nativeImage.createFromPath(iconPath))
     mainWindow = createWindow()
-    const s = store.settings.get()
+    const s = store.get()
     if (process.env.CLAUDEGUI_DEBUG === '1' || s.debugServer) {
       if (!process.env.CLAUDEGUI_DEBUG_PORT && s.debugPort) process.env.CLAUDEGUI_DEBUG_PORT = String(s.debugPort)
-      startDebugServer({ getWindow: () => mainWindow, manager, log })
+      startDebugServer({ getWindow: () => mainWindow, host, updater, log })
+    }
+    try {
+      await connectHost()
+    } catch (err) {
+      log(`[host] cannot start the session host: ${(err as Error).message}`)
+      dialog.showMessageBox({ type: 'error', message: 'ClaudeGUI could not start its session host.', detail: `${(err as Error).message}\n\nLog: ${path.join(app.getPath('logs'), 'session-host.log')}` }).catch(() => undefined)
     }
     usage.start()
-    void manager.resumeOnLaunch()
+    if (host.connected) host.resumeOnLaunch().catch((err) => log(`[host] resumeOnLaunch failed: ${(err as Error).message}`))
     const proxyKeys = Object.keys(env).filter((k) => /proxy/i.test(k))
-    log(`ClaudeGUI ${app.getVersion()} started. user=${os.userInfo().username} sdk=${sdkVersion()} exe=${resolveExecutable()} envVars=${Object.keys(env).length} proxyVars=${proxyKeys.join(',') || 'none'} theme=${s.theme} log=${logFile}`)
+    log(`ClaudeGUI ${app.getVersion()} started. user=${os.userInfo().username} sdk=${sdkVersion()} exe=${resolveExecutable()} bundle=${bundlePath() ?? '(dev)'} envVars=${Object.keys(env).length} proxyVars=${proxyKeys.join(',') || 'none'} theme=${s.theme} log=${logFile}`)
   })
 
   app.on('activate', () => {
@@ -325,34 +536,15 @@ if (!gotLock) {
 
   app.on('before-quit', (e) => {
     if (quitting) return
-    const alive = manager ? manager.aliveCount() : 0
-    if (alive > 0 && store.settings.get().confirmQuit) {
-      const choice = dialog.showMessageBoxSync({
-        type: 'question',
-        buttons: ['Quit', 'Cancel'],
-        defaultId: 0,
-        cancelId: 1,
-        message: `${alive} Claude session${alive === 1 ? ' is' : 's are'} running. Quit ClaudeGUI?`,
-        detail: 'Running processes are stopped. History is kept and each session resumes with your next message.'
+    e.preventDefault()
+    if (quitInProgress) return
+    quitInProgress = true
+    // Never call app.quit() again from inside this handler: a nested quit is ignored by Electron
+    // and the prevented one wins, leaving the app running. Continue on the next tick instead.
+    setImmediate(() => {
+      void handleQuit().finally(() => {
+        quitInProgress = false
       })
-      if (choice === 1) {
-        e.preventDefault()
-        return
-      }
-    }
-    if (alive > 0) {
-      e.preventDefault()
-      quitting = true
-      log('quitting: stopping sessions')
-      usage?.stop()
-      Promise.race([manager.stopAll(), new Promise((r) => setTimeout(r, 6000))]).finally(() => {
-        store.flush()
-        app.quit()
-      })
-    } else {
-      quitting = true
-      usage?.stop()
-      store?.flush()
-    }
+    })
   })
 }

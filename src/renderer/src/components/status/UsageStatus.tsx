@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Gauge, RefreshCw } from 'lucide-react'
+import { AlertTriangle, ArrowUpCircle, Gauge, RefreshCw, RotateCw } from 'lucide-react'
 import type { UsageWindow } from '@shared/types'
 import { useStore } from '@/store'
 import { Popover } from '../common/Popover'
@@ -31,6 +31,21 @@ const SOURCE_LABEL: Record<string, string> = {
   none: 'nothing yet'
 }
 
+/** "Update 1.0.3" / "Building…" / "Restart to 1.0.3" pill shown next to the usage limits. */
+export function UpdatePill() {
+  const u = useStore((s) => s.update)
+  const openSettings = useStore((s) => s.openSettings)
+  if (u.status !== 'available' && u.status !== 'building' && u.status !== 'ready' && u.status !== 'applying') return null
+  const label =
+    u.status === 'available' ? `Update ${u.latestVersion}` : u.status === 'building' ? `Building ${u.latestVersion}…` : u.status === 'ready' ? `Restart to ${u.latestVersion}` : 'Restarting…'
+  return (
+    <button className={`update-pill no-drag st-${u.status}`} onClick={() => openSettings('about')} title="Open the update details (Settings → About)">
+      {u.status === 'building' || u.status === 'applying' ? <RotateCw size={11} className="spin" /> : <ArrowUpCircle size={11} />}
+      <span>{label}</span>
+    </button>
+  )
+}
+
 /** Compact plan-usage pills for the top-right corner; click for the full breakdown. */
 export function UsageStatus({ compact }: { compact?: boolean }) {
   const usage = useStore((s) => s.usage)
@@ -38,11 +53,12 @@ export function UsageStatus({ compact }: { compact?: boolean }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLButtonElement>(null)
   useTick()
-  if (!enabled) return null
+  if (!enabled) return <UpdatePill />
   const shown = usage.windows.filter((w) => w.group !== 'other').slice(0, compact ? 3 : 5)
   const checked = usage.fetchedAt ? relativeTime(usage.fetchedAt).replace(' ago', '').replace('just now', 'now') : '—'
   return (
     <>
+      <UpdatePill />
       <button ref={ref} className={`usage-cluster no-drag ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)} title="Plan usage limits (click for details)">
         {shown.length === 0 && (
           <span className={`usage-pill sev-${usage.error ? 'warning' : 'unknown'}`}>

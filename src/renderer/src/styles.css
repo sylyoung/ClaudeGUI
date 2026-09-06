@@ -599,3 +599,17 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .ctx-menu button:hover { background: var(--bg-active); }
 .ctx-menu button.danger { color: var(--red); }
 .ctx-menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+/* ---- updates & session host (Settings → About, top-right pill) ---- */
+.update-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--accent-text); background: var(--accent); margin-right: 6px; white-space: nowrap; }
+.update-pill:hover { filter: brightness(1.08); }
+.update-pill.st-building, .update-pill.st-applying { background: var(--bg-elev2); color: var(--text-dim); border: 1px solid var(--border); }
+.update-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg); display: flex; flex-direction: column; gap: 10px; }
+.update-status { display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.4; }
+.update-status > span { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.update-notes { white-space: pre-wrap; font-size: 12px; line-height: 1.5; color: var(--text-dim); max-height: 200px; overflow: auto; border-left: 3px solid var(--accent); padding-left: 10px; }
+.update-log { font-family: var(--mono); font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; background: var(--bg-elev2); border-radius: 6px; padding: 8px 10px; color: var(--text-dim); }
+.update-step { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text-dim); }
+.update-step .bar { flex: 1; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.update-step .bar > span { display: block; height: 100%; background: var(--accent); transition: width 0.3s; }
+@container (max-width: 560px) { .files-top .update-pill span { display: none; } .files-top .update-pill { padding: 3px 5px; } }

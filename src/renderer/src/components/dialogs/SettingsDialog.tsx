@@ -5,6 +5,7 @@ import { useStore } from '@/store'
 import { Modal } from '../common/Modal'
 import { ACCENTS, applyTheme, isDarkTheme } from '@/lib/theme'
 import { UsageDetails } from '../status/UsageStatus'
+import { UpdatesPanel } from './UpdatesPanel'
 
 type Tab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
 const TABS: { id: Tab; label: string }[] = [
@@ -56,12 +57,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const theme = useStore((s) => s.theme)
   const setSettings = useStore((s) => s.setSettings)
   const toast = useStore((s) => s.toast)
-  const [tab, setTab] = useState<Tab>(() => (localStorage.getItem('settingsTab') as Tab) || 'general')
+  const requestedTab = useStore((s) => s.settingsTab)
+  const [tab, setTab] = useState<Tab>(() => requestedTab || (localStorage.getItem('settingsTab') as Tab) || 'general')
   const [draft, setDraft] = useState<AppSettings>({ ...settings })
   const [envInfo, setEnvInfo] = useState<{ count: number; proxy: string[]; path: string } | null>(null)
   const saved = useRef(false)
 
   useEffect(() => localStorage.setItem('settingsTab', tab), [tab])
+  useEffect(() => {
+    if (requestedTab) setTab(requestedTab)
+  }, [requestedTab])
   useEffect(() => {
     window.api.app.envInfo().then(setEnvInfo).catch(() => setEnvInfo(null))
   }, [])
@@ -348,6 +353,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               </div>
             </Section>
           )}
+          {tab === 'about' && <UpdatesPanel draft={draft} upd={upd} />}
         </div>
       </div>
       <div className="actions">

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.2 — 2026-09-06
+
+### Session host (sessions survive app restarts)
+- Claude processes are no longer children of the app window. A small background process, the session host, owns them; the window talks to it over a local socket. Closing or restarting the window (for example to apply an update) leaves every session, its background shells, monitors and watchers running, and the new window reattaches to them with their live state, pending permission prompts and transcript.
+- Quitting ClaudeGUI (⌘Q) still stops all sessions, as before. A host started by an older app version is replaced automatically as soon as none of its sessions is running; Settings → About shows the host state and log.
+
+### In-app updates
+- ClaudeGUI → Check for Updates… (also Settings → About). Releases are the git tags of the ClaudeGUI repository. Updating checks the newest tag out into ~/Library/Caches/ClaudeGUI/update, installs dependencies when the lock file changed, builds the app bundle in the background while the current version stays usable, then swaps the bundle at the app's location and reopens it. Sessions keep running through the restart thanks to the session host.
+- A pill in the top-right corner shows "Update x.y.z", "Building…" or "Restart to x.y.z". Options: restart automatically after the build, repository URL, build folder, update log.
+
+### Remembered across restarts
+- Window position and size, open files, expanded folders and the active right-panel tab per session, in addition to the settings and session list.
+
 ## 1.0.1 — 2026-09-06
 
 ### Files

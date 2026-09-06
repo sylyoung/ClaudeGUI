@@ -1,0 +1,76 @@
+import type { AppSettings } from './types'
+
+export const DEFAULT_UPDATE_REPO = 'https://github.com/sylyoung/ClaudeGUI.git'
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  // Claude
+  claudeExecutable: '',
+  defaultModel: '',
+  defaultPermissionMode: 'default',
+  defaultEffort: '',
+  extraEnv: '',
+  maxTurns: 0,
+  maxThinkingTokens: 0,
+  allowedTools: '',
+  disallowedTools: '',
+  useProjectSettings: true,
+  useLocalSettings: true,
+  autoTitle: true,
+  // General
+  notifications: true,
+  notifyOnTurnFinished: true,
+  notifyOnPermission: true,
+  notifyOnError: true,
+  notificationSound: true,
+  dockBadge: true,
+  resumeOnLaunch: 'none',
+  confirmQuit: true,
+  defaultCwd: '',
+  sendWithEnter: true,
+  recentDirectories: [],
+  // Appearance
+  theme: 'system',
+  accent: 'system',
+  fontSize: 14,
+  uiFont: '',
+  codeFont: '',
+  codeFontSize: 12.5,
+  density: 'comfortable',
+  showTimestamps: true,
+  thinkingDisplay: 'collapsed',
+  toolCardsExpanded: false,
+  chatMaxWidth: 980,
+  groupSessionsByFolder: true,
+  translucentSidebar: false,
+  // Files
+  editorCommand: '',
+  showHiddenFiles: false,
+  excludePatterns: 'node_modules, .git, __pycache__, .DS_Store',
+  openBinaryWithSystemApp: true,
+  doubleClickAction: 'system',
+  autoRevealEditedFiles: false,
+  maxPreviewKB: 1500,
+  showFileSizes: true,
+  // Git
+  gitEnabled: true,
+  gitShowStatusInTree: true,
+  gitAutoRefreshSeconds: 30,
+  gitAutoFetchMinutes: 0,
+  gitPushAfterCommit: false,
+  gitSignOff: false,
+  gitCommitTemplate: '',
+  // Usage
+  usageRefreshMinutes: 5,
+  usageWarnPercent: 80,
+  showUsageStatus: true,
+  showContextInSidebar: true,
+  showTaskCountsInSidebar: true,
+  // Updates
+  updateRepo: DEFAULT_UPDATE_REPO,
+  updateAutoRestart: true,
+  updateWorkDir: '',
+  // Advanced
+  toolResultMaxChars: 60000,
+  debugServer: false,
+  debugPort: 45123
+}

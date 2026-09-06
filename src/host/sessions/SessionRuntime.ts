@@ -29,12 +29,12 @@ import type {
   PermissionMode,
   SessionEvent,
   SessionLiveState,
+  SdkUsage,
   SessionRecord,
   SlashCommandView
 } from '@shared/types'
 import { TranscriptState } from './transcript'
-import { splitList } from '../store'
-import type { SdkUsage } from '../usageService'
+import { splitList } from '@shared/util'
 
 /** Unbounded async queue used as the SDK's streaming-input prompt. */
 class AsyncQueue<T> implements AsyncIterable<T> {

@@ -1,13 +1,14 @@
 import http from 'http'
 import fs from 'fs'
 import type { BrowserWindow } from 'electron'
-import type { SessionManager } from './sessions/SessionManager'
+import type { HostClient } from './hostClient'
+import type { Updater } from './updater'
 
 /**
  * Development-only HTTP endpoint (CLAUDEGUI_DEBUG=1) used to drive and inspect the app
  * from the command line: screenshots, state dumps and renderer JS evaluation.
  */
-export function startDebugServer(opts: { getWindow(): BrowserWindow | null; manager: SessionManager; log(...a: unknown[]): void }): void {
+export function startDebugServer(opts: { getWindow(): BrowserWindow | null; host: HostClient; updater: Updater; log(...a: unknown[]): void }): void {
   const port = Number(process.env.CLAUDEGUI_DEBUG_PORT || 45123)
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1')
@@ -27,15 +28,19 @@ export function startDebugServer(opts: { getWindow(): BrowserWindow | null; mana
           return send(200, { ok: true, out, size: img.getSize() })
         }
         case '/state':
-          return send(200, { active: opts.manager.activeSessionId, ...opts.manager.list() })
+          return send(200, { active: opts.host.activeSessionId, host: opts.host.status, ...(await opts.host.list()) })
+        case '/host':
+          return send(200, { ...opts.host.status, info: opts.host.connected ? await opts.host.info() : null })
+        case '/update':
+          return send(200, opts.updater.state)
         case '/history': {
           const id = url.searchParams.get('id') || ''
-          return send(200, await opts.manager.history(id))
+          return send(200, await opts.host.history(id))
         }
         case '/send': {
           const id = url.searchParams.get('id') || ''
           const text = url.searchParams.get('text') || (await readBody())
-          await opts.manager.send(id, text)
+          await opts.host.send(id, text)
           return send(200, { ok: true })
         }
         case '/eval': {

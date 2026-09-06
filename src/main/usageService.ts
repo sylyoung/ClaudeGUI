@@ -2,7 +2,7 @@ import { execFile, spawn } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import type { UsageSeverity, UsageSnapshot, UsageWindow } from '@shared/types'
+import type { SdkUsage, UsageSeverity, UsageSnapshot, UsageWindow } from '@shared/types'
 
 /**
  * Tracks the claude.ai plan rate-limit windows (5-hour session, weekly, per-model, monthly credits).
@@ -20,12 +20,6 @@ export interface UsageDeps {
   sessionUsage(): Promise<SdkUsage | null>
   emit(snapshot: UsageSnapshot): void
   log(...args: unknown[]): void
-}
-
-export interface SdkUsage {
-  subscription_type?: string | null
-  rate_limits_available?: boolean
-  rate_limits?: Record<string, unknown> | null
 }
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'

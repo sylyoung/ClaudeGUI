@@ -2,29 +2,36 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import os from 'os'
 import path from 'path'
 import fs from 'fs'
-import type { AppInfo, AppSettings, EffortLevel, ImageAttachment, PermissionDecision, PermissionMode, ThemeInfo } from '@shared/types'
-import type { AppStore } from './store'
-import { splitList } from './store'
-import type { SessionManager } from './sessions/SessionManager'
+import type { AppInfo, AppSettings, EffortLevel, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, StartupNotice, ThemeInfo } from '@shared/types'
+import { splitList } from '@shared/util'
+import type { SettingsStore } from './store'
+import type { HostClient } from './hostClient'
 import type { UsageService } from './usageService'
+import type { Updater } from './updater'
 import { DirWatcher, listDir, pathExists, probeFile, readFileContent, resolveMentionedPath } from './fsService'
 import { openExternal, openInEditor, openPath, openTerminal, openWithApp, showItemInFolder } from './shellService'
 import { getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache, getLoginShellEnv } from './env'
 import * as gitSvc from './gitService'
 
 export interface IpcContext {
-  store: AppStore
-  manager: SessionManager
+  store: SettingsStore
+  host: HostClient
   usage: UsageService
+  updater: Updater
   getWindow(): BrowserWindow | null
   resolveExecutable(): string
   sdkVersion: string
+  bundlePath: string | undefined
+  logFile: string
   getThemeInfo(): ThemeInfo
   onSettingsChanged(prev: AppSettings, next: AppSettings): void
+  takeStartupNotice(): StartupNotice | null
+  replaceHost(): Promise<void>
+  broadcast(channel: string, payload: unknown): void
 }
 
 export function registerIpc(ctx: IpcContext): void {
-  const { store, manager } = ctx
+  const { store, host, updater } = ctx
   const watcher = new DirWatcher((dir) => {
     ctx.getWindow()?.webContents.send('fs:changed', dir)
   })
@@ -42,7 +49,7 @@ export function registerIpc(ctx: IpcContext): void {
     })
   }
 
-  const settings = () => store.settings.get()
+  const settings = () => store.get()
   const env = () => getSpawnEnv(parseExtraEnv(settings().extraEnv))
 
   // ---- app / settings
@@ -54,13 +61,17 @@ export function registerIpc(ctx: IpcContext): void {
     sdkVersion: ctx.sdkVersion,
     userDataPath: app.getPath('userData'),
     claudeExecutable: ctx.resolveExecutable(),
-    homeDir: os.homedir()
+    homeDir: os.homedir(),
+    packaged: app.isPackaged,
+    bundlePath: ctx.bundlePath,
+    logFile: ctx.logFile
   }))
   handle('app:theme', () => ctx.getThemeInfo())
+  handle('app:startupNotice', () => ctx.takeStartupNotice())
   handle('settings:get', () => settings())
   handle('settings:set', (patch: Partial<AppSettings>) => {
     const prev = settings()
-    const next = store.settings.update((s) => ({ ...s, ...patch }))
+    const next = store.update((s) => ({ ...s, ...patch }))
     ctx.onSettingsChanged(prev, next)
     return next
   })
@@ -72,6 +83,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle('app:reloadEnv', async () => {
     resetLoginShellEnvCache()
     const e = await getLoginShellEnv()
+    if (host.connected) await host.reloadEnv().catch(() => undefined)
     return Object.keys(e).length
   })
 
@@ -79,30 +91,69 @@ export function registerIpc(ctx: IpcContext): void {
   handle('usage:get', () => ctx.usage.snapshot)
   handle('usage:refresh', () => ctx.usage.refresh('manual'))
 
-  // ---- sessions
-  handle('sessions:list', () => manager.list())
-  handle('sessions:history', (id: string) => manager.history(id))
-  handle('sessions:create', (opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }) => manager.create(opts))
-  handle('sessions:importCli', (sessionId: string, cwd: string, title?: string) => manager.importCli(sessionId, cwd, title))
-  handle('sessions:listCli', (dir?: string) => manager.listCli(dir))
-  handle('sessions:send', (id: string, text: string, images?: ImageAttachment[]) => manager.send(id, text, images))
-  handle('sessions:start', (id: string) => manager.start(id))
-  handle('sessions:stop', (id: string) => manager.stop(id))
-  handle('sessions:interrupt', (id: string) => manager.interrupt(id))
-  handle('sessions:answerPermission', (id: string, requestId: string, decision: PermissionDecision) => manager.answerPermission(id, requestId, decision))
-  handle('sessions:setModel', (id: string, model: string) => manager.get(id).setModel(model))
-  handle('sessions:setPermissionMode', (id: string, mode: PermissionMode) => manager.get(id).setPermissionMode(mode))
-  handle('sessions:setEffort', (id: string, level: EffortLevel | '') => manager.get(id).setEffort(level))
-  handle('sessions:rename', (id: string, title: string) => manager.rename(id, title))
-  handle('sessions:setPinned', (id: string, pinned: boolean) => manager.setPinned(id, pinned))
-  handle('sessions:setArchived', (id: string, archived: boolean) => manager.setArchived(id, archived))
-  handle('sessions:remove', (id: string, deleteTranscript: boolean) => manager.remove(id, deleteTranscript))
-  handle('sessions:setActive', (id: string | undefined) => manager.setActive(id))
-  handle('sessions:stopTask', (id: string, taskId: string) => manager.get(id).stopTask(taskId))
-  handle('sessions:backgroundTasks', (id: string, toolUseId?: string) => manager.get(id).backgroundTasks(toolUseId))
-  handle('sessions:commands', (id: string) => manager.get(id).getCommands())
-  handle('sessions:models', (id: string) => manager.get(id).getModels())
-  handle('sessions:contextUsage', (id: string, full?: boolean) => manager.get(id).refreshContextUsage(full ? 'full' : 'summary'))
+  // ---- session host
+  handle('host:status', async (): Promise<HostStatus> => {
+    if (!host.connected) return host.status
+    try {
+      const info = await host.info()
+      return { ...host.status, aliveSessions: info.aliveSessions, pid: info.pid, version: info.version, startedAt: info.startedAt, logFile: info.logFile }
+    } catch {
+      return host.status
+    }
+  })
+  handle('host:restart', async () => {
+    const alive = host.connected ? await host.aliveCount() : 0
+    if (alive > 0) throw new Error(`${alive} session(s) are still running; stop them first`)
+    await ctx.replaceHost()
+  })
+
+  // ---- updates
+  handle('update:state', () => updater.state)
+  handle('update:check', () => updater.check())
+  handle('update:install', () => updater.install())
+  handle('update:apply', () => updater.apply())
+  handle('update:cancel', () => updater.cancel())
+  handle('update:openLog', async () => {
+    if (fs.existsSync(updater.logFile)) await shell.openPath(updater.logFile)
+    else throw new Error('No update log yet')
+  })
+  handle('update:openWorkDir', async () => {
+    fs.mkdirSync(updater.workDir, { recursive: true })
+    await shell.openPath(updater.workDir)
+  })
+
+  // ---- sessions (all forwarded to the session host process)
+  handle('sessions:list', () => host.list())
+  handle('sessions:history', (id: string) => host.history(id))
+  handle('sessions:create', async (opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }) => {
+    const record = await host.create(opts)
+    store.addRecentDirectory(record.cwd)
+    return record
+  })
+  handle('sessions:importCli', async (sessionId: string, cwd: string, title?: string) => {
+    const record = await host.importCli(sessionId, cwd, title)
+    store.addRecentDirectory(record.cwd)
+    return record
+  })
+  handle('sessions:listCli', (dir?: string) => host.listCli(dir))
+  handle('sessions:send', (id: string, text: string, images?: ImageAttachment[]) => host.send(id, text, images))
+  handle('sessions:start', (id: string) => host.start(id))
+  handle('sessions:stop', (id: string) => host.stop(id))
+  handle('sessions:interrupt', (id: string) => host.interrupt(id))
+  handle('sessions:answerPermission', (id: string, requestId: string, decision: PermissionDecision) => host.answerPermission(id, requestId, decision))
+  handle('sessions:setModel', (id: string, model: string) => host.setModel(id, model))
+  handle('sessions:setPermissionMode', (id: string, mode: PermissionMode) => host.setPermissionMode(id, mode))
+  handle('sessions:setEffort', (id: string, level: EffortLevel | '') => host.setEffort(id, level))
+  handle('sessions:rename', (id: string, title: string) => host.rename(id, title))
+  handle('sessions:setPinned', (id: string, pinned: boolean) => host.setPinned(id, pinned))
+  handle('sessions:setArchived', (id: string, archived: boolean) => host.setArchived(id, archived))
+  handle('sessions:remove', (id: string, deleteTranscript: boolean) => host.remove(id, deleteTranscript))
+  handle('sessions:setActive', (id: string | undefined) => host.setActive(id))
+  handle('sessions:stopTask', (id: string, taskId: string) => host.stopTask(id, taskId))
+  handle('sessions:backgroundTasks', (id: string, toolUseId?: string) => host.backgroundTasks(id, toolUseId))
+  handle('sessions:commands', (id: string) => host.commands(id))
+  handle('sessions:models', (id: string) => host.models(id))
+  handle('sessions:contextUsage', (id: string, full?: boolean) => host.contextUsage(id, full))
 
   // ---- filesystem
   handle('fs:list', (dir: string, showHidden: boolean) => listDir(dir, showHidden, splitList(settings().excludePatterns)))

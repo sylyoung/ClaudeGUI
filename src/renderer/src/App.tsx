@@ -54,7 +54,9 @@ export default function App() {
       window.api.events.onSessionEvent(applyEvent),
       window.api.events.onUsage((u) => useStore.getState().setUsage(u)),
       window.api.events.onTheme((t) => useStore.getState().setTheme(t)),
-      window.api.events.onSettingsChanged((s) => useStore.getState().receiveSettings(s))
+      window.api.events.onSettingsChanged((s) => useStore.getState().receiveSettings(s)),
+      window.api.events.onUpdate((u) => useStore.getState().setUpdate(u)),
+      window.api.events.onSessionsReload(() => void useStore.getState().reloadSessions())
     ]
     return () => offs.forEach((off) => off())
   }, [init, applyEvent])
@@ -83,6 +85,10 @@ export default function App() {
         case 'menu:toggle-git': s.showPanelTab('git'); break
         case 'menu:search': s.focusSearch(); break
         case 'menu:interrupt': if (s.activeId) void window.api.sessions.interrupt(s.activeId); break
+        case 'menu:check-updates':
+          s.openSettings('about')
+          window.api.update.check().catch((err) => s.toast(`Update check failed: ${(err as Error).message}`, 'error'))
+          break
       }
     })
     const onKey = (e: KeyboardEvent) => {

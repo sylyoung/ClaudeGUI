@@ -11,11 +11,13 @@ import type {
   SessionLiveState,
   SessionRecord,
   ThemeInfo,
+  UpdateState,
   UsageSnapshot
 } from '@shared/types'
 import { applyTheme } from './lib/theme'
 
 export type DialogKind = null | 'new-session' | 'import-session' | 'settings'
+export type SettingsTab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
 
 export interface Toast {
   id: number
@@ -65,12 +67,15 @@ interface State {
   settings?: AppSettings
   theme: ThemeInfo
   usage: UsageSnapshot
+  update: UpdateState
   records: Record<string, SessionRecord>
   live: Record<string, SessionLiveState>
   messages: Record<string, ChatMessage[]>
   historyLoaded: Record<string, boolean>
   activeId?: string
   dialog: DialogKind
+  /** Tab to open the Settings dialog on (null = last used). */
+  settingsTab: SettingsTab | null
   sidebarOpen: boolean
   filesOpen: boolean
   sidebarWidth: number
@@ -90,6 +95,10 @@ interface State {
   send: (id: string, text: string, images?: { mediaType: string; data: string; name?: string }[]) => Promise<void>
   answerPermission: (id: string, requestId: string, decision: PermissionDecision) => Promise<void>
   setDialog: (d: DialogKind) => void
+  openSettings: (tab?: SettingsTab) => void
+  setUpdate: (u: UpdateState) => void
+  /** Re-read records and live states from the main process (after the session host was replaced). */
+  reloadSessions: () => Promise<void>
   toast: (text: string, kind?: Toast['kind']) => void
   dismissToast: (id: number) => void
   setSettings: (patch: Partial<AppSettings>) => Promise<void>
@@ -136,11 +145,13 @@ export const useStore = create<State>((set, get) => ({
   ready: false,
   theme: { systemDark: localStorage.getItem('theme-dark') !== '0', accent: '#007aff' },
   usage: { fetchedAt: 0, source: 'none', windows: [] },
+  update: { status: 'idle', currentVersion: '', log: [], autoRestart: true },
   records: {},
   live: {},
   messages: {},
   historyLoaded: {},
   dialog: null,
+  settingsTab: null,
   sidebarOpen: true,
   filesOpen: true,
   sidebarWidth: Number(localStorage.getItem('sidebarWidth') || 270),
@@ -148,28 +159,47 @@ export const useStore = create<State>((set, get) => ({
   search: '',
   showArchived: false,
   toasts: [],
-  files: {},
+  files: loadFilesState(),
   git: {},
   composerFocusNonce: 0,
   searchFocusNonce: 0,
 
   init: async () => {
-    const [info, settings, list, theme, usage] = await Promise.all([
+    const [info, settings, list, theme, usage, update] = await Promise.all([
       window.api.app.info(),
       window.api.settings.get(),
       window.api.sessions.list(),
       window.api.app.theme().catch(() => get().theme),
-      window.api.usage.get().catch(() => get().usage)
+      window.api.usage.get().catch(() => get().usage),
+      window.api.update.state().catch(() => get().update)
     ])
     const records: Record<string, SessionRecord> = {}
     const live: Record<string, SessionLiveState> = {}
     for (const r of list.records) records[r.id] = r
     for (const l of list.live) live[l.id] = l
     applyTheme(settings, theme)
-    set({ appInfo: info, settings, theme, usage, records, live, ready: true })
+    set({ appInfo: info, settings, theme, usage, update, records, live, ready: true })
     const last = localStorage.getItem('activeId')
     const initial = last && records[last] ? last : list.records[0]?.id
     if (initial) await get().selectSession(initial)
+    window.api.app
+      .startupNotice()
+      .then((n) => {
+        if (n) get().toast(n.text, n.kind)
+      })
+      .catch(() => undefined)
+  },
+
+  reloadSessions: async () => {
+    const list = await window.api.sessions.list()
+    const records: Record<string, SessionRecord> = {}
+    const live: Record<string, SessionLiveState> = {}
+    for (const r of list.records) records[r.id] = r
+    for (const l of list.live) live[l.id] = l
+    set({ records, live, messages: {}, historyLoaded: {} })
+    const id = get().activeId
+    if (id && records[id]) await get().ensureHistory(id)
+    else if (id) set({ activeId: undefined })
   },
 
   applyEvent: (e) => {
@@ -248,7 +278,9 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  setDialog: (dialog) => set({ dialog }),
+  setDialog: (dialog) => set({ dialog, settingsTab: dialog === 'settings' ? get().settingsTab : null }),
+  openSettings: (tab) => set({ dialog: 'settings', settingsTab: tab ?? null }),
+  setUpdate: (update) => set({ update }),
 
   toast: (text, kind = 'info') => {
     const id = ++toastSeq
@@ -421,3 +453,47 @@ export function orderedSessions(records: Record<string, SessionRecord>, live: Re
       return lb - la
     })
 }
+
+// ---------------------------------------------------------------------------
+// Open files / expanded folders / panel tab per session survive restarts.
+// ---------------------------------------------------------------------------
+
+const FILES_KEY = 'files-state'
+
+function loadFilesState(): Record<string, FilesState> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FILES_KEY) || '{}') as Record<string, Partial<FilesState>>
+    const out: Record<string, FilesState> = {}
+    for (const [id, f] of Object.entries(raw)) {
+      if (!f || typeof f !== 'object') continue
+      out[id] = {
+        open: (f.open ?? []).filter((t) => t && typeof t.path === 'string').map((t) => ({ path: t.path, line: t.line, version: 0 })),
+        active: f.active,
+        expanded: Array.isArray(f.expanded) ? f.expanded : [],
+        tab: f.tab === 'tasks' || f.tab === 'git' ? f.tab : 'files'
+      }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+let filesSaveTimer: ReturnType<typeof setTimeout> | null = null
+useStore.subscribe((s, prev) => {
+  if (s.files === prev.files) return
+  if (filesSaveTimer) clearTimeout(filesSaveTimer)
+  filesSaveTimer = setTimeout(() => {
+    filesSaveTimer = null
+    const out: Record<string, Omit<FilesState, 'revealPath'>> = {}
+    for (const [id, f] of Object.entries(s.files)) {
+      if (!s.records[id]) continue
+      out[id] = { open: f.open.map((t) => ({ path: t.path, line: t.line, version: 0 })), active: f.active, expanded: f.expanded, tab: f.tab }
+    }
+    try {
+      localStorage.setItem(FILES_KEY, JSON.stringify(out))
+    } catch {
+      /* quota */
+    }
+  }, 500)
+})

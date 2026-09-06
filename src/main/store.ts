@@ -1,15 +1,16 @@
 import fs from 'fs'
 import path from 'path'
-import { app } from 'electron'
 import type { AppSettings, SessionRecord } from '@shared/types'
+import { DEFAULT_SETTINGS } from '@shared/defaults'
 
-/** Tiny atomic JSON file store. */
-class JsonFile<T> {
+export { DEFAULT_SETTINGS }
+
+/** Tiny atomic JSON file store (no Electron dependency so the session host can use it too). */
+export class JsonFile<T> {
   private file: string
   private data: T
   private writeTimer: NodeJS.Timeout | null = null
-  constructor(name: string, private defaults: T) {
-    const dir = app.getPath('userData')
+  constructor(dir: string, name: string, private defaults: T) {
     fs.mkdirSync(dir, { recursive: true })
     this.file = path.join(dir, name)
     this.data = this.load()
@@ -22,6 +23,11 @@ class JsonFile<T> {
     } catch {
       return structuredClone(this.defaults)
     }
+  }
+  /** Re-read the file (used when another process may have written it). */
+  reload(): T {
+    this.data = this.load()
+    return this.data
   }
   get(): T {
     return this.data
@@ -60,81 +66,27 @@ class JsonFile<T> {
   }
 }
 
-export const DEFAULT_SETTINGS: AppSettings = {
-  // Claude
-  claudeExecutable: '',
-  defaultModel: '',
-  defaultPermissionMode: 'default',
-  defaultEffort: '',
-  extraEnv: '',
-  maxTurns: 0,
-  maxThinkingTokens: 0,
-  allowedTools: '',
-  disallowedTools: '',
-  useProjectSettings: true,
-  useLocalSettings: true,
-  autoTitle: true,
-  // General
-  notifications: true,
-  notifyOnTurnFinished: true,
-  notifyOnPermission: true,
-  notifyOnError: true,
-  notificationSound: true,
-  dockBadge: true,
-  resumeOnLaunch: 'none',
-  confirmQuit: true,
-  defaultCwd: '',
-  sendWithEnter: true,
-  recentDirectories: [],
-  // Appearance
-  theme: 'system',
-  accent: 'system',
-  fontSize: 14,
-  uiFont: '',
-  codeFont: '',
-  codeFontSize: 12.5,
-  density: 'comfortable',
-  showTimestamps: true,
-  thinkingDisplay: 'collapsed',
-  toolCardsExpanded: false,
-  chatMaxWidth: 980,
-  groupSessionsByFolder: true,
-  translucentSidebar: false,
-  // Files
-  editorCommand: '',
-  showHiddenFiles: false,
-  excludePatterns: 'node_modules, .git, __pycache__, .DS_Store',
-  openBinaryWithSystemApp: true,
-  doubleClickAction: 'system',
-  autoRevealEditedFiles: false,
-  maxPreviewKB: 1500,
-  showFileSizes: true,
-  // Git
-  gitEnabled: true,
-  gitShowStatusInTree: true,
-  gitAutoRefreshSeconds: 30,
-  gitAutoFetchMinutes: 0,
-  gitPushAfterCommit: false,
-  gitSignOff: false,
-  gitCommitTemplate: '',
-  // Usage
-  usageRefreshMinutes: 5,
-  usageWarnPercent: 80,
-  showUsageStatus: true,
-  showContextInSidebar: true,
-  showTaskCountsInSidebar: true,
-  // Advanced
-  toolResultMaxChars: 60000,
-  debugServer: false,
-  debugPort: 45123
-}
-
-/** Split a comma/newline separated setting into trimmed, non-empty items. */
-export function splitList(text: string): string[] {
-  return text
-    .split(/[\n,]/)
-    .map((s) => s.trim())
-    .filter(Boolean)
+/** settings.json — owned by the app window process. */
+export class SettingsStore {
+  readonly settings: JsonFile<AppSettings>
+  constructor(dir: string) {
+    this.settings = new JsonFile<AppSettings>(dir, 'settings.json', DEFAULT_SETTINGS)
+  }
+  get(): AppSettings {
+    return this.settings.get()
+  }
+  update(fn: (s: AppSettings) => AppSettings): AppSettings {
+    return this.settings.update(fn)
+  }
+  addRecentDirectory(dir: string): void {
+    this.settings.update((s) => ({
+      ...s,
+      recentDirectories: [dir, ...s.recentDirectories.filter((d) => d !== dir)].slice(0, 20)
+    }))
+  }
+  flush(): void {
+    this.settings.flush()
+  }
 }
 
 interface SessionsFile {
@@ -142,10 +94,12 @@ interface SessionsFile {
   activeSessionId?: string
 }
 
-export class AppStore {
-  readonly settings = new JsonFile<AppSettings>('settings.json', DEFAULT_SETTINGS)
-  readonly sessions = new JsonFile<SessionsFile>('sessions.json', { sessions: [] })
-
+/** sessions.json — owned by the session host process. */
+export class SessionsStore {
+  readonly sessions: JsonFile<SessionsFile>
+  constructor(dir: string) {
+    this.sessions = new JsonFile<SessionsFile>(dir, 'sessions.json', { sessions: [] })
+  }
   listSessions(): SessionRecord[] {
     return this.sessions.get().sessions
   }
@@ -170,14 +124,7 @@ export class AppStore {
   getActiveSession(): string | undefined {
     return this.sessions.get().activeSessionId
   }
-  addRecentDirectory(dir: string): void {
-    this.settings.update((s) => ({
-      ...s,
-      recentDirectories: [dir, ...s.recentDirectories.filter((d) => d !== dir)].slice(0, 20)
-    }))
-  }
   flush(): void {
-    this.settings.flush()
     this.sessions.flush()
   }
 }

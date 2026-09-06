@@ -12,11 +12,11 @@ import type {
   PermissionMode,
   SessionEvent,
   SessionLiveState,
+  SdkUsage,
   SessionRecord
 } from '@shared/types'
-import type { AppStore } from '../store'
+import type { SessionsStore } from '../../main/store'
 import { SessionRuntime, type RateLimitEventInfo } from './SessionRuntime'
-import type { SdkUsage } from '../usageService'
 
 export type NotifyKind = 'turn' | 'permission' | 'error'
 
@@ -39,7 +39,7 @@ export class SessionManager {
   activeSessionId: string | undefined
 
   constructor(
-    private store: AppStore,
+    private store: SessionsStore,
     private host: ManagerHost
   ) {
     for (const record of store.listSessions()) this.runtimes.set(record.id, this.makeRuntime(record))
@@ -120,7 +120,7 @@ export class SessionManager {
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error(`Directory does not exist: ${cwd}`)
     const id = randomUUID()
     const now = Date.now()
-    const settings = this.store.settings.get()
+    const settings = this.host.getSettings()
     const record: SessionRecord = {
       id,
       claudeSessionId: id,
@@ -135,7 +135,6 @@ export class SessionManager {
       source: 'gui'
     }
     this.store.upsertSession(record)
-    this.store.addRecentDirectory(cwd)
     const rt = this.makeRuntime(record)
     this.runtimes.set(id, rt)
     this.host.broadcast({ type: 'record', record })
@@ -147,7 +146,7 @@ export class SessionManager {
     const existing = [...this.runtimes.values()].find((r) => r.record.claudeSessionId === claudeSessionId)
     if (existing) return existing.record
     const now = Date.now()
-    const settings = this.store.settings.get()
+    const settings = this.host.getSettings()
     const record: SessionRecord = {
       id: claudeSessionId,
       claudeSessionId,
@@ -162,7 +161,6 @@ export class SessionManager {
       source: 'cli-import'
     }
     this.store.upsertSession(record)
-    this.store.addRecentDirectory(cwd)
     const rt = this.makeRuntime(record)
     this.runtimes.set(record.id, rt)
     this.host.broadcast({ type: 'record', record })

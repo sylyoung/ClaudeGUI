@@ -355,6 +355,14 @@ export interface AppSettings {
   showContextInSidebar: boolean
   showTaskCountsInSidebar: boolean
 
+  // ---- Updates
+  /** Git repository (URL or local path) whose tags are the released versions. */
+  updateRepo: string
+  /** Restart into the new version automatically once it has been built. */
+  updateAutoRestart: boolean
+  /** Folder for the update source checkout and build output (empty = ~/Library/Caches/ClaudeGUI/update). */
+  updateWorkDir: string
+
   // ---- Advanced
   toolResultMaxChars: number
   debugServer: boolean
@@ -511,4 +519,64 @@ export interface AppInfo {
   userDataPath: string
   claudeExecutable: string
   homeDir: string
+  /** True when running from a built .app bundle (updates are only possible then). */
+  packaged: boolean
+  bundlePath?: string
+  logFile: string
+}
+
+// ---------------------------------------------------------------------------
+// Session host (detached process that owns the Claude processes) and updates
+// ---------------------------------------------------------------------------
+
+/** Structured /usage as reported by the CLI's experimental SDK method. */
+export interface SdkUsage {
+  subscription_type?: string | null
+  rate_limits_available?: boolean
+  rate_limits?: Record<string, unknown> | null
+}
+
+export interface HostStatus {
+  connected: boolean
+  pid?: number
+  /** App version that started the host process. */
+  version?: string
+  protocol?: number
+  startedAt?: number
+  socketPath?: string
+  logFile?: string
+  aliveSessions: number
+  /** True when the host was started by a different app version than the one running now. */
+  stale: boolean
+  /** 'attached' when this app instance found the host already running. */
+  origin?: 'attached' | 'spawned'
+}
+
+export type UpdateStatus = 'idle' | 'unsupported' | 'checking' | 'up-to-date' | 'available' | 'building' | 'ready' | 'applying' | 'error'
+
+export interface UpdateState {
+  status: UpdateStatus
+  currentVersion: string
+  latestVersion?: string
+  /** Changelog section of the latest version, when available. */
+  notes?: string
+  checkedAt?: number
+  /** Human-readable current step while building. */
+  step?: string
+  stepIndex?: number
+  stepCount?: number
+  /** Tail of the build log. */
+  log: string[]
+  error?: string
+  bundlePath?: string
+  workDir?: string
+  logFile?: string
+  startedAt?: number
+  finishedAt?: number
+  autoRestart: boolean
+}
+
+export interface StartupNotice {
+  kind: 'info' | 'error' | 'success'
+  text: string
 }

@@ -1,7 +1,7 @@
 {
   "name": "claudegui",
   "productName": "ClaudeGUI",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Local desktop manager for multiple long-running Claude Code sessions",
   "main": "./out/main/index.mjs",
   "author": "Riccardo",
