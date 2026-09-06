@@ -1,0 +1,23 @@
+appId: com.riccardo.claudegui
+productName: ClaudeGUI
+directories:
+  buildResources: resources
+  output: dist
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+asarUnpack:
+  - node_modules/@anthropic-ai/**
+mac:
+  target:
+    - target: dir
+      arch: [arm64]
+  category: public.app-category.developer-tools
+  icon: resources/icon.png
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  extendInfo:
+    NSHumanReadableCopyright: Local Claude Code session manager
+npmRebuild: false
