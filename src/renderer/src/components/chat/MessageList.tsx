@@ -3,6 +3,7 @@ import { ArrowDown } from 'lucide-react'
 import type { ChatMessage, PendingPermission, PermissionDecision, SessionLiveState } from '@shared/types'
 import { MessageItem, type PromptState } from './MessageItem'
 import { PermissionPrompt } from './PermissionPrompt'
+import { WorkingStrip } from './WorkingStrip'
 
 const PAGE = 120
 
@@ -12,7 +13,9 @@ export function MessageList({
   live,
   pending,
   onAnswer,
-  loaded
+  loaded,
+  working,
+  turnStartedAt
 }: {
   sessionId: string
   messages: ChatMessage[]
@@ -20,6 +23,9 @@ export function MessageList({
   pending: PendingPermission[]
   onAnswer: (requestId: string, d: PermissionDecision) => void
   loaded: boolean
+  /** A turn is running: what Claude is doing right now is shown as the last row of the chat. */
+  working: boolean
+  turnStartedAt: number
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [stick, setStick] = useState(true)
@@ -81,6 +87,7 @@ export function MessageList({
         {flow.map((m) => (
           <MessageItem key={m.id} message={m} state={promptState.get(m.id)} />
         ))}
+        {working && <WorkingStrip live={live} since={turnStartedAt} />}
         {pending.map((p) => (
           <PermissionPrompt key={p.requestId} request={p} onAnswer={(d) => onAnswer(p.requestId, d)} />
         ))}

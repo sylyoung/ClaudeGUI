@@ -4,9 +4,10 @@ import { formatDuration } from '@/lib/format'
 import { StateMark } from '../common/StateMark'
 
 /**
- * Shown above the composer while a turn is running: a pulsing dot, what Claude is doing right
+ * The last row of the chat while a turn is running: the running dots, what Claude is doing right
  * now (generating, compacting, or the tool it is running), and how long it has been at it —
- * measured from your last prompt, which is why the tooltip says so.
+ * measured from your last prompt, which is why the tooltip says so. It sits in the message list,
+ * directly under the answer being written, rather than in a band of its own above the composer.
  */
 export function WorkingStrip({ live, since }: { live: SessionLiveState | undefined; since: number }) {
   const [now, setNow] = useState(() => Date.now())
@@ -18,7 +19,9 @@ export function WorkingStrip({ live, since }: { live: SessionLiveState | undefin
   const starting = live?.status === 'starting'
   const tool = live?.activeTools?.length ? live.activeTools[live.activeTools.length - 1] : undefined
   const what = starting ? 'starting the process' : live?.activity === 'compacting' ? 'compacting the context' : live?.activity === 'requesting' ? 'waiting for the model' : tool ? `running ${tool.toolName}` : 'generating'
-  const elapsed = since ? formatDuration(Math.max(0, now - since)) : ''
+  // Under a second there is nothing worth reading, and "122ms" next to the status looks like noise.
+  const elapsedMs = since ? Math.max(0, now - since) : 0
+  const elapsed = elapsedMs >= 1000 ? formatDuration(elapsedMs) : ''
 
   return (
     <div className="working-strip" data-tip={`This chat is working: ${what}${elapsed ? `, ${elapsed} since your last prompt` : ''}. ⌘. stops the turn.`}>

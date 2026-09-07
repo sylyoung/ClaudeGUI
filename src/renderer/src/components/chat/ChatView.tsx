@@ -9,7 +9,6 @@ import { GroupColorPicker } from '../common/GroupColorPicker'
 import { isDarkTheme } from '@/lib/theme'
 import { MessageList } from './MessageList'
 import { StateMark } from '../common/StateMark'
-import { WorkingStrip } from './WorkingStrip'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { ChatProvider, type ChatCtx } from './ChatContext'
@@ -446,14 +445,13 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <span className="spacer" />
           <ContextBar sessionId={record.id} live={live} />
         </div>
-        <MessageList sessionId={record.id} messages={messages} live={live} pending={live?.pendingPermissions ?? []} onAnswer={onAnswer} loaded={loaded} />
+        <MessageList sessionId={record.id} messages={messages} live={live} pending={live?.pendingPermissions ?? []} onAnswer={onAnswer} loaded={loaded} working={working} turnStartedAt={lastTurnStart} />
         {live?.error && status === 'error' && (
           <div className="msg-system error" style={{ margin: '0 20px 8px' }}>
             <ChevronDown size={14} />
             <div className="body">Process error: {live.error}. Sending a message restarts the session.</div>
           </div>
         )}
-        {working && <WorkingStrip live={live} since={lastTurnStart} />}
         <Composer sessionId={record.id} live={live} onSend={onSend} onInterrupt={onInterrupt} />
         {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
         {rewindId && <RewindDialog sessionId={record.id} messageId={rewindId} onClose={() => setRewindId(null)} />}

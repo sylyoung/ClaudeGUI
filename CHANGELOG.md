@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.12 — 2026-09-07
+
+### The "working" status in a chat
+- **What Claude is doing now is the last row of the chat**, right under the answer being written,
+  instead of a full-width tinted band squeezed between the message list and the input box. It is a
+  rounded row with a soft blue tint that scrolls with the conversation.
+- **It is written at reading size.** The status ("compacting the context", "waiting for the model",
+  "running Bash", "starting the process") used to be set smaller than the chat text; it is now
+  slightly larger than it and blue, with the elapsed time beside it in grey.
+- **The elapsed time only appears after a second**, so a turn that has just started no longer shows
+  something like "122ms" next to the status.
+- The blue of every "this chat is working" mark — the status row and the glowing input border —
+  now comes from theme variables, so the light theme uses its own blue instead of the dark theme's.
+
 ## 1.0.11 — 2026-09-07
 
 ### Compacting the context

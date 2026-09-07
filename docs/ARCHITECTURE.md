@@ -62,7 +62,8 @@ src/
                            MessageList (prompt states; prompts still queued are moved to the end),
                            MessageItem (per-prompt state mark + rewind button), ToolCallCard
                            (per-card show/hide), PermissionPrompt, WorkingStrip (what Claude is
-                           doing + elapsed time while a turn runs), Composer (command matching
+                           doing + elapsed time, drawn as the last row of the message list while a
+                           turn runs), Composer (command matching
                            anywhere in the text via slashTokenAt, clear, restore, ↑/↓ prompt history)
       files/               FilePanel (tabs), FileTree (order: name / changed / size / type),
                            FileViewer, TasksPanel

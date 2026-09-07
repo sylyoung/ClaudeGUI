@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-07 (session 4, v1.0.11)
+Last updated: 2026-09-07 (session 4, v1.0.12)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -105,6 +105,17 @@ survive app restarts.
       lines, unread stayed at 4, and after a restart the replayed chat showed the new row
 - [x] Folded system lines are named by what they are (`houseKeepingLabel` in MessageItem.tsx)
 - [x] The model name in a session row is no longer coloured by model family
+
+### v1.0.12
+- [x] The "working" status (`WorkingStrip`) moved out of the band above the composer and into
+      `MessageList`, as the last row of `.messages-inner` (after the flow, before the queued block),
+      so it scrolls with the conversation; `ChatView` passes `working` and `turnStartedAt`
+- [x] It is drawn as a rounded row hugging its text (`align-self: flex-start`), 15px blue label on a
+      soft blue tint, elapsed time in grey mono and only from one second on
+- [x] `--blue-soft` / `--blue-line` / `--blue-edge` added to both themes; the status row and the
+      glowing composer border use them instead of hard-coded dark-theme rgba values
+- [x] Verified live in an isolated instance (haiku, sandbox/status-look, port 45199) in both themes:
+      the row appears under the streaming answer and above the waiting-prompts block
 
 ## Known limitations / ideas for next iterations
 - No embedded terminal (xterm.js + node-pty) yet; "Open folder in Terminal" opens Ghostty instead.

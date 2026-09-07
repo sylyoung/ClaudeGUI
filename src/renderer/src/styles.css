@@ -21,6 +21,9 @@
   --amber: #e3b341;
   --red: #f85149;
   --blue: #58a6ff;
+  --blue-soft: rgba(88, 166, 255, 0.13);
+  --blue-line: rgba(88, 166, 255, 0.3);
+  --blue-edge: rgba(88, 166, 255, 0.55);
   --purple: #bc8cff;
   --folder: #62aef5;
   --user-bubble: #2b3a4d;
@@ -61,6 +64,9 @@
   --amber: #b97b00;
   --red: #d93025;
   --blue: #0a6cff;
+  --blue-soft: rgba(10, 108, 255, 0.08);
+  --blue-line: rgba(10, 108, 255, 0.22);
+  --blue-edge: rgba(10, 108, 255, 0.45);
   --purple: #8250df;
   --folder: #4aa8f0;
   --user-bubble: #e8f0fe;
@@ -877,7 +883,7 @@ button.cs-item:hover { color: var(--accent); }
 .swatch.custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
 /* ---- "Claude is working" effects in the chat ----
-   A moving line under the status row, a live strip above the composer and a glowing
+   A moving line under the status row, a status row at the end of the message list and a glowing
    composer border, so a running turn is obvious without reading any text. */
 .chat.is-working .chat-status { position: relative; }
 .chat.is-working .chat-status::after {
@@ -888,15 +894,16 @@ button.cs-item:hover { color: var(--accent); }
 }
 @keyframes sweep-x { 0% { background-position: -40% 0; } 100% { background-position: 140% 0; } }
 .working-strip {
-  display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 5px 18px;
-  font-size: 12px; color: var(--text-dim);
-  background: linear-gradient(90deg, rgba(88, 166, 255, 0.12), rgba(88, 166, 255, 0.03));
-  border-top: 1px solid rgba(88, 166, 255, 0.28);
+  display: flex; align-items: center; gap: 10px; align-self: flex-start; max-width: 100%;
+  padding: 9px 15px; border-radius: 12px;
+  font-size: 15px; color: var(--text-dim);
+  background: var(--blue-soft); border: 1px solid var(--blue-line);
 }
+.working-strip .mark { font-size: 16px; min-width: 20px; }
 .working-strip .ws-what { color: var(--blue); font-weight: 600; }
-.working-strip .ws-tool { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.working-strip .ws-time { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-left: auto; flex-shrink: 0; }
-.chat.is-working .composer-inner { border-color: rgba(88, 166, 255, 0.55); box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.08); }
+.working-strip .ws-tool { font-family: var(--mono); font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.working-strip .ws-time { font-family: var(--mono); font-size: 12px; color: var(--text-faint); flex-shrink: 0; }
+.chat.is-working .composer-inner { border-color: var(--blue-edge); box-shadow: 0 0 0 3px var(--blue-soft); }
 
 /* ---- state markers ----
    Printed instead of a coloured dot because a small dot is easy to miss:
