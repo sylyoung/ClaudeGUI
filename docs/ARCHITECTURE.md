@@ -95,13 +95,26 @@ there is no boundary message, so a "Context compacted earlier in this chat" row 
 the summary — otherwise the summary would appear as a prompt the user seemed to have typed. The rest
 stay as folded rows, named by `houseKeepingLabel` in the renderer instead of "system message".
 
-## Prompts that are still queued
-A prompt sent while a turn is running goes into the CLI's own command queue. The host keeps their
-ids in `SessionLiveState.queuedIds` and corrects that list from every result: `user_message_uuids`
-names the prompts the finished turn consumed (the CLI may fold several into one turn, so counting one
-off per result drifts and leaves phantoms), and `queued_turn_count` says how many are still queued —
-used as a backstop, oldest first. The renderer marks exactly those messages as waiting and collects
-them at the end of the chat. `cancelQueued(messageId)` takes one back through the CLI's
+## What happened to each prompt
+A prompt sent while a turn is running goes into the CLI's own command queue. The host tracks every
+prompt the app sends in `SessionLiveState.promptDelivery` (`queued` = still in the CLI's queue,
+`working` = taken by the turn running now) and keeps the waiting ones, in order, in `queuedIds`.
+The states come from what the CLI reports about itself, never from the position of a message in the
+chat:
+- a prompt is queued on send whenever an earlier prompt is still unfinished (the session status can
+  be idle for a moment although the CLI has already taken the next prompt);
+- `user_message_uuid` / `user_message_uuids` on the turn's first reply frame name the prompts that
+  turn has taken → `working`, and the same fields on the result name the prompts it answered →
+  dropped from the map;
+- `queued_turn_count` on the result says how many sends are still in the queue; prompts that leave
+  the queue without being named were taken for the turn that starts next, so they become `working`,
+  not answered. This is what a `/compact` used to get wrong: its own result names no prompt at all,
+  so a prompt typed during the compaction jumped straight to "answered";
+- prompts left marked after ten quiet seconds, or when the process ends, are let go.
+
+The renderer reads those states directly and falls back to the transcript only for prompts replayed
+from an earlier run (answered if a finished turn follows, otherwise being answered while busy). The
+waiting ones are collected at the end of the chat. `cancelQueued(messageId)` takes one back through the CLI's
 `cancel_async_message` control request (`query.cancelAsyncMessage`, implemented in the SDK but not
 declared on the public `Query` type); it fails harmlessly when the CLI has already taken the prompt.
 

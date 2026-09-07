@@ -27,6 +27,7 @@ import type {
   PendingPermission,
   PermissionDecision,
   PermissionMode,
+  PromptDelivery,
   RewindPreview,
   RewindResult,
   SessionEvent,
@@ -94,6 +95,8 @@ export interface RuntimeDeps {
 }
 
 const FLUSH_MS = 45
+/** How long a chat may stay quiet before a prompt still marked as being answered is let go. */
+const DELIVERY_QUIET_MS = 10_000
 
 export class SessionRuntime {
   readonly transcript = new TranscriptState()
@@ -121,6 +124,8 @@ export class SessionRuntime {
   private resumeAt: string | null = null
   /** Whether file backups were switched on for the process that is running now. */
   private checkpointing = false
+  /** Clears prompts left marked as being answered when no turn ever came for them. */
+  private deliverySweep: NodeJS.Timeout | null = null
 
   constructor(
     public record: SessionRecord,
@@ -141,7 +146,8 @@ export class SessionRuntime {
       unread: 0,
       lastActivityAt: record.lastActiveAt,
       queuedCount: 0,
-      queuedIds: []
+      queuedIds: [],
+      promptDelivery: {}
     }
   }
 
@@ -361,6 +367,13 @@ export class SessionRuntime {
       this.live.processAlive = false
       this.live.activity = null
       this.setQueued([])
+      // Nothing can be waiting or being answered once the process is gone; the chat falls back to
+      // reading those prompts from the transcript, where they show as delivered but unanswered.
+      for (const id of Object.keys(this.live.promptDelivery)) this.setDelivery(id, null)
+      if (this.deliverySweep) {
+        clearTimeout(this.deliverySweep)
+        this.deliverySweep = null
+      }
       for (const m of this.transcript.messages) {
         if (m.kind === 'assistant' && m.streaming) {
           m.streaming = false
@@ -516,8 +529,16 @@ export class SessionRuntime {
       uuid: uuid as never,
       session_id: this.record.claudeSessionId
     }
-    if (this.live.status === 'running' || this.live.status === 'requires_action') this.setQueued([...this.live.queuedIds, uuid])
-    else this.setStatus('running')
+    // A prompt waits whenever Claude Code still owes an answer for an earlier one. Reading that
+    // from the prompts themselves rather than from the session status also covers the moments
+    // where the status is briefly idle although the CLI has already taken the next prompt.
+    if (this.hasUnfinishedPrompt() || this.live.status === 'running' || this.live.status === 'requires_action') {
+      this.setDelivery(uuid, 'queued')
+      this.setQueued([...this.live.queuedIds, uuid])
+    } else {
+      this.setDelivery(uuid, 'working')
+      this.setStatus('running')
+    }
     this.queue.push(message)
     this.record.lastActiveAt = Date.now()
     this.record.lastPromptAt = this.record.lastActiveAt
@@ -531,6 +552,65 @@ export class SessionRuntime {
   private setQueued(ids: string[]): void {
     this.live.queuedIds = ids
     this.live.queuedCount = ids.length
+  }
+
+  /**
+   * Record what Claude Code has done with a prompt this app sent; `null` means the turn that took
+   * it has finished, so the chat can read its state from the transcript again.
+   */
+  private setDelivery(id: string, state: PromptDelivery | null): void {
+    const current = this.live.promptDelivery
+    if (state === null) {
+      if (!(id in current)) return
+      const next = { ...current }
+      delete next[id]
+      this.live.promptDelivery = next
+    } else {
+      if (current[id] === state) return
+      this.live.promptDelivery = { ...current, [id]: state }
+    }
+    this.stateDirty = true
+  }
+
+  /** Is there a prompt Claude Code has not answered yet? */
+  private hasUnfinishedPrompt(): boolean {
+    return Object.values(this.live.promptDelivery).some((s) => s === 'queued' || s === 'working')
+  }
+
+  /**
+   * Claude Code named the prompts the turn it is starting has taken, so they are being answered
+   * now and are no longer waiting in its queue.
+   */
+  private takePrompts(msg: { user_message_uuids?: string[]; user_message_uuid?: string }): void {
+    const ids = msg.user_message_uuids ?? (msg.user_message_uuid ? [msg.user_message_uuid] : [])
+    if (!ids.length) return
+    for (const id of ids) if (this.live.promptDelivery[id] === 'queued') this.setDelivery(id, 'working')
+    const taken = new Set(ids)
+    const rest = this.live.queuedIds.filter((id) => !taken.has(id))
+    if (rest.length !== this.live.queuedIds.length) {
+      this.setQueued(rest)
+      this.stateDirty = true
+      this.scheduleFlush()
+    }
+  }
+
+  /**
+   * A chat that has been idle for a while has nothing waiting and nothing running, whatever the
+   * last turn said: a prompt still marked as waiting or as being answered was taken by a turn
+   * that never came (answered inside a turn Claude Code did not name, or dropped). Letting those
+   * go keeps a stale mark from sitting in the chat — and from pushing every later prompt into the
+   * queue behind it.
+   */
+  private sweepDeliveryWhenQuiet(): void {
+    if (this.deliverySweep) clearTimeout(this.deliverySweep)
+    this.deliverySweep = setTimeout(() => {
+      this.deliverySweep = null
+      if (this.live.status !== 'idle' || !Object.keys(this.live.promptDelivery).length) return
+      for (const id of Object.keys(this.live.promptDelivery)) this.setDelivery(id, null)
+      this.setQueued([])
+      this.stateDirty = true
+      this.flush()
+    }, DELIVERY_QUIET_MS)
   }
 
   /**
@@ -552,6 +632,7 @@ export class SessionRuntime {
     }
     if (!cancelled) return { cancelled: false, text, images }
     this.setQueued(this.live.queuedIds.filter((id) => id !== messageId))
+    this.setDelivery(messageId, null)
     this.transcript.removeMessage(messageId)
     this.scheduleFlush()
     this.flush()
@@ -755,11 +836,13 @@ export class SessionRuntime {
     switch (msg.type) {
       case 'stream_event': {
         this.transcript.apply(msg, ts)
+        this.takePrompts(msg)
         if (msg.event.type === 'message_start' && this.live.status !== 'requires_action') this.setStatus('running')
         break
       }
       case 'assistant': {
         this.transcript.apply(msg, ts)
+        if (!msg.parent_tool_use_id) this.takePrompts(msg)
         if (this.live.status === 'idle' || this.live.status === 'starting') this.setStatus('running')
         const usage = msg.message.usage as unknown as Record<string, number> | undefined
         if (usage && !msg.parent_tool_use_id) {
@@ -804,14 +887,29 @@ export class SessionRuntime {
         const r = msg as { queued_turn_count?: number; user_message_uuid?: string; user_message_uuids?: string[] }
         const consumed = new Set(r.user_message_uuids ?? (r.user_message_uuid ? [r.user_message_uuid] : []))
         let waiting = this.live.queuedIds.filter((id) => !consumed.has(id))
-        // Backstop for a prompt taken without being named: the queue is first in, first out.
+        // Backstop for a prompt taken without being named: the queue is first in, first out, and
+        // queued_turn_count says how many of our sends are still in it. A prompt that leaves the
+        // queue here without being named was taken for the turn that starts next — it is being
+        // answered, not answered, which is the difference the chat used to get wrong after a
+        // /compact (the compaction's own result names no prompt at all).
+        const takenNext = new Set<string>()
         if (typeof r.queued_turn_count === 'number' && r.queued_turn_count < waiting.length) {
+          for (const id of waiting.slice(0, waiting.length - r.queued_turn_count)) takenNext.add(id)
           waiting = waiting.slice(waiting.length - r.queued_turn_count)
         }
+        // The prompts this turn answered are finished, and so is anything it was working on:
+        // Claude Code runs one turn at a time. The prompts it has just taken for the next turn
+        // are the exception — they are being answered from now on.
+        for (const id of consumed) this.setDelivery(id, null)
+        for (const [id, state] of Object.entries(this.live.promptDelivery)) {
+          if (state === 'working' && !takenNext.has(id)) this.setDelivery(id, null)
+        }
+        for (const id of takenNext) this.setDelivery(id, 'working')
         this.setQueued(waiting)
         const queued = r.queued_turn_count ?? waiting.length
         if (queued > 0) this.setStatus('running')
         else if (this.live.status !== 'requires_action') this.setStatus('idle')
+        this.sweepDeliveryWhenQuiet()
         const preview = msg.subtype === 'success' ? msg.result : humanResultSubtype(msg.subtype, (msg as { errors?: string[] }).errors)
         const text = (this.lastAssistantText || preview || '').trim()
         this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)

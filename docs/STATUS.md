@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-07 (session 4, v1.0.12)
+Last updated: 2026-09-07 (session 4, v1.0.13)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -116,6 +116,23 @@ survive app restarts.
       glowing composer border use them instead of hard-coded dark-theme rgba values
 - [x] Verified live in an isolated instance (haiku, sandbox/status-look, port 45199) in both themes:
       the row appears under the streaming answer and above the waiting-prompts block
+
+### v1.0.13
+- [x] Prompt states are tracked in the host (`SessionLiveState.promptDelivery`: `queued` /
+      `working`) from the CLI's own reports — `user_message_uuid(s)` on the turn's first reply frame
+      and on the result, plus `queued_turn_count` — instead of being inferred from a message's
+      position relative to the last result row
+- [x] A prompt that leaves the CLI's queue without being named as consumed is taken for the next
+      turn → `working`, which is the case a `/compact` produced: its result names no prompt at all,
+      so the prompt typed during the compaction was marked "answered" before it had run
+- [x] `send()` queues a prompt whenever an earlier one is unfinished, not when the status looks
+      busy (the status is idle for a moment between two turns)
+- [x] Stale marks are swept after ten idle seconds and when the process ends
+- [x] The renderer prefers the tracked state and falls back to the transcript only for prompts
+      replayed from an earlier run; only the newest prompt may fall back to "being answered"
+- [x] Verified live in an isolated instance (haiku, sandbox/compact-queue, port 45199) with a probe
+      recording every state change: queued during the compaction → being answered when the CLI took
+      it → answered when its turn ended; ordinary queueing during a normal turn unchanged
 
 ## Known limitations / ideas for next iterations
 - No embedded terminal (xterm.js + node-pty) yet; "Open folder in Terminal" opens Ghostty instead.

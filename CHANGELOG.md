@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.13 — 2026-09-07
+
+### What happened to each prompt
+- **A prompt typed during a /compact is no longer called "answered" the moment the compaction
+  ends.** The chat used to decide what had happened to a prompt from where it stood in the
+  conversation: anything above the last finished turn counted as answered. A prompt sent while the
+  context was being compacted stands above the compaction's own turn, so it flipped from "queued"
+  straight to "answered" although Claude Code had not started it yet, and it stayed wrong for as
+  long as the answer took.
+- **The marks now come from what Claude Code says about each prompt**: it names the prompts every
+  turn takes and answers, and reports how many sends are still in its queue. A prompt is therefore
+  "queued" while it is really in the queue, "being answered" from the moment the CLI takes it —
+  including the moment right after a compaction, when it is taken for the turn that starts next —
+  and "answered" only when the turn that took it has finished. The conversation is only consulted
+  for prompts read back from an earlier run of the app.
+- **A prompt is queued whenever an earlier one is still unfinished**, rather than when the session
+  looks busy. Between two turns the session is idle for a moment although Claude Code has already
+  taken the next prompt; a prompt typed in that moment used to be marked as being answered straight
+  away.
+- **A mark cannot get stuck any more**: prompts still marked as waiting or as being answered after
+  ten quiet seconds, or when the process ends, are let go.
+
 ## 1.0.12 — 2026-09-07
 
 ### The "working" status in a chat

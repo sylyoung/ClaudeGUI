@@ -156,7 +156,16 @@ export interface SessionLiveState {
   queuedCount: number
   /** Ids of the prompts Claude Code has not taken off its queue yet, oldest first. */
   queuedIds: string[]
+  /**
+   * What Claude Code has done with each prompt this app sent, as far as it has said so itself.
+   * Only prompts whose turn has not finished appear here; a finished one is dropped and the chat
+   * reads its state from the transcript instead.
+   */
+  promptDelivery: Record<string, PromptDelivery>
 }
+
+/** A prompt is waiting in Claude Code's queue, or is being answered by the turn running now. */
+export type PromptDelivery = 'queued' | 'working'
 
 // ---------------------------------------------------------------------------
 // Chat transcript model

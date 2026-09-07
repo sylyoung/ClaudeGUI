@@ -60,18 +60,26 @@ export function MessageList({
   const busy = live?.status === 'running' || live?.status === 'requires_action' || live?.status === 'starting'
   const { promptState, queuedIds } = useMemo(() => {
     const promptState = new Map<string, PromptState>()
-    // Claude Code names the prompts it still has in its queue, so a prompt is marked as waiting
-    // only while it really is — even when several of them were answered in one turn.
-    const queuedIds = new Set(live?.queuedIds ?? [])
+    // What Claude Code itself says it has done with each prompt this app sent: still in its queue,
+    // or taken by the turn it is running. Anything it does not name — prompts read back from the
+    // history of an earlier run — is read from the chat instead: answered if a finished turn
+    // follows it, otherwise being answered while the chat is busy.
+    const delivery = live?.promptDelivery ?? {}
+    const queuedIds = new Set(Object.keys(delivery).filter((id) => delivery[id] === 'queued'))
     let lastResult = -1
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i].kind === 'result') { lastResult = i; break }
+    let lastPrompt = -1
+    for (let i = messages.length - 1; i >= 0; i--) { const m = messages[i]; if (m.kind === 'user' && !m.synthetic) { lastPrompt = i; break } }
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i]
       if (m.kind !== 'user' || m.synthetic) continue
-      promptState.set(m.id, queuedIds.has(m.id) ? 'queued' : i < lastResult ? 'answered' : busy ? 'working' : 'sent')
+      const known = delivery[m.id]
+      // Only the newest prompt can be the one a running turn is answering; an older one Claude
+      // Code says nothing about was delivered in an earlier run of the process.
+      promptState.set(m.id, known ?? (i < lastResult ? 'answered' : busy && i === lastPrompt ? 'working' : 'sent'))
     }
     return { promptState, queuedIds }
-  }, [messages, live?.queuedIds, busy])
+  }, [messages, live?.promptDelivery, busy])
   const queued = visible.filter((m) => queuedIds.has(m.id))
   const flow = queuedIds.size ? visible.filter((m) => !queuedIds.has(m.id)) : visible
 
