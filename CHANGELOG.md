@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.0.9 — 2026-09-07
+
+### Writing prompts
+- **Commands and skills are matched anywhere in a sentence**, not only when the message starts with
+  "/". The menu opens for the "/word" the caret is in, wherever that is, and the chosen command
+  replaces exactly that word, so "please run /comp" completes to "please run /compact " with the
+  rest of the sentence untouched. A slash after a non-space character (a path such as `src/lib`, a
+  date such as 12/3) does not open the menu, Escape closes it for that word, and ↑ ↓ ⇥ still pick.
+- **↑ and ↓ keep walking your earlier prompts.** Until now the second ↑ only moved the caret; now,
+  once you are walking the history, the arrows keep walking it, and typing or clicking in the box
+  ends the walk and gives the arrows back to the caret.
+
+### The chat
+- **Prompts Claude has not taken yet stay at the bottom of the chat**, collected under a line that
+  says how many are waiting, instead of being pushed up by the output of the turn that is still
+  running.
+- **Every prompt says what happened to it**, in words and in colour: "⋯ queued" in amber with a
+  dashed bubble, "... being answered" in blue, "✓ answered" in green, and a grey "· sent" for a
+  prompt whose turn was interrupted or stopped.
+- **Buttons for tool details**: each tool card has its own show/hide button, and the chat header has
+  one that expands or collapses the details of every tool operation in the chat at once.
+- **Finishing a /compact no longer marks the chat unread** and raises no notification: compacting the
+  context is housekeeping, not an answer. A turn that also produced an answer still counts as unread.
+
+### Folder panel
+- **The files can be ordered**: a button above the tree offers name A → Z, name Z → A, recently
+  changed first, largest first, and grouped by type. Folders stay above files, the order applies to
+  every folder in the tree, and it is remembered.
+
+### Rewinding a chat
+- **"Rewind the chat to here"** on your own prompts, from a button that appears when the pointer is
+  over the prompt and from the right-click menu. It asks first what should be included and shows how
+  many files would change before anything is done.
+- The conversation is cut back to just before that prompt — for Claude as well, which is resumed at
+  that point and no longer remembers what came after — and the prompt goes back into the input box
+  so you can change it and send it again.
+- **The files Claude changed since then can be put back** as they were. This needs the new
+  "keep file backups" setting (Settings → Claude, on by default) and works for sessions started
+  after it is switched on. If Claude Code refuses to cut its own transcript at that point, the files
+  are still restored and the chat says plainly that Claude may still remember the removed messages.
+
 ## 1.0.8 — 2026-09-06
 
 ### Importing terminal sessions

@@ -13,6 +13,8 @@ import type {
   PendingPermission,
   PermissionDecision,
   PermissionMode,
+  RewindPreview,
+  RewindResult,
   SessionEvent,
   SessionLiveState,
   SdkUsage,
@@ -93,9 +95,9 @@ export class SessionManager {
         this.store.upsertSession(r)
         this.host.broadcast({ type: 'record', record: r })
       },
-      onTurnFinished: (rt, preview, isError) => {
+      onTurnFinished: (rt, preview, isError, silent) => {
         const foreground = this.host.isWindowFocused() && this.activeSessionId === rt.id
-        if (!foreground) {
+        if (!foreground && !silent) {
           rt.bumpUnread()
           this.host.notify({ sessionId: rt.id, title: `${isError ? '⚠️ ' : '✅ '}${rt.record.title}`, body: preview || (isError ? 'Turn ended with an error' : 'Finished'), kind: isError ? 'error' : 'turn' })
         }
@@ -342,6 +344,16 @@ export class SessionManager {
   async stop(id: string): Promise<void> {
     await this.get(id).stop(true)
     this.refreshBadge()
+  }
+
+  rewindPreview(id: string, messageId: string): Promise<RewindPreview> {
+    return this.get(id).rewindPreview(messageId)
+  }
+
+  async rewind(id: string, messageId: string, restoreFiles: boolean): Promise<RewindResult> {
+    const result = await this.get(id).rewind(messageId, restoreFiles)
+    this.refreshBadge()
+    return result
   }
 
   async interrupt(id: string): Promise<void> {

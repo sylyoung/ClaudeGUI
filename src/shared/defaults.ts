@@ -15,6 +15,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   disallowedTools: '',
   useProjectSettings: true,
   useLocalSettings: true,
+  fileCheckpointing: true,
   autoTitle: true,
   // General
   notifications: true,
@@ -39,6 +40,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showTimestamps: true,
   thinkingDisplay: 'collapsed',
   toolCardsExpanded: false,
+  fileSort: 'name',
   chatMaxWidth: 980,
   groupSessionsByFolder: false,
   translucentSidebar: false,

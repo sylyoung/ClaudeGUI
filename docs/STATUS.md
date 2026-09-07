@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-06 (session 4, v1.0.8)
+Last updated: 2026-09-07 (session 4, v1.0.9)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -176,6 +176,25 @@ npm run build:mac  # produce dist/mac-arm64/ClaudeGUI.app (quit a running Claude
 - [x] Clicking a session that is already in ClaudeGUI opens that chat instead of doing nothing
 - [x] Verified in an isolated instance (debug port 8899): list height 300 → 621 px, Enter imported and
       opened a session, a second click on it re-opened the same chat without a duplicate
+
+### v1.0.9
+- [x] Slash matching anywhere in a sentence (`slashTokenAt` in Composer.tsx); paths and dates do not
+      trigger it; the completion replaces only that word
+- [x] ↑ / ↓ keep walking the prompt history once the walk has started; typing or clicking ends it
+- [x] Queued prompts are collected at the bottom of the chat; every prompt shows queued / being
+      answered / answered / sent in words and colour (`PromptState` in MessageItem.tsx)
+- [x] Show/hide buttons for tool details per card and for the whole chat (store `toolDetails` +
+      `toolExpandNonce`)
+- [x] A finished /compact no longer marks a chat unread or notifies (`silent` in onTurnFinished)
+- [x] Rewind: hover button and right-click entry on your prompts, a window that asks whether files
+      should be put back (dry-run counts), `enableFileCheckpointing` behind the new
+      `fileCheckpointing` setting, conversation cut with `resume` + `resumeSessionAt` at the previous
+      assistant message's chain uuid (`chainUuid` on AssistantChatMessage)
+- [x] File tree order: name A→Z / Z→A, recently changed, largest, by type (setting `fileSort`,
+      sorted in the renderer so switching is instant)
+- [x] Verified live in an isolated instance with a scratch session (haiku, sandbox/rewind-test):
+      note.txt went back from "version two" to "version one", the chat lost the later turn, and
+      Claude itself answered "version one" afterwards, so the truncating resume worked
 
 ### Open after v1.0.6
 - The user updates their installed app themselves (Settings → About → check for updates); do not

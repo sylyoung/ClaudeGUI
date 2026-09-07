@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, AlertTriangle, Bot, ChevronDown, Code, Ellipsis, FileDiff, FolderOpen, GitBranch, Github, HardDrive, MessageSquare, PanelRight, Pin, PinOff, Play, Power, Square, TerminalSquare, Upload } from 'lucide-react'
+import { Activity, AlertTriangle, Bot, ChevronDown, ChevronsDownUp, ChevronsUpDown, Code, Ellipsis, FileDiff, FolderOpen, GitBranch, Github, HardDrive, MessageSquare, PanelRight, Pin, PinOff, Play, Power, Square, TerminalSquare, Upload } from 'lucide-react'
 import type { DirInfo, EffortLevel, PermissionDecision, PermissionMode, SessionLiveState, SessionRecord } from '@shared/types'
 import { groupColorFor } from '@shared/colors'
 import { lastPromptOf } from '@shared/util'
@@ -14,6 +14,7 @@ import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { ChatProvider, type ChatCtx } from './ChatContext'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
+import { RewindDialog } from '../dialogs/RewindDialog'
 import { UsageStatus } from '../status/UsageStatus'
 import { formatBytes, formatDateTime, modelFamily, modelLabel, shortenPath, timeAgo } from '@/lib/format'
 import { visualState } from '@/lib/sessionState'
@@ -87,6 +88,12 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const setRevealPath = useStore((s) => s.setRevealPath)
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const [colorPick, setColorPick] = useState<{ x: number; y: number } | null>(null)
+  /** Prompt the rewind window is open for. */
+  const [rewindId, setRewindId] = useState<string | null>(null)
+  const toolDetailsMode = useStore((s) => s.toolDetails)
+  const toolCardsExpanded = useStore((s) => s.settings?.toolCardsExpanded ?? false)
+  const toolDetails = toolDetailsMode ? toolDetailsMode === 'expand' : toolCardsExpanded
+  const setToolDetails = useStore((s) => s.setToolDetails)
   const [editingTitle, setEditingTitle] = useState(false)
   const titleRef = useRef<HTMLSpanElement>(null)
 
@@ -160,7 +167,26 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     [record.cwd, record.id, openPath, openFile, toast]
   )
 
-  const ctx = useMemo<ChatCtx>(() => ({ sessionId: record.id, cwd: record.cwd, openPath, showPathMenu }), [record.id, record.cwd, openPath, showPathMenu])
+  const rewindTo = useCallback((messageId: string) => setRewindId(messageId), [])
+  const showPromptMenu = useCallback<ChatCtx['showPromptMenu']>(
+    (messageId, text, x, y) => {
+      setMenu({
+        x,
+        y,
+        items: [
+          { label: 'Rewind the chat to here…', onClick: () => setRewindId(messageId) },
+          { label: '', onClick: () => undefined, separator: true },
+          { label: 'Copy this prompt', onClick: async () => { await window.api.shell.copy(text); toast('Prompt copied', 'success') } },
+          { label: 'Put it back in the input box', onClick: () => useStore.getState().restoreComposer(record.id, text) }
+        ]
+      })
+    },
+    [record.id, toast]
+  )
+  const ctx = useMemo<ChatCtx>(
+    () => ({ sessionId: record.id, cwd: record.cwd, openPath, showPathMenu, rewindTo, showPromptMenu }),
+    [record.id, record.cwd, openPath, showPathMenu, rewindTo, showPromptMenu]
+  )
 
   const onSend = useCallback((text: string, images: { mediaType: string; data: string; name?: string }[]) => void send(record.id, text, images), [record.id, send])
   const onInterrupt = useCallback(() => void interruptSession(record.id), [record.id, interruptSession])
@@ -301,6 +327,13 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <span className="spacer" />
           {!filesOpen && <UsageStatus compact />}
           <span className="hdr-actions no-drag">
+            <button
+              className="btn ghost icon"
+              data-tip={toolDetails ? 'Hide the details of every tool operation in this chat' : 'Show the details of every tool operation in this chat'}
+              onClick={() => setToolDetails(!toolDetails)}
+            >
+              {toolDetails ? <ChevronsDownUp size={15} /> : <ChevronsUpDown size={15} />}
+            </button>
             <button className="btn ghost icon" data-tip="Open the working directory in a Terminal window" onClick={() => window.api.shell.openTerminal(record.cwd).catch(fail)}>
               <TerminalSquare size={15} />
             </button>
@@ -405,7 +438,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <span className="spacer" />
           <ContextBar sessionId={record.id} live={live} />
         </div>
-        <MessageList sessionId={record.id} messages={messages} pending={live?.pendingPermissions ?? []} onAnswer={onAnswer} loaded={loaded} />
+        <MessageList sessionId={record.id} messages={messages} live={live} pending={live?.pendingPermissions ?? []} onAnswer={onAnswer} loaded={loaded} />
         {live?.error && status === 'error' && (
           <div className="msg-system error" style={{ margin: '0 20px 8px' }}>
             <ChevronDown size={14} />
@@ -415,6 +448,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
         {working && <WorkingStrip live={live} since={lastTurnStart} />}
         <Composer sessionId={record.id} live={live} onSend={onSend} onInterrupt={onInterrupt} />
         {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+        {rewindId && <RewindDialog sessionId={record.id} messageId={rewindId} onClose={() => setRewindId(null)} />}
         {colorPick && group && (
           <GroupColorPicker x={colorPick.x} y={colorPick.y} color={group.color} title={`Colour of "${group.name}"`} onPick={(c) => window.api.sessions.setGroupColor(group.id, c).catch(fail)} onClose={() => setColorPick(null)} />
         )}

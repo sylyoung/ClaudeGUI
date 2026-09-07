@@ -99,6 +99,10 @@ interface State {
   files: Record<string, FilesState>
   git: Record<string, GitState>
   composerFocusNonce: number
+  /** Bumped when all tool cards should follow the global expanded/collapsed setting again. */
+  toolExpandNonce: number
+  /** Expand-all / collapse-all chosen in the chat header; overrides what a card shows by default. */
+  toolDetails: 'expand' | 'collapse' | null
   searchFocusNonce: number
   /** Multi-selection in the sidebar (⌘-click / ⇧-click); bulk actions apply to these ids. */
   selectedIds: string[]
@@ -112,6 +116,10 @@ interface State {
   send: (id: string, text: string, images?: { mediaType: string; data: string; name?: string }[]) => Promise<void>
   /** Stop the current turn and put the prompts of that turn back into the composer. */
   interruptSession: (id: string) => Promise<void>
+  /** Cut a chat back to one of your prompts; the prompt text goes back into the input box. */
+  rewind: (id: string, messageId: string, restoreFiles: boolean) => Promise<void>
+  /** Put a text back into the input box of a chat (used by the prompt menu). */
+  restoreComposer: (id: string, text: string) => void
   answerPermission: (id: string, requestId: string, decision: PermissionDecision) => Promise<void>
   setDialog: (d: DialogKind) => void
   openSettings: (tab?: SettingsTab) => void
@@ -143,6 +151,8 @@ interface State {
   setSearch: (s: string) => void
   setShowArchived: (v: boolean) => void
   focusComposer: () => void
+  /** Expand or collapse the details of every tool operation in the chat. */
+  setToolDetails: (expanded: boolean) => void
   focusSearch: () => void
   setWidths: (patch: { sidebarWidth?: number; filesWidth?: number }) => void
   setSelectedIds: (ids: string[]) => void
@@ -191,6 +201,8 @@ export const useStore = create<State>((set, get) => ({
   files: loadFilesState(),
   git: {},
   composerFocusNonce: 0,
+  toolExpandNonce: 0,
+  toolDetails: null,
   searchFocusNonce: 0,
   selectedIds: [],
   bulkBusy: {},
@@ -327,6 +339,27 @@ export const useStore = create<State>((set, get) => ({
       await window.api.sessions.interrupt(id)
     } catch (err) {
       get().toast(`Interrupt failed: ${(err as Error).message}`, 'error')
+    }
+  },
+
+  restoreComposer: (id, text) => {
+    set((s) => ({ composerRestore: { ...s.composerRestore, [id]: { text, images: [], nonce: (s.composerRestore[id]?.nonce ?? 0) + 1 } } }))
+    get().focusComposer()
+  },
+
+  rewind: async (id, messageId, restoreFiles) => {
+    try {
+      const r = await window.api.sessions.rewind(id, messageId, restoreFiles)
+      set((s) => ({
+        sentQueue: { ...s.sentQueue, [id]: [] },
+        composerRestore: { ...s.composerRestore, [id]: { text: r.text, images: [], nonce: (s.composerRestore[id]?.nonce ?? 0) + 1 } }
+      }))
+      const files = restoreFiles ? `, ${r.filesRestored} file${r.filesRestored === 1 ? '' : 's'} put back` : ''
+      const skipped = r.filesSkipped ? `, ${r.filesSkipped} skipped (links)` : ''
+      get().toast(`Rewound to your earlier prompt${files}${skipped}. The prompt is back in the input box.`, 'success')
+    } catch (err) {
+      get().toast(`Rewind failed: ${(err as Error).message}`, 'error')
+      throw err
     }
   },
 
@@ -500,6 +533,10 @@ export const useStore = create<State>((set, get) => ({
   setSearch: (search) => set({ search }),
   setShowArchived: (showArchived) => set({ showArchived }),
   focusComposer: () => set((s) => ({ composerFocusNonce: s.composerFocusNonce + 1 })),
+  setToolDetails: (expanded) => {
+    set((s) => ({ toolExpandNonce: s.toolExpandNonce + 1, toolDetails: expanded ? 'expand' : 'collapse' }))
+    void get().setSettings({ toolCardsExpanded: expanded })
+  },
   focusSearch: () => set((s) => ({ searchFocusNonce: s.searchFocusNonce + 1, sidebarOpen: true })),
   setWidths: (patch) => {
     if (patch.sidebarWidth) localStorage.setItem('sidebarWidth', String(patch.sidebarWidth))

@@ -15,6 +15,10 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   const [images, setImages] = useState<ImageAttachment[]>([])
   const [commands, setCommands] = useState<SlashCommandView[]>([])
   const [slashIndex, setSlashIndex] = useState(0)
+  /** The "/word" the caret sits in, anywhere in the text — not only at the start of the box. */
+  const [slash, setSlash] = useState<SlashToken | null>(null)
+  /** Start of a token whose menu you closed with Escape, so it stays closed while you type in it. */
+  const dismissedStart = useRef<number | null>(null)
   const ref = useRef<HTMLTextAreaElement>(null)
   const focusNonce = useStore((s) => s.composerFocusNonce)
   const sendWithEnter = useStore((s) => s.settings?.sendWithEnter ?? true)
@@ -74,7 +78,16 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     el.style.height = Math.min(el.scrollHeight, 320) + 'px'
   }, [text])
 
-  const slashActive = text.startsWith('/') && !text.includes('\n') && !text.includes(' ')
+  const syncSlash = (el: HTMLTextAreaElement) => {
+    const token = slashTokenAt(el.value, el.selectionStart ?? 0)
+    if (!token) {
+      dismissedStart.current = null
+      setSlash(null)
+      return
+    }
+    setSlash(token.start === dismissedStart.current ? null : token)
+  }
+  const slashActive = slash !== null
   useEffect(() => {
     if (!slashActive) return
     if (live?.slashCommands?.length) setCommands(live.slashCommands)
@@ -82,8 +95,8 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   }, [slashActive, sessionId, live?.slashCommands])
 
   const filtered = useMemo(() => {
-    if (!slashActive) return []
-    const q = text.slice(1).toLowerCase()
+    if (!slash) return []
+    const q = slash.query.toLowerCase()
     const builtin: SlashCommandView[] = [
       { name: 'compact', description: 'Compact the conversation context', argumentHint: '[instructions]' },
       { name: 'clear', description: 'Start a fresh conversation in this session', argumentHint: '' },
@@ -99,14 +112,37 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
       .sort((a, b) => a.rank - b.rank || a.c.name.length - b.c.name.length || a.c.name.localeCompare(b.c.name))
       .map((x) => x.c)
       .slice(0, 40)
-  }, [slashActive, text, commands])
+  }, [slash, commands])
   useEffect(() => setSlashIndex(0), [text])
+
+  /** Put the chosen command in place of the "/word" the caret is in, leaving the rest untouched. */
+  const applyCommand = (c: SlashCommandView) => {
+    const el = ref.current
+    if (!el || !slash) return
+    const end = el.selectionEnd ?? text.length
+    const tail = text.slice(end)
+    // A command that takes arguments is followed by one space — but not a second one when the
+    // sentence already continues with a space.
+    const insert = '/' + c.name + (c.argumentHint && !tail.startsWith(' ') ? ' ' : '')
+    const next = text.slice(0, slash.start) + insert + tail
+    const caret = slash.start + c.name.length + 1 + (c.argumentHint ? 1 : 0)
+    setText(next)
+    setSlash(null)
+    dismissedStart.current = null
+    setTimeout(() => {
+      const box = ref.current
+      if (!box) return
+      box.focus()
+      box.selectionStart = box.selectionEnd = caret
+    }, 0)
+  }
 
   const submit = useCallback(() => {
     const t = text.trim()
     if (!t && !images.length) return
     onSend(t, images)
     setText('')
+    setSlash(null)
     setImages([])
     setHistoryIndex(-1)
     draftBeforeHistory.current = ''
@@ -125,22 +161,31 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
         setSlashIndex((i) => (i - 1 + filtered.length) % filtered.length)
         return
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && filtered[slashIndex] && '/' + filtered[slashIndex].name !== text)) {
+      if (e.key === 'Escape') {
         e.preventDefault()
-        const c = filtered[slashIndex]
-        setText('/' + c.name + (c.argumentHint ? ' ' : ''))
+        e.stopPropagation()
+        dismissedStart.current = slash?.start ?? null
+        setSlash(null)
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && filtered[slashIndex] && filtered[slashIndex].name !== slash?.query)) {
+        e.preventDefault()
+        applyCommand(filtered[slashIndex])
         return
       }
     }
     const el = e.currentTarget
     const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0
-    if (e.key === 'ArrowUp' && history.length && (!text || caretAtStart) && !e.shiftKey && !e.metaKey && !e.altKey) {
+    // Once you are walking the history, ↑ and ↓ keep walking it; typing or clicking in the box ends
+    // the walk and gives the arrows back to the caret.
+    const walking = historyIndex >= 0
+    if (e.key === 'ArrowUp' && history.length && (walking || !text || caretAtStart) && !e.shiftKey && !e.metaKey && !e.altKey) {
       e.preventDefault()
-      if (historyIndex < 0) draftBeforeHistory.current = text
-      recall(historyIndex < 0 ? history.length - 1 : Math.max(0, historyIndex - 1))
+      if (!walking) draftBeforeHistory.current = text
+      recall(walking ? Math.max(0, historyIndex - 1) : history.length - 1)
       return
     }
-    if (e.key === 'ArrowDown' && historyIndex >= 0 && !e.shiftKey && !e.metaKey && !e.altKey) {
+    if (e.key === 'ArrowDown' && walking && !e.shiftKey && !e.metaKey && !e.altKey) {
       e.preventDefault()
       const next = historyIndex + 1
       recall(next >= history.length ? -1 : next)
@@ -190,7 +235,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
       {slashActive && filtered.length > 0 && (
         <div className="slash-menu">
           {filtered.map((c, i) => (
-            <div key={c.name} className={`slash-item ${i === slashIndex ? 'active' : ''}`} data-tip={c.description} onMouseDown={(e) => { e.preventDefault(); setText('/' + c.name + (c.argumentHint ? ' ' : '')); ref.current?.focus() }}>
+            <div key={c.name} className={`slash-item ${i === slashIndex ? 'active' : ''}`} data-tip={c.description} onMouseDown={(e) => { e.preventDefault(); applyCommand(c) }}>
               <span className="sname">/{c.name}</span>
               <span className="sdesc">{c.description}</span>
               {c.argumentHint && <span className="faint mono" style={{ fontSize: 11 }}>{c.argumentHint}</span>}
@@ -230,9 +275,14 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
           placeholder={busy ? 'Queue a message… (sent after the current turn)' : 'Message Claude…  ( / for commands, ↑ for an earlier prompt, drop files or paste images )'}
           onChange={(e) => {
             setText(e.target.value)
+            syncSlash(e.target)
             if (historyIndex >= 0) setHistoryIndex(-1)
           }}
           onKeyDown={onKeyDown}
+          onMouseDown={() => historyIndex >= 0 && setHistoryIndex(-1)}
+          onSelect={(e) => syncSlash(e.currentTarget)}
+          onKeyUp={(e) => syncSlash(e.currentTarget)}
+          onClick={(e) => syncSlash(e.currentTarget)}
           onPaste={onPaste}
           spellCheck
         />
@@ -258,6 +308,31 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
       </div>
     </div>
   )
+}
+
+export interface SlashToken {
+  /** Index of the "/" in the text. */
+  start: number
+  /** What was typed after it, up to the caret. */
+  query: string
+}
+
+/**
+ * The "/command" word the caret is inside, wherever it is in the message — the menu is no longer
+ * limited to a message that begins with "/". A slash right after a non-space character belongs to a
+ * path such as `src/lib` or a date such as `12/3`, so it does not open the menu, and a space or a
+ * line break ends the word.
+ */
+export function slashTokenAt(value: string, caret: number): SlashToken | null {
+  for (let i = caret - 1; i >= 0; i--) {
+    const ch = value[i]
+    if (/\s/.test(ch)) return null
+    if (ch === '/') {
+      if (i > 0 && !/\s/.test(value[i - 1])) return null
+      return { start: i, query: value.slice(i + 1, caret) }
+    }
+  }
+  return null
 }
 
 /**

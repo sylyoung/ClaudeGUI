@@ -17,6 +17,8 @@ import type {
   ModelInfoView,
   PermissionDecision,
   PermissionMode,
+  RewindPreview,
+  RewindResult,
   SessionEvent,
   SessionLiveState,
   SessionRecord,
@@ -96,6 +98,8 @@ const api = {
     start: (id: string) => invoke<void>('sessions:start', id),
     stop: (id: string) => invoke<void>('sessions:stop', id),
     interrupt: (id: string) => invoke<void>('sessions:interrupt', id),
+    rewindPreview: (id: string, messageId: string) => invoke<RewindPreview>('sessions:rewindPreview', id, messageId),
+    rewind: (id: string, messageId: string, restoreFiles: boolean) => invoke<RewindResult>('sessions:rewind', id, messageId, restoreFiles),
     answerPermission: (id: string, requestId: string, decision: PermissionDecision) =>
       invoke<boolean>('sessions:answerPermission', id, requestId, decision),
     setModel: (id: string, model: string) => invoke<void>('sessions:setModel', id, model),

@@ -262,8 +262,33 @@ a:hover { text-decoration: underline; }
 }
 .msg-user.synthetic .bubble { background: var(--bg-elev2); border-color: var(--border); color: var(--text-dim); font-family: var(--mono); font-size: 12px; max-width: 100%; }
 .msg-user .images { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+/* Your prompt with its rewind button, which appears when the pointer is over the message. */
+.msg-user .bubble-row { display: flex; align-items: center; gap: 6px; justify-content: flex-end; max-width: 100%; }
+.msg-action { opacity: 0; border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--text-dim); border-radius: 8px; padding: 4px 6px; cursor: pointer; display: inline-flex; align-items: center; transition: opacity 0.12s ease; }
+.msg-user:hover .msg-action { opacity: 1; }
+.msg-action:hover { background: var(--bg-hover); color: var(--text); }
+.tool-toggle { background: none; border: none; padding: 0; margin: 0; display: inline-flex; align-items: center; color: var(--text-faint); cursor: pointer; }
+.tool-toggle:hover { color: var(--text); }
 .msg-user .images img { max-height: 160px; max-width: 240px; border-radius: 8px; border: 1px solid var(--border-strong); }
 .msg-meta { font-size: 11px; color: var(--text-faint); display: flex; gap: 8px; align-items: center; }
+
+/* What happened to a prompt you typed: queued (amber), being answered (blue), answered (green),
+   delivered but the turn did not finish (grey). Both the word and the colour are shown. */
+.prompt-state { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.prompt-state .pmark { font-family: var(--mono); font-weight: 700; letter-spacing: 0.5px; }
+.prompt-state.st-queued { color: var(--amber); }
+.prompt-state.st-working { color: var(--accent); }
+.prompt-state.st-answered { color: var(--green); }
+.prompt-state.st-sent { color: var(--text-faint); }
+.msg-user.st-queued .bubble { border-style: dashed; border-color: var(--amber); background: var(--bg-elev2); }
+.msg-user.st-working .bubble { box-shadow: 0 0 0 1px var(--accent-soft); }
+/* Prompts still waiting are collected here, at the very end of the chat. */
+.queued-block { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--amber); padding-top: 8px; margin-top: 2px; }
+.queued-head { font-size: 11.5px; color: var(--amber); display: flex; align-items: center; gap: 6px; }
+.queued-head .pmark { font-family: var(--mono); font-weight: 700; }
+/* Rewind window */
+.rewind-quote { white-space: pre-wrap; word-break: break-word; background: var(--bg-elev2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; max-height: 160px; overflow: auto; }
+.rewind-files { max-height: 150px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 11.5px; color: var(--text-dim); display: flex; flex-direction: column; gap: 2px; }
 .msg-assistant .content { line-height: 1.6; word-break: break-word; }
 .msg-assistant .avatar { width: 20px; height: 20px; border-radius: 6px; background: var(--accent); display: inline-flex; align-items: center; justify-content: center; color: var(--accent-text); font-size: 12px; font-weight: 700; }
 .blocks { display: flex; flex-direction: column; gap: 8px; }

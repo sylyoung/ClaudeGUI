@@ -136,6 +136,10 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.stop(a[0])
     case 'interrupt':
       return manager.interrupt(a[0])
+    case 'rewindPreview':
+      return manager.rewindPreview(a[0], a[1])
+    case 'rewind':
+      return manager.rewind(a[0], a[1], a[2])
     case 'answerPermission':
       return manager.answerPermission(a[0], a[1], a[2])
     case 'setModel':

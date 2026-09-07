@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, File, FileCode, FileImage, FileText, Folder, FolderOpen, RefreshCw } from 'lucide-react'
-import type { FsEntry, GitFileState, GitFileStatus, GitStatusResult } from '@shared/types'
+import { ArrowDownUp, ChevronDown, ChevronRight, File, FileCode, FileImage, FileText, Folder, FolderOpen, RefreshCw } from 'lucide-react'
+import type { FileSort, FsEntry, GitFileState, GitFileStatus, GitStatusResult } from '@shared/types'
 import { useStore } from '@/store'
 import { editedFiles } from '@/lib/editedFiles'
 import { basename, formatBytes } from '@/lib/format'
@@ -12,6 +12,30 @@ const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp
 /** Directory bundles that macOS treats as documents (opened with their app, not expanded). */
 const BUNDLE_EXT = new Set(['.app', '.pages', '.numbers', '.key', '.xcodeproj', '.xcworkspace', '.bundle', '.framework', '.photoslibrary', '.rtfd', '.scptd', '.playground', '.band', '.logicx', '.fcpbundle', '.imovielibrary'])
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+/** The orders offered above the tree; folders always come before files. */
+const SORTS: { key: FileSort; label: string; tip: string }[] = [
+  { key: 'name', label: 'Name (A → Z)', tip: 'Alphabetical, numbers in natural order' },
+  { key: 'name-desc', label: 'Name (Z → A)', tip: 'Reverse alphabetical' },
+  { key: 'modified', label: 'Recently changed first', tip: 'Newest change at the top' },
+  { key: 'size', label: 'Largest first', tip: 'Biggest files at the top' },
+  { key: 'type', label: 'Type, then name', tip: 'Grouped by file extension' }
+]
+
+function sortEntries(list: FsEntry[], mode: FileSort): FsEntry[] {
+  const byName = (a: FsEntry, b: FsEntry) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true })
+  const cmp = (a: FsEntry, b: FsEntry): number => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+    switch (mode) {
+      case 'name-desc': return -byName(a, b)
+      case 'modified': return b.mtime - a.mtime || byName(a, b)
+      case 'size': return b.size - a.size || byName(a, b)
+      case 'type': return a.ext.localeCompare(b.ext) || byName(a, b)
+      default: return byName(a, b)
+    }
+  }
+  return [...list].sort(cmp)
+}
 
 function extOf(name: string): string {
   const i = name.lastIndexOf('.')
@@ -85,6 +109,8 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
   const doubleClick = settings?.doubleClickAction ?? 'system'
   const autoReveal = settings?.autoRevealEditedFiles ?? false
   const gitBadges = (settings?.gitEnabled ?? true) && (settings?.gitShowStatusInTree ?? true)
+  const sortMode: FileSort = settings?.fileSort ?? 'name'
+  const setSettings = useStore((s) => s.setSettings)
   const gitStatus = useStore((s) => s.git[sessionId]?.status)
   const messages = useStore((s) => s.messages[sessionId])
   const gitIndex = useMemo(() => (gitBadges ? buildGitIndex(gitStatus) : { byPath: new Map(), dirs: new Map() }), [gitStatus, gitBadges])
@@ -230,9 +256,10 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
   }
 
   const renderDir = (dir: string, depth: number): React.ReactNode => {
-    const list = children[dir]
-    if (!list) return <div className="faint" style={{ paddingLeft: 12 + depth * 14, fontSize: 11.5 }}>loading…</div>
-    if (!list.length) return <div className="faint" style={{ paddingLeft: 12 + depth * 14, fontSize: 11.5 }}>(empty)</div>
+    const raw = children[dir]
+    if (!raw) return <div className="faint" style={{ paddingLeft: 12 + depth * 14, fontSize: 11.5 }}>loading…</div>
+    if (!raw.length) return <div className="faint" style={{ paddingLeft: 12 + depth * 14, fontSize: 11.5 }}>(empty)</div>
+    const list = sortEntries(raw, sortMode)
     return list.map((e) => {
       const isBundle = e.isDir && BUNDLE_EXT.has(extOf(e.name))
       const isOpen = e.isDir && !isBundle && expanded.includes(e.path)
@@ -269,7 +296,26 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
       <div className="tree-root" data-tip={root}>
         <Folder size={13} color="var(--folder)" /> <span className="ellipsis">{basename(root)}</span>
         {gitBadges && gitStatus?.info.isRepo && gitStatus.info.branch && <span className="faint mono" style={{ fontSize: 10.5, fontWeight: 400 }}>⎇ {gitStatus.info.branch}</span>}
-        <button className="btn ghost icon" style={{ marginLeft: 'auto' }} data-tip="Refresh" onClick={() => { void load(root); for (const d of expanded) void load(d) }}>
+        <button
+          className="btn ghost icon"
+          style={{ marginLeft: 'auto' }}
+          data-tip={`Order of the files: ${SORTS.find((o) => o.key === sortMode)?.label ?? 'Name (A → Z)'} — click to change`}
+          onClick={(e) => {
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+            setMenu({
+              x: r.left,
+              y: r.bottom + 4,
+              items: SORTS.map((o) => ({
+                label: o.label,
+                checked: o.key === sortMode,
+                onClick: () => void setSettings({ fileSort: o.key })
+              }))
+            })
+          }}
+        >
+          <ArrowDownUp size={12} />
+        </button>
+        <button className="btn ghost icon" data-tip="Refresh" onClick={() => { void load(root); for (const d of expanded) void load(d) }}>
           <RefreshCw size={12} />
         </button>
       </div>

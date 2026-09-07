@@ -113,6 +113,11 @@ export class TranscriptState {
     return msg
   }
 
+  /** Add a note of the app's own (not from Claude Code) to the chat. */
+  addLocalNotice(text: string, level: SystemChatMessage['level'] = 'notice'): void {
+    this.addTop({ kind: 'system', id: this.nextId('sys'), ts: now(), subtype: 'claudegui', level, text })
+  }
+
   removeMessage(id: string): void {
     const idx = this.messages.findIndex((m) => m.id === id)
     if (idx < 0) return
@@ -302,6 +307,8 @@ export class TranscriptState {
     const api = sdk.message
     const entry = this.getOrCreateAssistant(api.id, sdk.parent_tool_use_id, ts, api.model)
     const msg = entry.msg
+    // Keep the chain uuid: a rewind resumes the CLI at one of these entries.
+    if ((sdk as { uuid?: string }).uuid) msg.chainUuid = (sdk as { uuid?: string }).uuid
     if (sdk.subagent_type) msg.subagentType = sdk.subagent_type
     if (sdk.error) msg.error = sdk.error
     if (sdk.aborted) {

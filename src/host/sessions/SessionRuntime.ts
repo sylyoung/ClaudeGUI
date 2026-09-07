@@ -27,6 +27,8 @@ import type {
   PendingPermission,
   PermissionDecision,
   PermissionMode,
+  RewindPreview,
+  RewindResult,
   SessionEvent,
   SessionLiveState,
   SdkUsage,
@@ -84,7 +86,8 @@ export interface RuntimeDeps {
   onRateLimit(info: RateLimitEventInfo, ts: number): void
   emit(event: SessionEvent): void
   saveRecord(record: SessionRecord): void
-  onTurnFinished(rt: SessionRuntime, preview: string, isError: boolean): void
+  /** silent = housekeeping (a context compaction): no unread mark, no notification. */
+  onTurnFinished(rt: SessionRuntime, preview: string, isError: boolean, silent?: boolean): void
   onNeedsAttention(rt: SessionRuntime, request: PendingPermission): void
   onExit(rt: SessionRuntime, error?: string): void
   log(...args: unknown[]): void
@@ -108,7 +111,14 @@ export class SessionRuntime {
   private startPromise: Promise<void> | null = null
   private tasks = new Map<string, BackgroundTaskView>()
   private lastAssistantText = ''
+  /** Since the last finished turn: did Claude write anything, and was the context compacted? */
+  private turnHadText = false
+  private turnHadCompaction = false
   private processCostSeen = 0
+  /** Chain entry the next start resumes at (a rewind fork point), or null for the whole chain. */
+  private resumeAt: string | null = null
+  /** Whether file backups were switched on for the process that is running now. */
+  private checkpointing = false
 
   constructor(
     public record: SessionRecord,
@@ -262,6 +272,7 @@ export class SessionRuntime {
       allowDangerouslySkipPermissions: mode === 'bypassPermissions' ? true : undefined,
       effort: this.record.effort || undefined,
       includePartialMessages: true,
+      enableFileCheckpointing: settings.fileCheckpointing !== false,
       forwardSubagentText: true,
       agentProgressSummaries: true,
       perTaskStopAffordance: true,
@@ -278,11 +289,18 @@ export class SessionRuntime {
     }
     const exe = this.deps.getExecutable()
     if (exe) options.pathToClaudeCodeExecutable = exe
-    if (resume) options.resume = this.record.claudeSessionId
-    else {
+    if (resume) {
+      options.resume = this.record.claudeSessionId
+      // Set by rewind(): the CLI then replays the conversation only up to that entry.
+      if (this.resumeAt) {
+        options.resumeSessionAt = this.resumeAt
+        this.deps.log(`[session ${this.id}] resuming at ${this.resumeAt} (rewind)`)
+      }
+    } else {
       options.sessionId = this.record.claudeSessionId
       if (this.record.title && !this.record.autoTitle) options.title = this.record.title
     }
+    this.checkpointing = options.enableFileCheckpointing === true
     this.queue = new AsyncQueue<SDKUserMessage>()
     const q = query({ prompt: this.queue, options })
     this.q = q
@@ -315,6 +333,15 @@ export class SessionRuntime {
     } catch (err) {
       error = (err as Error)?.message || String(err)
       if (!this.stopping) this.deps.log(`[session ${this.id}] query error: ${error}`)
+      if (this.resumeAt && /No message found with message\.uuid|Resume rejected/i.test(error)) {
+        // Claude Code refused to cut its own transcript there. Give up on the fork point instead of
+        // failing every start from now on, and say so: Claude still remembers the removed part.
+        this.resumeAt = null
+        this.transcript.addLocalNotice(
+          'The chat was rewound here, but Claude Code could not cut its own transcript at this point, so Claude may still remember the removed messages. The files were still put back if you asked for that.',
+          'warning'
+        )
+      }
     } finally {
       if (this.q === q) {
         this.q = null
@@ -364,6 +391,98 @@ export class SessionRuntime {
       }
     }
     await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 1500))])
+  }
+
+  // --------------------------------------------------------------------- rewind
+
+  /** The prompt and the chain entry the conversation would be cut back to. */
+  private rewindTarget(messageId: string): { index: number; text: string; forkAt: string | null } {
+    const idx = this.transcript.messages.findIndex((m) => m.id === messageId)
+    const target = this.transcript.messages[idx]
+    if (!target || target.kind !== 'user' || target.synthetic) throw new Error('A rewind goes back to one of your own prompts')
+    let forkAt: string | null = null
+    for (let i = idx - 1; i >= 0; i--) {
+      const m = this.transcript.messages[i]
+      if (m.kind === 'assistant' && !m.parentToolUseId) {
+        forkAt = m.chainUuid ?? null
+        break
+      }
+    }
+    return { index: idx, text: target.text, forkAt }
+  }
+
+  /** Why there is no point to go back to before this prompt. */
+  private noForkReason(messageId: string): string {
+    const idx = this.transcript.messages.findIndex((m) => m.id === messageId)
+    const earlier = this.transcript.messages.slice(0, idx).some((m) => m.kind === 'assistant' && !m.parentToolUseId)
+    return earlier
+      ? 'The answer before this prompt was written by an older version of the app, which did not record the point Claude Code would have to resume from.'
+      : 'This is the first prompt of the chat, so there is nothing before it to go back to.'
+  }
+
+  /** What a rewind to this prompt would do, without changing anything. */
+  async rewindPreview(messageId: string): Promise<RewindPreview> {
+    const { text, forkAt } = this.rewindTarget(messageId)
+    const preview: RewindPreview = {
+      text,
+      canRewind: Boolean(forkAt),
+      reason: forkAt ? undefined : this.noForkReason(messageId),
+      files: { available: false, changed: 0, insertions: 0, deletions: 0, paths: [] }
+    }
+    if (!this.q) {
+      preview.files.reason = 'The session is not running. Start it first if the files should be put back as well.'
+      return preview
+    }
+    if (!this.checkpointing) {
+      preview.files.reason = 'This session was started without file backups, so only the conversation can be rewound.'
+      return preview
+    }
+    try {
+      const r = await this.q.rewindFiles(messageId, { dryRun: true })
+      preview.files.available = r.canRewind
+      preview.files.reason = r.canRewind ? undefined : r.error || 'Claude Code has no file backups for this prompt.'
+      preview.files.paths = r.filesChanged ?? []
+      preview.files.changed = r.filesChanged?.length ?? 0
+      preview.files.insertions = r.insertions ?? 0
+      preview.files.deletions = r.deletions ?? 0
+    } catch (err) {
+      preview.files.reason = (err as Error).message
+    }
+    return preview
+  }
+
+  /**
+   * Cut the chat back to just before one of your prompts: optionally put the files Claude changed
+   * since then back as they were, stop the process, drop the messages from that prompt onwards and
+   * remember the fork point, so the next message continues the conversation from there.
+   */
+  async rewind(messageId: string, restoreFiles: boolean): Promise<RewindResult> {
+    const { index, text, forkAt } = this.rewindTarget(messageId)
+    if (!forkAt) throw new Error(this.noForkReason(messageId))
+    let filesRestored = 0
+    let filesSkipped = 0
+    if (restoreFiles) {
+      if (!this.q) throw new Error('The session is not running, so the files cannot be put back.')
+      // The real rewind does not always report which files it touched, so count them first.
+      const planned = await this.q.rewindFiles(messageId, { dryRun: true }).catch(() => null)
+      const r = await this.q.rewindFiles(messageId)
+      if (!r.canRewind) throw new Error(r.error || 'The files could not be put back.')
+      filesRestored = r.filesChanged?.length ?? planned?.filesChanged?.length ?? 0
+      filesSkipped = r.skippedLinks ?? 0
+    }
+    await this.stop(true)
+    for (const m of this.transcript.messages.slice(index)) this.transcript.removeMessage(m.id)
+    this.resumeAt = forkAt
+    const lastPrompt = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && !m.synthetic)
+    this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
+    this.record.lastActiveAt = Date.now()
+    this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
+    this.live.unread = 0
+    this.deps.saveRecord(this.record)
+    this.deps.log(`[session ${this.id}] rewound to ${messageId} (files: ${restoreFiles ? filesRestored : 'kept'})`)
+    this.scheduleFlush()
+    this.flush()
+    return { text, filesRestored, filesSkipped }
   }
 
   async interrupt(): Promise<void> {
@@ -614,7 +733,10 @@ export class SessionRuntime {
           if (ctx > 0) this.live.contextTokens = ctx
         }
         for (const b of msg.message.content) {
-          if (b.type === 'text' && !msg.parent_tool_use_id && b.text.trim()) this.lastAssistantText = b.text
+          if (b.type === 'text' && !msg.parent_tool_use_id && b.text.trim()) {
+            this.lastAssistantText = b.text
+            this.turnHadText = true
+          }
         }
         break
       }
@@ -650,7 +772,12 @@ export class SessionRuntime {
         this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
         this.record.lastActiveAt = ts
         this.deps.saveRecord(this.record)
-        this.deps.onTurnFinished(this, this.live.lastPreview, Boolean(msg.is_error) || msg.subtype !== 'success')
+        // A turn that only compacted the context ("/compact") is housekeeping, not an answer: it
+        // must not mark the chat unread or raise a notification.
+        const compactionOnly = this.turnHadCompaction && !this.turnHadText
+        this.turnHadCompaction = false
+        this.turnHadText = false
+        this.deps.onTurnFinished(this, this.live.lastPreview, Boolean(msg.is_error) || msg.subtype !== 'success', compactionOnly)
         this.refreshTitle()
         void this.refreshContextUsage('summary')
         break
@@ -689,8 +816,11 @@ export class SessionRuntime {
 
   private handleSystem(msg: SDKMessage & { type: 'system' }, ts: number): void {
     const s = msg as unknown as Record<string, unknown> & { subtype: string }
+    if (s.subtype === 'compact_boundary') this.turnHadCompaction = true
     switch (s.subtype) {
       case 'init': {
+        // The CLI accepted the fork point; a later restart must not truncate again.
+        this.resumeAt = null
         this.live.model = String(s.model ?? this.live.model ?? '')
         if (this.live.model && this.record.lastModel !== this.live.model) {
           this.record.lastModel = this.live.model

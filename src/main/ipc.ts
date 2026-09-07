@@ -143,6 +143,8 @@ export function registerIpc(ctx: IpcContext): void {
   handle('sessions:start', (id: string) => host.start(id))
   handle('sessions:stop', (id: string) => host.stop(id))
   handle('sessions:interrupt', (id: string) => host.interrupt(id))
+  handle('sessions:rewindPreview', (id: string, messageId: string) => host.rewindPreview(id, messageId))
+  handle('sessions:rewind', (id: string, messageId: string, restoreFiles: boolean) => host.rewind(id, messageId, restoreFiles))
   handle('sessions:answerPermission', (id: string, requestId: string, decision: PermissionDecision) => host.answerPermission(id, requestId, decision))
   handle('sessions:setModel', (id: string, model: string) => host.setModel(id, model))
   handle('sessions:setPermissionMode', (id: string, mode: PermissionMode) => host.setPermissionMode(id, mode))

@@ -220,6 +220,11 @@ export interface UserChatMessage {
 export interface AssistantChatMessage {
   kind: 'assistant'
   id: string
+  /**
+   * UUID of this message in Claude Code's own transcript chain (the id above is the API message
+   * id). Needed as the point a rewound conversation is resumed from.
+   */
+  chainUuid?: string
   ts: number
   model?: string
   blocks: AssistantBlockView[]
@@ -247,6 +252,33 @@ export interface ResultChatMessage {
   errorText?: string
 }
 export type ChatMessage = UserChatMessage | AssistantChatMessage | SystemChatMessage | ResultChatMessage
+
+/** What a rewind to one of your prompts would do (asked before it is carried out). */
+export interface RewindPreview {
+  /** The text of that prompt; it goes back into the input box so you can edit and send it again. */
+  text: string
+  /** False when the conversation cannot be cut back to this point (see reason). */
+  canRewind: boolean
+  reason?: string
+  /** Whether the files Claude changed since then can be put back, and how much would change. */
+  files: {
+    available: boolean
+    reason?: string
+    changed: number
+    insertions: number
+    deletions: number
+    paths: string[]
+  }
+}
+
+export interface RewindResult {
+  /** The prompt text that was cut away, for the input box. */
+  text: string
+  /** Number of files put back (0 when only the conversation was rewound). */
+  filesRestored: number
+  /** Files that were tracked but could not be restored safely. */
+  filesSkipped: number
+}
 
 // ---------------------------------------------------------------------------
 // Events main -> renderer
@@ -303,6 +335,9 @@ export interface FileContent {
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type AccentColor = 'system' | 'blue' | 'purple' | 'pink' | 'red' | 'orange' | 'yellow' | 'green' | 'graphite' | 'claude'
 export type Density = 'comfortable' | 'compact'
+
+/** Order of the file tree in the folder panel. */
+export type FileSort = 'name' | 'name-desc' | 'modified' | 'size' | 'type'
 export type ThinkingDisplay = 'collapsed' | 'expanded' | 'hidden'
 export type DoubleClickAction = 'system' | 'editor' | 'viewer'
 export type ResumeOnLaunch = 'none' | 'active' | 'pinned' | 'all'
@@ -331,6 +366,11 @@ export interface AppSettings {
   disallowedTools: string
   useProjectSettings: boolean
   useLocalSettings: boolean
+  /**
+   * Keep a copy of every file before Claude changes it, so a chat can be rewound to an earlier
+   * prompt and the files put back as they were. Costs disk space in ~/.claude.
+   */
+  fileCheckpointing: boolean
   /** Let Claude Code name new sessions automatically. */
   autoTitle: boolean
 
@@ -359,6 +399,8 @@ export interface AppSettings {
   showTimestamps: boolean
   thinkingDisplay: ThinkingDisplay
   toolCardsExpanded: boolean
+  /** Order of the files in the folder panel (folders always first). */
+  fileSort: FileSort
   chatMaxWidth: number
   groupSessionsByFolder: boolean
   translucentSidebar: boolean

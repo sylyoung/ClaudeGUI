@@ -1,14 +1,30 @@
 import React, { memo } from 'react'
-import { AlertTriangle, Brain, Info, Lightbulb } from 'lucide-react'
+import { AlertTriangle, Brain, History, Info, Lightbulb } from 'lucide-react'
 import type { AssistantChatMessage, ChatMessage } from '@shared/types'
 import { Markdown } from './Markdown'
 import { ToolCallCard } from './ToolCallCard'
 import { LinkifiedText } from './LinkifiedText'
 import { formatCost, formatDateTime, formatDuration, formatStamp, formatTime, formatTokens, modelLabel } from '@/lib/format'
 import { useStore } from '@/store'
+import { useChatCtx } from './ChatContext'
 
-export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { message: ChatMessage; depth?: number }) {
+/**
+ * What happened to a prompt you typed: it is still waiting in the queue, Claude is answering it
+ * right now, the turn it started has finished, or it was delivered but the turn did not finish
+ * (interrupted or the process stopped).
+ */
+export type PromptState = 'queued' | 'working' | 'answered' | 'sent'
+
+const PROMPT_STATE: Record<PromptState, { mark: string; label: string; tip: string }> = {
+  queued: { mark: '⋯', label: 'queued', tip: 'Waiting: Claude is still on an earlier prompt. It is sent when that turn ends.' },
+  working: { mark: '...', label: 'being answered', tip: 'Claude has taken this prompt and is working on it now' },
+  answered: { mark: '✓', label: 'answered', tip: 'Claude finished the turn this prompt started' },
+  sent: { mark: '·', label: 'sent', tip: 'Delivered to Claude; the turn it started did not finish (interrupted or stopped)' }
+}
+
+export const MessageItem = memo(function MessageItem({ message, depth = 0, state }: { message: ChatMessage; depth?: number; state?: PromptState }) {
   const showTs = useStore((s) => s.settings?.showTimestamps ?? true)
+  const chat = useChatCtx()
   switch (message.kind) {
     case 'user':
       if (message.synthetic) {
@@ -22,7 +38,14 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { m
         )
       }
       return (
-        <div className="msg msg-user">
+        <div
+          className={`msg msg-user ${state ? 'st-' + state : ''}`}
+          onContextMenu={(e) => {
+            if (!chat) return
+            e.preventDefault()
+            chat.showPromptMenu(message.id, message.text, e.clientX, e.clientY)
+          }}
+        >
           {message.images?.length ? (
             <div className="images">
               {message.images.map((img, k) => (
@@ -31,11 +54,31 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0 }: { m
             </div>
           ) : null}
           {message.text && (
-            <div className="bubble">
-              <LinkifiedText text={message.text} />
+            <div className="bubble-row">
+              {chat && state !== 'queued' && (
+                <button
+                  className="msg-action"
+                  data-tip="Rewind the chat to this prompt (asks first whether the files should go back too)"
+                  onClick={() => chat.rewindTo(message.id)}
+                >
+                  <History size={13} />
+                </button>
+              )}
+              <div className="bubble">
+                <LinkifiedText text={message.text} />
+              </div>
             </div>
           )}
-          {showTs && <div className="msg-meta">{formatTime(message.ts)}</div>}
+          {(showTs || state) && (
+            <div className="msg-meta">
+              {state && (
+                <span className={`prompt-state st-${state}`} data-tip={PROMPT_STATE[state].tip}>
+                  <span className="pmark">{PROMPT_STATE[state].mark}</span> {PROMPT_STATE[state].label}
+                </span>
+              )}
+              {showTs && formatTime(message.ts)}
+            </div>
+          )}
         </div>
       )
     case 'assistant':

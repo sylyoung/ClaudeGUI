@@ -57,16 +57,32 @@ src/
       common/ContextMenu.tsx  Menus with submenus ("Move to group")
       common/PopupSelect.tsx  Drop-down with a short closed label and full-text options
       common/GroupColorPicker.tsx  Palette popover for group colours
-      chat/                ChatView (header with action buttons, one-line configuration row,
-                           status row + ContextBar), MessageList, ToolCallCard, PermissionPrompt,
-                           WorkingStrip (what Claude is doing + elapsed time while a turn runs),
-                           Composer (ranking, clear, restore, ↑/↓ prompt history)
-      files/               FilePanel (tabs), FileTree, FileViewer, TasksPanel
+      chat/                ChatView (header with action buttons incl. expand/collapse all tool
+                           details, one-line configuration row, status row + ContextBar),
+                           MessageList (prompt states; prompts still queued are moved to the end),
+                           MessageItem (per-prompt state mark + rewind button), ToolCallCard
+                           (per-card show/hide), PermissionPrompt, WorkingStrip (what Claude is
+                           doing + elapsed time while a turn runs), Composer (command matching
+                           anywhere in the text via slashTokenAt, clear, restore, ↑/↓ prompt history)
+      files/               FilePanel (tabs), FileTree (order: name / changed / size / type),
+                           FileViewer, TasksPanel
       git/                 GitPanel, useGitAutoRefresh
       status/              UsageStatus (top-right pills + popover), UpdatePill
-      dialogs/             NewSession, ImportSession, Settings (tabbed), UpdatesPanel,
-                           PermissionsPanel
+      dialogs/             NewSession, ImportSession (full-height list, keyboard walking),
+                           Settings (tabbed), UpdatesPanel, PermissionsPanel,
+                           RewindDialog (conversation only or conversation + files, dry-run counts)
 ```
+
+## Rewinding a chat
+`SessionRuntime.rewindPreview(messageId)` asks the CLI (`query.rewindFiles(uuid, { dryRun: true })`)
+what would change on disk; `rewind(messageId, restoreFiles)` optionally calls `rewindFiles` for real,
+stops the process, drops every transcript message from that prompt on and remembers a fork point.
+The fork point is the `chainUuid` of the last top-level assistant message before the prompt — Claude
+Code's own transcript uuid, which is not the same as the API message id used as our message id. The
+next start passes `resume` + `resumeSessionAt: forkPoint`, so the CLI replays only up to there;
+the fork point is cleared once `system/init` confirms the start, and dropped with a warning in the
+chat if the CLI refuses it. File backups exist only when the session was started with
+`enableFileCheckpointing` (settings: `fileCheckpointing`).
 
 ## Data flow
 1. Renderer calls `window.api.sessions.send(id, text)` → IPC → `HostClient.send` → socket request.

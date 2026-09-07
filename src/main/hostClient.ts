@@ -19,6 +19,8 @@ import type {
   ModelInfoView,
   PermissionDecision,
   PermissionMode,
+  RewindPreview,
+  RewindResult,
   SdkUsage,
   SessionGroup,
   SessionLiveState,
@@ -395,6 +397,14 @@ export class HostClient extends EventEmitter {
   }
   interrupt(id: string): Promise<void> {
     return this.call('interrupt', id)
+  }
+
+  rewindPreview(id: string, messageId: string): Promise<RewindPreview> {
+    return this.call('rewindPreview', id, messageId)
+  }
+
+  rewind(id: string, messageId: string, restoreFiles: boolean): Promise<RewindResult> {
+    return this.call('rewind', id, messageId, restoreFiles)
   }
   answerPermission(id: string, requestId: string, decision: PermissionDecision): Promise<boolean> {
     return this.call('answerPermission', id, requestId, decision)

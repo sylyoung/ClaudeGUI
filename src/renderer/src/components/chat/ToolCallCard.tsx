@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   Ban, Bot, Check, ChevronDown, ChevronRight, Circle, Clock, FileEdit, FilePlus, FileText, Globe, ListChecks, Loader2, Search,
   Terminal, Wrench, X, HelpCircle, Sparkles, FolderSearch, MessageSquare
@@ -94,7 +94,17 @@ export function ToolCallCard({ block, depth = 0, renderChild }: { block: ToolUse
   const ctx = useChatCtx()
   const isError = block.status === 'error'
   const expandAll = useStore((s) => s.settings?.toolCardsExpanded ?? false)
-  const expanded = open ?? (expandAll || isError || EXPANDED_BY_DEFAULT.has(block.name) || (block.children?.length ?? 0) > 0)
+  const expandNonce = useStore((s) => s.toolExpandNonce)
+  const detailsMode = useStore((s) => s.toolDetails)
+  // "Expand all" / "collapse all" in the chat header wins over a card you opened by hand.
+  useEffect(() => setOpen(null), [expandNonce])
+  const expanded =
+    open ??
+    (detailsMode === 'collapse'
+      ? false
+      : detailsMode === 'expand'
+        ? true
+        : expandAll || isError || EXPANDED_BY_DEFAULT.has(block.name) || (block.children?.length ?? 0) > 0)
   const i = block.input
   const filePath = typeof (i.file_path ?? i.notebook_path) === 'string' ? String(i.file_path ?? i.notebook_path) : undefined
 
@@ -115,7 +125,13 @@ export function ToolCallCard({ block, depth = 0, renderChild }: { block: ToolUse
   return (
     <div className={cls}>
       <div className="tool-head" onClick={() => setOpen(!expanded)}>
-        <span className="faint">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
+        <button
+          className="tool-toggle"
+          data-tip={expanded ? 'Hide the details of this tool operation' : 'Show the details of this tool operation'}
+          onClick={(e) => { e.stopPropagation(); setOpen(!expanded) }}
+        >
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
         <span className="faint">{toolIcon(block.name)}</span>
         <span className="tname">{displayName}</span>
         <span className="tsummary" data-tip={toolSummary(block)}>

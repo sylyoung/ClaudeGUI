@@ -249,6 +249,12 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 </div>
                 <Check label="Load project settings (.claude/settings.json, CLAUDE.md in the project)" checked={draft.useProjectSettings} onChange={(v) => upd({ useProjectSettings: v })} />
                 <Check label="Load local settings (.claude/settings.local.json)" checked={draft.useLocalSettings} onChange={(v) => upd({ useLocalSettings: v })} />
+                <Check
+                  label="Keep file backups so a chat can be rewound (uses disk space in ~/.claude)"
+                  hint="A copy of every file is kept before Claude changes it. Rewinding a chat to an earlier prompt can then put the files back as they were. Sessions must be started after this is switched on."
+                  checked={draft.fileCheckpointing}
+                  onChange={(v) => upd({ fileCheckpointing: v })}
+                />
               </Section>
               <Section title="Environment">
                 <Field label="Extra environment variables for Claude processes (one KEY=VALUE per line)" hint="Applied on top of the environment captured from your shell's `claude` command (proxies, API settings…).">
