@@ -22,6 +22,27 @@ const PROMPT_STATE: Record<PromptState, { mark: string; label: string; tip: stri
   sent: { mark: '·', label: 'sent', tip: 'Delivered to Claude; the turn it started did not finish (interrupted or stopped)' }
 }
 
+/**
+ * What a message the CLI wrote about its own work actually is, so the folded row says so instead
+ * of reading "system message" for everything.
+ */
+function houseKeepingLabel(text: string): string {
+  const t = text.trimStart()
+  if (t.startsWith('<command-name>')) return 'the command as Claude Code received it'
+  if (t.startsWith('<local-command-stdout>')) return 'what the command printed'
+  if (t.startsWith('<local-command-caveat>')) return 'note about the command'
+  if (t.startsWith('<system-reminder>')) return 'reminder Claude Code added'
+  if (t.startsWith('<task-notification>')) return 'background agent finished'
+  if (t.startsWith('<bash-input>')) return 'command run in the terminal'
+  if (t.startsWith('<bash-stdout>')) return 'what the terminal command printed'
+  if (t.startsWith('<monitor-notification>')) return 'monitor reported a change'
+  if (t.startsWith('<background-task')) return 'background command'
+  if (t.startsWith('<cron-')) return 'scheduled task'
+  if (t.startsWith('[Request interrupted')) return 'interrupted'
+  if (t.startsWith('This session is being continued from a previous conversation')) return 'summary kept after compacting'
+  return 'system message'
+}
+
 export const MessageItem = memo(function MessageItem({ message, depth = 0, state }: { message: ChatMessage; depth?: number; state?: PromptState }) {
   const showTs = useStore((s) => s.settings?.showTimestamps ?? true)
   const chat = useChatCtx()
@@ -31,7 +52,7 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0, state
         return (
           <details className="msg msg-user synthetic" style={{ alignItems: 'stretch' }}>
             <summary className="faint" style={{ cursor: 'pointer', fontSize: 11.5 }}>
-              system message · {formatTime(message.ts)}
+              {houseKeepingLabel(message.text)} · {formatTime(message.ts)}
             </summary>
             <div className="bubble">{message.text}</div>
           </details>
@@ -95,6 +116,22 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0, state
       return <AssistantMessage message={message} depth={depth} />
     case 'system': {
       const icon = message.level === 'warning' || message.level === 'error' ? <AlertTriangle size={14} /> : message.level === 'suggestion' ? <Lightbulb size={14} /> : <Info size={14} />
+      // Compacting the context keeps a summary of the conversation so far; it is what Claude
+      // remembers from here on, so it can be opened from the row that reports the compaction
+      // instead of standing in the chat as a message of its own.
+      const kept = typeof message.data?.summary === 'string' ? message.data.summary : ''
+      if (kept) {
+        return (
+          <details className={`msg-system foldable ${message.level}`}>
+            <summary>
+              <span style={{ marginTop: 2 }}>{icon}</span>
+              <span className="body">{message.text}</span>
+              <span className="faint">what Claude kept ▸</span>
+            </summary>
+            <div className="kept">{kept}</div>
+          </details>
+        )
+      }
       return (
         <div className={`msg-system ${message.level}`}>
           <span style={{ marginTop: 2 }}>{icon}</span>

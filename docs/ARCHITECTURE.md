@@ -84,6 +84,16 @@ the fork point is cleared once `system/init` confirms the start, and dropped wit
 chat if the CLI refuses it. File backups exist only when the session was started with
 `enableFileCheckpointing` (settings: `fileCheckpointing`).
 
+## Messages the CLI writes about its own housekeeping
+Some user-role messages in the stream are not prompts: the summary kept when the context is
+compacted (`isCompactSummary`, or its fixed opening words on a replay), the CLI's
+`<local-command-stdout>` note about a command it ran, command echoes, system reminders and task
+notifications. `TranscriptState.absorbHousekeeping` folds the compaction summary into the
+`compact_boundary` row (`data.summary`) and drops the note that only repeats it; on replayed history
+there is no boundary message, so a "Context compacted earlier in this chat" row is created to hold
+the summary — otherwise the summary would appear as a prompt the user seemed to have typed. The rest
+stay as folded rows, named by `houseKeepingLabel` in the renderer instead of "system message".
+
 ## Prompts that are still queued
 A prompt sent while a turn is running goes into the CLI's own command queue. The host keeps their
 ids in `SessionLiveState.queuedIds` and corrects that list from every result: `user_message_uuids`

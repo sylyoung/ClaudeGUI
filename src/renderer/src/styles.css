@@ -300,6 +300,10 @@ a:hover { text-decoration: underline; }
 .msg-system.error { color: var(--red); border-color: rgba(248, 81, 73, 0.3); }
 .msg-system.info { background: transparent; border-style: dashed; }
 .msg-system .body { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+details.msg-system.foldable { display: block; }
+details.msg-system.foldable > summary { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; list-style: none; }
+details.msg-system.foldable > summary::-webkit-details-marker { display: none; }
+details.msg-system.foldable .kept { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; max-height: 360px; overflow: auto; }
 .msg-result { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-faint); padding: 2px 0; }
 .msg-result .line { flex: 1; height: 1px; background: var(--border); }
 .msg-result.error { color: var(--red); }
@@ -921,8 +925,10 @@ button.cs-item:hover { color: var(--accent); }
 .cs-item.push:disabled { opacity: 0.6; }
 
 /* ---- model family tints (Fable violet, Opus blue, Sonnet teal, Haiku green) ---- */
-.m-fable .ps-value, .session-item .model.m-fable { color: var(--purple); }
-.m-opus .ps-value, .session-item .model.m-opus { color: var(--blue); }
-.m-sonnet .ps-value, .session-item .model.m-sonnet { color: var(--teal); }
-.m-haiku .ps-value, .session-item .model.m-haiku { color: var(--green); }
+/* The model picker in the chat header keeps its colour; the model name in a session row stays
+   plain, so the only colour on that row means the group and the state. */
+.m-fable .ps-value { color: var(--purple); }
+.m-opus .ps-value { color: var(--blue); }
+.m-sonnet .ps-value { color: var(--teal); }
+.m-haiku .ps-value { color: var(--green); }
 .edited-mark { width: 6px; height: 6px; border-radius: 3px; background: var(--accent); flex-shrink: 0; margin-left: 2px; }

@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-07 (session 4, v1.0.10)
+Last updated: 2026-09-07 (session 4, v1.0.11)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -92,6 +92,19 @@ survive app restarts.
 - [x] macOS permissions panel (probe/request/open pane), Info.plist usage descriptions,
       Apple Development signing (verified: signed bundle passes `codesign --verify --deep --strict`,
       re-signed `claude` binary runs a session)
+
+### v1.0.11
+- [x] The compaction summary the CLI re-sends as a user message is folded into the `compact_boundary`
+      row (`data.summary`, opened from "what Claude kept") instead of standing in the chat; the CLI's
+      `<local-command-stdout>Compacted</local-command-stdout>` note is dropped
+      (`TranscriptState.absorbHousekeeping`)
+- [x] Replayed history has no `compact_boundary` (the CLI does not repeat it), so the summary would
+      arrive as a plain user message and be shown as a prompt — a "Context compacted earlier in this
+      chat" row is created for it instead. Verified live in an isolated instance (haiku,
+      sandbox/compact-test): live compaction 30,170 → 3,291 tokens produced one row and no extra
+      lines, unread stayed at 4, and after a restart the replayed chat showed the new row
+- [x] Folded system lines are named by what they are (`houseKeepingLabel` in MessageItem.tsx)
+- [x] The model name in a session row is no longer coloured by model family
 
 ## Known limitations / ideas for next iterations
 - No embedded terminal (xterm.js + node-pty) yet; "Open folder in Terminal" opens Ghostty instead.

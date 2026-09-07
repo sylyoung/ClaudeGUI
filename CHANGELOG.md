@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.11 — 2026-09-07
+
+### Compacting the context
+- **A /compact is one row in the chat again.** Claude Code writes two extra messages of its own when
+  it compacts — the summary it keeps, and a note that it compacted — and both used to land in the
+  chat as unnamed "system message" lines under the prompt, so a single /compact looked like several
+  entries. The summary is now folded into the "Context compacted" row and can be opened there
+  ("what Claude kept"); the note is dropped, because that row already says it.
+- **Reopening a compacted chat no longer shows the summary as if you had typed it.** When the
+  history is read back after a restart, Claude Code repeats the summary but not its compaction
+  notice, so the whole summary appeared as a normal prompt bubble (and could be walked into with ↑,
+  or counted among the prompts waiting). Such a chat now starts with a "Context compacted earlier in
+  this chat" row that holds the summary.
+- **Every folded system line says what it is** — "summary kept after compacting", "what the command
+  printed", "reminder Claude Code added", "background agent finished" and so on — instead of
+  "system message" for all of them.
+
+### Session list
+- **The model name on a session row is no longer coloured**, so the only colours on a row are the
+  group (on the chat name) and the session state. The model picker in the chat header keeps its
+  colour.
+
 ## 1.0.10 — 2026-09-07
 
 ### Prompts that are waiting

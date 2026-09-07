@@ -385,6 +385,7 @@ export class TranscriptState {
     const content = message.content
     const parentToolUseId = sdk.parent_tool_use_id
     if (typeof content === 'string') {
+      if (!parentToolUseId && this.absorbHousekeeping(sdk, content, uuid, ts)) return
       this.addUserText(uuid ?? this.nextId('user'), content, [], ts, parentToolUseId, Boolean(sdk.isSynthetic))
       return
     }
@@ -404,8 +405,50 @@ export class TranscriptState {
       }
     }
     if (texts.length || images.length) {
-      this.addUserText(uuid ?? this.nextId('user'), texts.join('\n\n'), images, ts, parentToolUseId, Boolean(sdk.isSynthetic))
+      const text = texts.join('\n\n')
+      if (!parentToolUseId && !images.length && this.absorbHousekeeping(sdk, text, uuid, ts)) return
+      this.addUserText(uuid ?? this.nextId('user'), text, images, ts, parentToolUseId, Boolean(sdk.isSynthetic))
     }
+  }
+
+  /**
+   * Notes the CLI writes about its own housekeeping rather than about the conversation, which
+   * would otherwise become unnamed extra rows under the prompt that caused them. Compacting the
+   * context writes two of them: the summary Claude keeps, which is folded into the "Context
+   * compacted" row so it can still be read, and a one-word note that it compacted, which is
+   * dropped because that row already says so. Returns true when the message was taken care of.
+   */
+  private absorbHousekeeping(sdk: SDKUserMessage | SDKUserMessageReplay, text: string, uuid: string | undefined, ts: number): boolean {
+    const t = text.trimStart()
+    const isSummary =
+      (sdk as { isCompactSummary?: boolean }).isCompactSummary === true || COMPACT_SUMMARY_START.test(t)
+    if (isSummary) {
+      const boundary = this.recentCompactBoundary()
+      if (boundary) {
+        boundary.data = { ...(boundary.data ?? {}), summary: text }
+        this.touch(boundary)
+        return true
+      }
+      // Replayed history: the CLI does not repeat its compaction notice, so the chat gets one of
+      // its own instead of a wall of text that looks like a prompt the user typed.
+      const id = uuid ?? this.nextId('sys')
+      if (!this.topById.has(id)) {
+        this.addTop({ kind: 'system', id, ts, subtype: 'compact_boundary', level: 'notice', text: 'Context compacted earlier in this chat', data: { summary: text } })
+      }
+      return true
+    }
+    const stdout = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/.exec(t.trim())
+    if (stdout && (!stdout[1].trim() || /^compacted\b/i.test(stdout[1].trim()))) return true
+    return false
+  }
+
+  /** The "Context compacted" row this message belongs to: one of the last few rows in the chat. */
+  private recentCompactBoundary(): SystemChatMessage | undefined {
+    for (let i = this.messages.length - 1; i >= 0 && i >= this.messages.length - 3; i--) {
+      const m = this.messages[i]
+      if (m.kind === 'system' && m.subtype === 'compact_boundary') return m
+    }
+    return undefined
   }
 
   private addUserText(id: string, text: string, images: ImageAttachment[], ts: number, parentToolUseId: string | null, synthetic: boolean): void {
@@ -667,6 +710,9 @@ export function flattenToolResultContent(content: unknown): { text: string; imag
   }
   return { text: JSON.stringify(content) }
 }
+
+/** Opening words of the summary Claude keeps when the context is compacted. */
+const COMPACT_SUMMARY_START = /^This session is being continued from a previous conversation/
 
 /** Text of a user-role message that the CLI generated itself (task notifications, command echoes…). */
 export function looksSynthetic(text: string): boolean {
