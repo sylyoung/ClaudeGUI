@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.14 — 2026-09-07
+
+### Where a prompt sits in the chat
+- **A prompt Claude Code has taken moves to the end of the chat, directly above the answer it
+  starts.** A prompt typed while an earlier answer was still being written was left where it was
+  typed — in the middle of that earlier answer — so the moment it was taken it appeared above the
+  previous turn's footer, with its own answer written two rows further down. It is now put where
+  Claude Code actually read it: after everything the earlier turn wrote. This is also the order the
+  chat has always had after a restart, when it is read back from Claude Code's own record, so the
+  live chat and the reloaded one no longer disagree.
+- **A prompt still waiting stays at the bottom**, below the answer being written, in the block of
+  prompts Claude has not taken yet — unchanged, and now clearly the only thing below the answer.
+- **The two states are easier to tell apart**: the mark under a prompt ("⋯ queued", "... being
+  answered", "✓ answered") is no longer footnote-sized, and neither is the header of the waiting
+  block.
+
+### Prompts read back from an earlier run
+- **A prompt from a previous run of the app is marked "answered" when it was answered.** The turn
+  footers this app draws are not part of Claude Code's record, and the chat used to take a missing
+  footer as evidence that the turn had not finished, so after every restart the whole conversation
+  read "sent" — "the turn it started did not finish". The answer itself is now the evidence, and
+  the notice Claude Code writes when a turn is stopped is what marks a prompt as unfinished.
+
 ## 1.0.13 — 2026-09-07
 
 ### What happened to each prompt

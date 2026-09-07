@@ -127,6 +127,23 @@ export class TranscriptState {
     this.removed.add(id)
   }
 
+  /**
+   * Move a prompt to the end of the chat, where it is sent as removed and added again so the
+   * renderer re-appends it. A prompt typed while Claude was still answering an earlier one is
+   * written into the chat where it was typed, in the middle of that earlier answer, but Claude
+   * Code only reads it when it takes it off its queue — after everything the earlier turn wrote.
+   * Putting it at the end there keeps the prompt directly above the answer it starts, and matches
+   * the order the history shows when the chat is read back from Claude Code's own record.
+   */
+  moveToEnd(id: string): void {
+    const idx = this.messages.findIndex((m) => m.id === id)
+    if (idx < 0 || idx === this.messages.length - 1) return
+    const [msg] = this.messages.splice(idx, 1)
+    this.messages.push(msg)
+    this.removed.add(id)
+    this.changed.add(id)
+  }
+
   // ---------------------------------------------------------------- SDK entry
 
   apply(sdk: SDKMessage, ts: number = now()): void {

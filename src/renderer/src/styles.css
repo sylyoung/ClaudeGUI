@@ -282,7 +282,7 @@ a:hover { text-decoration: underline; }
 
 /* What happened to a prompt you typed: queued (amber), being answered (blue), answered (green),
    delivered but the turn did not finish (grey). Both the word and the colour are shown. */
-.prompt-state { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.prompt-state { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; }
 .prompt-state .pmark { font-family: var(--mono); font-weight: 700; letter-spacing: 0.5px; }
 .prompt-state.st-queued { color: var(--amber); }
 .prompt-state.st-working { color: var(--accent); }
@@ -292,7 +292,7 @@ a:hover { text-decoration: underline; }
 .msg-user.st-working .bubble { box-shadow: 0 0 0 1px var(--accent-soft); }
 /* Prompts still waiting are collected here, at the very end of the chat. */
 .queued-block { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--amber); padding-top: 8px; margin-top: 2px; }
-.queued-head { font-size: 11.5px; color: var(--amber); display: flex; align-items: center; gap: 6px; }
+.queued-head { font-size: 13px; font-weight: 600; color: var(--amber); display: flex; align-items: center; gap: 6px; }
 .queued-head .pmark { font-family: var(--mono); font-weight: 700; }
 /* Rewind window */
 .rewind-quote { white-space: pre-wrap; word-break: break-word; background: var(--bg-elev2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; max-height: 160px; overflow: auto; }

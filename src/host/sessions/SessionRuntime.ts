@@ -572,6 +572,17 @@ export class SessionRuntime {
     this.stateDirty = true
   }
 
+  /**
+   * Claude Code has just taken a prompt off its queue: it is being answered from now on, and it
+   * belongs at the end of the chat, directly above the answer that is about to be written, rather
+   * than where it was typed — which was in the middle of the answer to the previous prompt.
+   */
+  private startWorking(id: string): void {
+    this.setDelivery(id, 'working')
+    this.transcript.moveToEnd(id)
+    this.scheduleFlush()
+  }
+
   /** Is there a prompt Claude Code has not answered yet? */
   private hasUnfinishedPrompt(): boolean {
     return Object.values(this.live.promptDelivery).some((s) => s === 'queued' || s === 'working')
@@ -584,7 +595,7 @@ export class SessionRuntime {
   private takePrompts(msg: { user_message_uuids?: string[]; user_message_uuid?: string }): void {
     const ids = msg.user_message_uuids ?? (msg.user_message_uuid ? [msg.user_message_uuid] : [])
     if (!ids.length) return
-    for (const id of ids) if (this.live.promptDelivery[id] === 'queued') this.setDelivery(id, 'working')
+    for (const id of ids) if (this.live.promptDelivery[id] === 'queued') this.startWorking(id)
     const taken = new Set(ids)
     const rest = this.live.queuedIds.filter((id) => !taken.has(id))
     if (rest.length !== this.live.queuedIds.length) {
@@ -834,15 +845,18 @@ export class SessionRuntime {
     const ts = Date.now()
     this.live.lastActivityAt = ts
     switch (msg.type) {
+      // The prompts a turn has taken are read before its first row is written into the chat:
+      // taking a prompt moves it to the end of the chat, and it has to get there before the
+      // answer it starts, not after it.
       case 'stream_event': {
-        this.transcript.apply(msg, ts)
         this.takePrompts(msg)
+        this.transcript.apply(msg, ts)
         if (msg.event.type === 'message_start' && this.live.status !== 'requires_action') this.setStatus('running')
         break
       }
       case 'assistant': {
-        this.transcript.apply(msg, ts)
         if (!msg.parent_tool_use_id) this.takePrompts(msg)
+        this.transcript.apply(msg, ts)
         if (this.live.status === 'idle' || this.live.status === 'starting') this.setStatus('running')
         const usage = msg.message.usage as unknown as Record<string, number> | undefined
         if (usage && !msg.parent_tool_use_id) {
@@ -904,7 +918,7 @@ export class SessionRuntime {
         for (const [id, state] of Object.entries(this.live.promptDelivery)) {
           if (state === 'working' && !takenNext.has(id)) this.setDelivery(id, null)
         }
-        for (const id of takenNext) this.setDelivery(id, 'working')
+        for (const id of takenNext) this.startWorking(id)
         this.setQueued(waiting)
         const queued = r.queued_turn_count ?? waiting.length
         if (queued > 0) this.setStatus('running')

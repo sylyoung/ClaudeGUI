@@ -112,9 +112,21 @@ chat:
   so a prompt typed during the compaction jumped straight to "answered";
 - prompts left marked after ten quiet seconds, or when the process ends, are let go.
 
+Taking a prompt also moves it to the end of the transcript (`TranscriptState.moveToEnd`, emitted as
+`message-removed` followed by `message`, which the renderer re-appends). A prompt is written into
+the chat when it is sent — in the middle of the answer to the earlier prompt — but the CLI only
+reads it when it takes it off the queue, and its own answer is written after everything the earlier
+turn wrote. Moving it keeps the prompt directly above the answer it starts and matches the order the
+chat has when it is read back from the CLI's transcript after a restart. `takePrompts` therefore
+runs before `transcript.apply` for `stream_event` and `assistant`, so the prompt reaches the end
+before the first row of the turn it started.
+
 The renderer reads those states directly and falls back to the transcript only for prompts replayed
-from an earlier run (answered if a finished turn follows, otherwise being answered while busy). The
-waiting ones are collected at the end of the chat. `cancelQueued(messageId)` takes one back through the CLI's
+from an earlier run. That fallback looks at what follows a prompt up to the next prompt: an answer
+of Claude's own means answered, the CLI's `[Request interrupted…]` notice means the turn did not
+finish. It cannot look for a turn footer, because the footers this app draws are not part of the
+CLI's record — taking a missing footer as evidence used to mark every prompt in a reloaded chat as
+"sent". The waiting ones are collected at the end of the chat. `cancelQueued(messageId)` takes one back through the CLI's
 `cancel_async_message` control request (`query.cancelAsyncMessage`, implemented in the SDK but not
 declared on the public `Query` type); it fails harmlessly when the CLI has already taken the prompt.
 

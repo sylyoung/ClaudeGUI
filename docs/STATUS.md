@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-07 (session 4, v1.0.13)
+Last updated: 2026-09-07 (session 4, v1.0.14)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -133,6 +133,23 @@ survive app restarts.
 - [x] Verified live in an isolated instance (haiku, sandbox/compact-queue, port 45199) with a probe
       recording every state change: queued during the compaction → being answered when the CLI took
       it → answered when its turn ended; ordinary queueing during a normal turn unchanged
+
+### v1.0.14
+- [x] A prompt the CLI takes off its queue is moved to the end of the chat
+      (`TranscriptState.moveToEnd`, emitted as a removal followed by the message again), so it sits
+      directly above the answer it starts instead of in the middle of the previous answer, where it
+      was typed; `takePrompts` runs before `transcript.apply` so it gets there before the first row
+      of the new turn
+- [x] Prompts still waiting stay in the block at the very bottom, below the answer being written
+- [x] The prompt-state mark and the waiting-block header are 13px semi-bold instead of ~11px
+- [x] The transcript fallback (prompts replayed from an earlier run) reads a prompt as answered when
+      an answer of Claude's own follows it, and as unfinished only when the CLI's
+      `[Request interrupted…]` notice follows; missing turn footers no longer make a whole reloaded
+      chat read "sent", because footers are drawn by this app and are not in the CLI's record
+- [x] Verified live in an isolated instance (haiku, sandbox/hello, port 45199) with a probe
+      recording the order of every row: while a turn runs the queued prompt is the last row of the
+      chat; when the CLI takes it, it moves below the previous turn's footer and its answer streams
+      under it; an interrupted prompt still reads "sent"; a reloaded chat reads "answered"
 
 ## Known limitations / ideas for next iterations
 - No embedded terminal (xterm.js + node-pty) yet; "Open folder in Terminal" opens Ghostty instead.
