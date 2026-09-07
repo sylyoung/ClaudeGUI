@@ -346,6 +346,10 @@ export class SessionManager {
     this.refreshBadge()
   }
 
+  cancelQueued(id: string, messageId: string): Promise<{ cancelled: boolean; text: string; images?: ImageAttachment[] }> {
+    return this.get(id).cancelQueued(messageId)
+  }
+
   rewindPreview(id: string, messageId: string): Promise<RewindPreview> {
     return this.get(id).rewindPreview(messageId)
   }

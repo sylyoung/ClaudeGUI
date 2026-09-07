@@ -48,30 +48,24 @@ export function MessageList({
   const visible = messages.length > limit ? messages.slice(messages.length - limit) : messages
   const hidden = messages.length - visible.length
 
-  // What happened to each prompt you typed. The ones Claude has not taken yet (queuedCount of them,
-  // newest last) are shown together at the bottom instead of where they were typed, so a prompt you
-  // sent in the middle of a turn does not disappear upwards under the output of the earlier one.
+  // What happened to each prompt you typed. The ones Claude has not taken off its queue yet are
+  // shown together at the bottom instead of where they were typed, so a prompt you sent in the
+  // middle of a turn does not disappear upwards under the output of the earlier one.
   const busy = live?.status === 'running' || live?.status === 'requires_action' || live?.status === 'starting'
   const { promptState, queuedIds } = useMemo(() => {
     const promptState = new Map<string, PromptState>()
-    const queuedIds = new Set<string>()
+    // Claude Code names the prompts it still has in its queue, so a prompt is marked as waiting
+    // only while it really is — even when several of them were answered in one turn.
+    const queuedIds = new Set(live?.queuedIds ?? [])
     let lastResult = -1
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i].kind === 'result') { lastResult = i; break }
-    const userIdx: number[] = []
-    for (let i = messages.length - 1; i >= 0; i--) {
+    for (let i = 0; i < messages.length; i++) {
       const m = messages[i]
-      if (m.kind === 'user' && !m.synthetic) userIdx.push(i)
-    }
-    const waiting = Math.min(live?.queuedCount ?? 0, userIdx.length)
-    for (let k = 0; k < userIdx.length; k++) {
-      const i = userIdx[k]
-      const m = messages[i]
-      const state: PromptState = k < waiting ? 'queued' : i < lastResult ? 'answered' : busy ? 'working' : 'sent'
-      promptState.set(m.id, state)
-      if (state === 'queued') queuedIds.add(m.id)
+      if (m.kind !== 'user' || m.synthetic) continue
+      promptState.set(m.id, queuedIds.has(m.id) ? 'queued' : i < lastResult ? 'answered' : busy ? 'working' : 'sent')
     }
     return { promptState, queuedIds }
-  }, [messages, live?.queuedCount, busy])
+  }, [messages, live?.queuedIds, busy])
   const queued = visible.filter((m) => queuedIds.has(m.id))
   const flow = queuedIds.size ? visible.filter((m) => !queuedIds.has(m.id)) : visible
 
@@ -91,7 +85,7 @@ export function MessageList({
           <PermissionPrompt key={p.requestId} request={p} onAnswer={(d) => onAnswer(p.requestId, d)} />
         ))}
         {queued.length > 0 && (
-          <div className="queued-block" data-tip="Prompts Claude has not taken yet. They stay here, at the end of the chat, until the current turn finishes.">
+          <div className="queued-block" data-tip="Prompts Claude has not taken yet. They stay here, at the end of the chat, until the current turn finishes. ↑ in the input box, or the take-back button on a prompt, pulls one out of the queue again.">
             <div className="queued-head">
               <span className="pmark">⋯</span> {queued.length} prompt{queued.length === 1 ? '' : 's'} waiting — sent when the current turn ends
             </div>

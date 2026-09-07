@@ -19,6 +19,8 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   const [slash, setSlash] = useState<SlashToken | null>(null)
   /** Start of a token whose menu you closed with Escape, so it stays closed while you type in it. */
   const dismissedStart = useRef<number | null>(null)
+  /** Set while the box holds text you recalled rather than typed: no command menu until you edit. */
+  const noMenu = useRef(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   const focusNonce = useStore((s) => s.composerFocusNonce)
   const sendWithEnter = useStore((s) => s.settings?.sendWithEnter ?? true)
@@ -30,22 +32,44 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   // ↑ / ↓ walk through the prompts you already typed in this chat (oldest last), like a shell
   // history. Prompts that were sent but not answered yet are included, so nothing is lost.
   const history = useMemo(() => {
-    const list: string[] = []
-    for (const m of messages ?? []) if (m.kind === 'user' && !m.synthetic && m.text.trim()) list.push(m.text)
-    for (const q of sentQueue ?? []) if (q.text.trim() && list[list.length - 1] !== q.text) list.push(q.text)
+    const waiting = new Set(live?.queuedIds ?? [])
+    const list: HistoryEntry[] = []
+    for (const m of messages ?? []) if (m.kind === 'user' && !m.synthetic && m.text.trim()) list.push({ text: m.text, id: m.id, queued: waiting.has(m.id) })
+    // Prompts we have just sent but not seen come back from the chat yet — added only when the
+    // chat does not hold them already, so the same prompt never appears twice in the walk.
+    const seen = new Set(list.map((e) => e.text))
+    for (const q of sentQueue ?? []) {
+      if (!q.text.trim() || seen.has(q.text)) continue
+      seen.add(q.text)
+      list.push({ text: q.text })
+    }
     return list
-  }, [messages, sentQueue])
+  }, [messages, sentQueue, live?.queuedIds])
   const [historyIndex, setHistoryIndex] = useState(-1)
   const draftBeforeHistory = useRef('')
+  const takeBackQueued = useStore((s) => s.takeBackQueued)
+  const toast = useStore((s) => s.toast)
   const recall = (index: number) => {
+    const entry = index < 0 ? null : history[index]
     setHistoryIndex(index)
-    setText(index < 0 ? draftBeforeHistory.current : history[index])
+    setText(entry ? entry.text : draftBeforeHistory.current)
+    // The recalled text was not typed here, so the command menu must not pop up over it (it would
+    // swallow the next ↑) until you edit it or move the caret yourself.
+    noMenu.current = true
+    setSlash(null)
     setTimeout(() => {
       const el = ref.current
       if (!el) return
       el.focus()
       el.selectionStart = el.selectionEnd = el.value.length
     }, 0)
+    // A prompt that is still waiting is taken back out of the queue when you pull it in here, so it
+    // is not answered behind your back while you edit it.
+    if (entry?.queued && entry.id) {
+      void takeBackQueued(sessionId, entry.id).then((ok) => {
+        if (ok) toast('That prompt was taken back out of the queue; it is in the input box.', 'success')
+      })
+    }
   }
 
   // Prompts of an interrupted turn come back into the box (see store.interruptSession).
@@ -79,6 +103,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   }, [text])
 
   const syncSlash = (el: HTMLTextAreaElement) => {
+    if (noMenu.current) return
     const token = slashTokenAt(el.value, el.selectionStart ?? 0)
     if (!token) {
       dismissedStart.current = null
@@ -143,6 +168,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     onSend(t, images)
     setText('')
     setSlash(null)
+    noMenu.current = false
     setImages([])
     setHistoryIndex(-1)
     draftBeforeHistory.current = ''
@@ -150,7 +176,11 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   }, [text, images, onSend, sessionId])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (slashActive && filtered.length) {
+    const walkingHistory = historyIndex >= 0
+    // While you are walking the history, ↑ and ↓ belong to the history even if the recalled prompt
+    // is a command and the menu is open on it.
+    const arrow = e.key === 'ArrowUp' || e.key === 'ArrowDown'
+    if (slashActive && filtered.length && !(walkingHistory && arrow)) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setSlashIndex((i) => (i + 1) % filtered.length)
@@ -178,7 +208,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0
     // Once you are walking the history, ↑ and ↓ keep walking it; typing or clicking in the box ends
     // the walk and gives the arrows back to the caret.
-    const walking = historyIndex >= 0
+    const walking = walkingHistory
     if (e.key === 'ArrowUp' && history.length && (walking || !text || caretAtStart) && !e.shiftKey && !e.metaKey && !e.altKey) {
       e.preventDefault()
       if (!walking) draftBeforeHistory.current = text
@@ -274,12 +304,16 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
           rows={1}
           placeholder={busy ? 'Queue a message… (sent after the current turn)' : 'Message Claude…  ( / for commands, ↑ for an earlier prompt, drop files or paste images )'}
           onChange={(e) => {
+            noMenu.current = false
             setText(e.target.value)
             syncSlash(e.target)
             if (historyIndex >= 0) setHistoryIndex(-1)
           }}
           onKeyDown={onKeyDown}
-          onMouseDown={() => historyIndex >= 0 && setHistoryIndex(-1)}
+          onMouseDown={() => {
+            noMenu.current = false
+            if (historyIndex >= 0) setHistoryIndex(-1)
+          }}
           onSelect={(e) => syncSlash(e.currentTarget)}
           onKeyUp={(e) => syncSlash(e.currentTarget)}
           onClick={(e) => syncSlash(e.currentTarget)}
@@ -308,6 +342,13 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
       </div>
     </div>
   )
+}
+
+/** One step of the prompt history: what you typed, and whether it is still waiting in the queue. */
+interface HistoryEntry {
+  text: string
+  id?: string
+  queued?: boolean
 }
 
 export interface SlashToken {

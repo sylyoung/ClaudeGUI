@@ -468,7 +468,13 @@ export function Sidebar() {
             }}
           />
         ) : (
-          <span className="name" onDoubleClick={() => setRenamingSession({ id: r.id, name: r.title })}>
+          <span
+            className="name"
+            /* In the recent view the groups are not visible as sections, so the group's colour is
+               carried by the chat name itself instead of a group tag on the second line. */
+            style={view === 'recent' && gColor ? { color: gColor, opacity: vs.key === 'stopped' ? 0.7 : undefined } : undefined}
+            onDoubleClick={() => setRenamingSession({ id: r.id, name: r.title })}
+          >
             {r.title}
           </span>
         )}
@@ -479,11 +485,6 @@ export function Sidebar() {
           <span data-tip={`Your last prompt: ${formatDateTime(lastPrompt)}`}>{timeAgo(lastPrompt)}</span>
         </span>
         <span className="meta">
-          {view === 'recent' && g && (
-            <span className="gtag" style={gColor ? { color: gColor } : undefined}>
-              ● {g.name} ·{' '}
-            </span>
-          )}
           <span className={`model m-${modelFamily(l?.model || r.model || r.lastModel || settings?.defaultModel)}`}>{modelName}</span>
           <span className="faint"> · </span>
           <span className={`state-text vs-${vs.key}`}>{busy ? (busy === 'start' ? 'starting…' : 'stopping…') : vs.key === 'idle' && l?.lastPreview ? l.lastPreview : vs.label}</span>

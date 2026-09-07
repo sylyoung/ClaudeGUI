@@ -114,6 +114,8 @@ export class SessionRuntime {
   /** Since the last finished turn: did Claude write anything, and was the context compacted? */
   private turnHadText = false
   private turnHadCompaction = false
+  /** Since the last finished turn: was the compaction one the user asked for with "/compact"? */
+  private turnHadManualCompaction = false
   private processCostSeen = 0
   /** Chain entry the next start resumes at (a rewind fork point), or null for the whole chain. */
   private resumeAt: string | null = null
@@ -138,7 +140,8 @@ export class SessionRuntime {
       totalCostUsd: record.totalCostUsd ?? 0,
       unread: 0,
       lastActivityAt: record.lastActiveAt,
-      queuedCount: 0
+      queuedCount: 0,
+      queuedIds: []
     }
   }
 
@@ -357,7 +360,7 @@ export class SessionRuntime {
       this.live.activeTools = []
       this.live.processAlive = false
       this.live.activity = null
-      this.live.queuedCount = 0
+      this.setQueued([])
       for (const m of this.transcript.messages) {
         if (m.kind === 'assistant' && m.streaming) {
           m.streaming = false
@@ -513,7 +516,7 @@ export class SessionRuntime {
       uuid: uuid as never,
       session_id: this.record.claudeSessionId
     }
-    if (this.live.status === 'running' || this.live.status === 'requires_action') this.live.queuedCount += 1
+    if (this.live.status === 'running' || this.live.status === 'requires_action') this.setQueued([...this.live.queuedIds, uuid])
     else this.setStatus('running')
     this.queue.push(message)
     this.record.lastActiveAt = Date.now()
@@ -522,6 +525,37 @@ export class SessionRuntime {
     this.live.lastPreview = text.slice(0, 120)
     this.deps.saveRecord(this.record)
     this.scheduleFlush()
+  }
+
+  /** Remember which prompts Claude Code has not taken off its queue yet. */
+  private setQueued(ids: string[]): void {
+    this.live.queuedIds = ids
+    this.live.queuedCount = ids.length
+  }
+
+  /**
+   * Take a prompt back out of Claude Code's queue and hand its text back, so it can go into the
+   * input box for editing. Only possible while it is still waiting: once the CLI has taken it for
+   * the running turn it will answer it, and we say so rather than pretend it was withdrawn.
+   */
+  async cancelQueued(messageId: string): Promise<{ cancelled: boolean; text: string; images?: ImageAttachment[] }> {
+    const msg = this.transcript.messages.find((m) => m.id === messageId)
+    const text = msg?.kind === 'user' ? msg.text : ''
+    const images = msg?.kind === 'user' ? msg.images : undefined
+    if (!this.live.queuedIds.includes(messageId)) return { cancelled: false, text, images }
+    const q = this.q as (Query & { cancelAsyncMessage?(uuid: string): Promise<boolean> }) | null
+    let cancelled = false
+    try {
+      cancelled = q?.cancelAsyncMessage ? Boolean(await q.cancelAsyncMessage(messageId)) : false
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] taking a queued prompt back failed: ${(err as Error).message}`)
+    }
+    if (!cancelled) return { cancelled: false, text, images }
+    this.setQueued(this.live.queuedIds.filter((id) => id !== messageId))
+    this.transcript.removeMessage(messageId)
+    this.scheduleFlush()
+    this.flush()
+    return { cancelled: true, text, images }
   }
 
   // ------------------------------------------------------------- permissions
@@ -763,8 +797,19 @@ export class SessionRuntime {
         if (last?.kind === 'result') this.live.lastTurn = last.stats
         this.live.activeTools = []
         this.live.activity = null
-        if (this.live.queuedCount > 0) this.live.queuedCount -= 1
-        const queued = (msg as { queued_turn_count?: number }).queued_turn_count ?? this.live.queuedCount
+        // Which of the prompts still waiting were taken by this turn. Claude Code may fold several
+        // of them into one turn, so counting one off per finished turn leaves prompts marked as
+        // waiting long after they were answered; the result says exactly which ones it consumed
+        // (user_message_uuids) and how many of ours are still in its queue (queued_turn_count).
+        const r = msg as { queued_turn_count?: number; user_message_uuid?: string; user_message_uuids?: string[] }
+        const consumed = new Set(r.user_message_uuids ?? (r.user_message_uuid ? [r.user_message_uuid] : []))
+        let waiting = this.live.queuedIds.filter((id) => !consumed.has(id))
+        // Backstop for a prompt taken without being named: the queue is first in, first out.
+        if (typeof r.queued_turn_count === 'number' && r.queued_turn_count < waiting.length) {
+          waiting = waiting.slice(waiting.length - r.queued_turn_count)
+        }
+        this.setQueued(waiting)
+        const queued = r.queued_turn_count ?? waiting.length
         if (queued > 0) this.setStatus('running')
         else if (this.live.status !== 'requires_action') this.setStatus('idle')
         const preview = msg.subtype === 'success' ? msg.result : humanResultSubtype(msg.subtype, (msg as { errors?: string[] }).errors)
@@ -772,10 +817,19 @@ export class SessionRuntime {
         this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
         this.record.lastActiveAt = ts
         this.deps.saveRecord(this.record)
-        // A turn that only compacted the context ("/compact") is housekeeping, not an answer: it
-        // must not mark the chat unread or raise a notification.
-        const compactionOnly = this.turnHadCompaction && !this.turnHadText
+        // A turn that only compacted the context is housekeeping, not an answer: it must not mark
+        // the chat unread or raise a notification. A "/compact" the user typed counts as
+        // housekeeping even though compacting writes a summary — that summary is not an answer to
+        // read — unless a real prompt was folded into the same turn.
+        const otherPrompts = [...consumed].filter((id) => {
+          const m = this.transcript.messages.find((x) => x.id === id)
+          return m?.kind === 'user' && !/^\s*\/compact\b/.test(m.text)
+        })
+        const compactionOnly = this.turnHadManualCompaction
+          ? otherPrompts.length === 0
+          : this.turnHadCompaction && !this.turnHadText
         this.turnHadCompaction = false
+        this.turnHadManualCompaction = false
         this.turnHadText = false
         this.deps.onTurnFinished(this, this.live.lastPreview, Boolean(msg.is_error) || msg.subtype !== 'success', compactionOnly)
         this.refreshTitle()
@@ -816,7 +870,11 @@ export class SessionRuntime {
 
   private handleSystem(msg: SDKMessage & { type: 'system' }, ts: number): void {
     const s = msg as unknown as Record<string, unknown> & { subtype: string }
-    if (s.subtype === 'compact_boundary') this.turnHadCompaction = true
+    if (s.subtype === 'compact_boundary') {
+      this.turnHadCompaction = true
+      // "manual" = the user typed /compact; "auto" = the context ran full during a real turn.
+      if ((s.compact_metadata as { trigger?: string } | undefined)?.trigger === 'manual') this.turnHadManualCompaction = true
+    }
     switch (s.subtype) {
       case 'init': {
         // The CLI accepted the fork point; a later restart must not truncate again.

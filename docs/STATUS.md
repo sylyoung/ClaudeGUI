@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-07 (session 4, v1.0.9)
+Last updated: 2026-09-07 (session 4, v1.0.10)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -195,6 +195,30 @@ npm run build:mac  # produce dist/mac-arm64/ClaudeGUI.app (quit a running Claude
 - [x] Verified live in an isolated instance with a scratch session (haiku, sandbox/rewind-test):
       note.txt went back from "version two" to "version one", the chat lost the later turn, and
       Claude itself answered "version one" afterwards, so the truncating resume worked
+
+### v1.0.10
+- [x] Waiting prompts are taken from Claude Code's own facts: `SessionLiveState.queuedIds`, kept in
+      step with a finished turn's `user_message_uuids` (which prompts it consumed) and
+      `queued_turn_count` (how many of ours are still queued). The old "one off per finished turn"
+      count drifted because the CLI folds several queued prompts into one turn — verified: four
+      prompts, two results, and the queue still emptied to zero
+- [x] Taking a waiting prompt back: `SessionRuntime.cancelQueued` → the CLI's `cancelAsyncMessage`
+      control request (implemented in sdk.mjs, not declared on the public `Query` type), plumbed as
+      `sessions:cancelQueued` and the store's `takeBackQueued`. ↑ onto a waiting prompt withdraws it
+      (the user chose that), and a button on the prompt / its right-click menu does the same
+- [x] The prompt history no longer duplicates a prompt that is both in the chat and in `sentQueue`
+- [x] The command menu stays closed over recalled text (`noMenu` ref in Composer.tsx) and ↑ / ↓
+      belong to the history while a walk is running, so a recalled "/compact" no longer captures them
+- [x] A manual /compact is housekeeping whatever it writes: `compact_metadata.trigger === 'manual'`
+      marks the turn silent unless a real prompt was folded into it (auto-compaction keeps the unread
+      mark, because that turn also answers something)
+- [x] Session rows: the state mark spans both lines (`.session-item > .mark { grid-row: 1 / span 2 }`)
+      and the baseline glyphs ("...", "·") are nudged up; in the recent view the group is shown by
+      the colour of the chat name, and the group tag is gone from the second line
+- [x] Verified live in an isolated instance (`CLAUDEGUI_USER_DATA=sandbox/dev-userdata`, port 45199)
+      with a scratch session: queue drained to zero after coalescing, a queued prompt withdrawn by ↑
+      never reached Claude, /compact (22,911 → 1,616 tokens) left unread at 0, and ↑ walked
+      /compact → essay → earlier prompt with the menu closed
 
 ### Open after v1.0.6
 - The user updates their installed app themselves (Settings → About → check for updates); do not

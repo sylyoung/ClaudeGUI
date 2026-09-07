@@ -7,8 +7,10 @@ export interface ChatCtx {
   showPathMenu: (raw: string, line: number | undefined, x: number, y: number) => void
   /** Open the rewind window for one of your own prompts. */
   rewindTo: (messageId: string) => void
-  /** Right-click menu of one of your own prompts (copy, rewind). */
+  /** Right-click menu of one of your own prompts (copy, rewind, take a waiting one back). */
   showPromptMenu: (messageId: string, text: string, x: number, y: number) => void
+  /** Take a prompt that is still waiting out of the queue and put it in the input box. */
+  takeBackPrompt: (messageId: string) => void
 }
 
 const Ctx = createContext<ChatCtx | null>(null)

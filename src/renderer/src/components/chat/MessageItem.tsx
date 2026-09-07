@@ -1,5 +1,5 @@
 import React, { memo } from 'react'
-import { AlertTriangle, Brain, History, Info, Lightbulb } from 'lucide-react'
+import { AlertTriangle, Brain, History, Info, Lightbulb, Undo2 } from 'lucide-react'
 import type { AssistantChatMessage, ChatMessage } from '@shared/types'
 import { Markdown } from './Markdown'
 import { ToolCallCard } from './ToolCallCard'
@@ -55,14 +55,24 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0, state
           ) : null}
           {message.text && (
             <div className="bubble-row">
-              {chat && state !== 'queued' && (
-                <button
-                  className="msg-action"
-                  data-tip="Rewind the chat to this prompt (asks first whether the files should go back too)"
-                  onClick={() => chat.rewindTo(message.id)}
-                >
-                  <History size={13} />
-                </button>
+              {chat && (
+                state === 'queued' ? (
+                  <button
+                    className="msg-action"
+                    data-tip="Take this prompt back out of the queue and put it in the input box"
+                    onClick={() => chat.takeBackPrompt(message.id)}
+                  >
+                    <Undo2 size={13} />
+                  </button>
+                ) : (
+                  <button
+                    className="msg-action"
+                    data-tip="Rewind the chat to this prompt (asks first whether the files should go back too)"
+                    onClick={() => chat.rewindTo(message.id)}
+                  >
+                    <History size={13} />
+                  </button>
+                )
               )}
               <div className="bubble">
                 <LinkifiedText text={message.text} />

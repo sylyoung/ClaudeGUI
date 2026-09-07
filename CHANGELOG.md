@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.0.10 — 2026-09-07
+
+### Prompts that are waiting
+- **A prompt is only marked as waiting while it really is waiting.** Claude Code often answers
+  several queued prompts in one turn; the app used to count one prompt off per finished turn, so
+  every folded-in prompt left a phantom entry behind and the chat could claim four prompts were
+  waiting long after they had all been answered. The waiting list now comes from what Claude Code
+  itself reports — which prompts a finished turn consumed, and how many of ours are still in its
+  queue.
+- **↑ takes a waiting prompt back out of the queue.** Recalling a prompt that has not been answered
+  yet withdraws it from Claude Code, removes it from the chat and leaves its text in the input box
+  for editing, instead of leaving a copy that gets answered while you type. If Claude had already
+  taken it, nothing is withdrawn and the app says so.
+- **A take-back button** on every waiting prompt (and an entry in its right-click menu) does the same
+  without the keyboard.
+- **The prompt history no longer lists the same prompt twice** while a turn is running.
+
+### Fixes
+- **↑ and ↓ keep walking the history even when the recalled prompt is a command.** Recalling
+  "/compact" used to open the command menu over it, which then swallowed the next ↑; the menu now
+  stays closed over recalled text until you edit it or move the caret yourself.
+- **A /compact you asked for never marks the chat unread**, even when the compaction writes a summary
+  — that summary is not an answer to read. An automatic compaction inside a real turn still counts
+  as unread, because that turn also answered something.
+
+### Session list
+- **The state mark ("...", "!", "Q", "N", "·", "○") is centred on the whole two-line row** instead of
+  on the chat name alone.
+- **In the recent view the group is shown by the colour of the chat name**; the group name is gone
+  from the second line, which now holds only the model and the state.
+
 ## 1.0.9 — 2026-09-07
 
 ### Writing prompts

@@ -84,6 +84,16 @@ the fork point is cleared once `system/init` confirms the start, and dropped wit
 chat if the CLI refuses it. File backups exist only when the session was started with
 `enableFileCheckpointing` (settings: `fileCheckpointing`).
 
+## Prompts that are still queued
+A prompt sent while a turn is running goes into the CLI's own command queue. The host keeps their
+ids in `SessionLiveState.queuedIds` and corrects that list from every result: `user_message_uuids`
+names the prompts the finished turn consumed (the CLI may fold several into one turn, so counting one
+off per result drifts and leaves phantoms), and `queued_turn_count` says how many are still queued —
+used as a backstop, oldest first. The renderer marks exactly those messages as waiting and collects
+them at the end of the chat. `cancelQueued(messageId)` takes one back through the CLI's
+`cancel_async_message` control request (`query.cancelAsyncMessage`, implemented in the SDK but not
+declared on the public `Query` type); it fails harmlessly when the CLI has already taken the prompt.
+
 ## Data flow
 1. Renderer calls `window.api.sessions.send(id, text)` → IPC → `HostClient.send` → socket request.
 2. In the host, `SessionRuntime` pushes an `SDKUserMessage` into the async input queue feeding

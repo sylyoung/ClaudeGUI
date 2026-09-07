@@ -195,6 +195,8 @@ a:hover { text-decoration: underline; }
 .session-item:hover { background: var(--bg-hover); }
 .session-item.active { background: var(--accent-soft); }
 .session-item .dot { grid-row: 1 / span 2; }
+/* The state mark sits beside the whole two-line row, centred on it — not on the title alone. */
+.session-item > .mark { grid-row: 1 / span 2; align-self: center; }
 .session-item .name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item .meta { grid-column: 2; font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .session-item .meta b { color: var(--amber); font-weight: 600; }
@@ -902,6 +904,8 @@ button.cs-item:hover { color: var(--accent); }
 .mark i:nth-child(2) { animation-delay: 0.18s; }
 .mark i:nth-child(3) { animation-delay: 0.36s; }
 @keyframes markdots { 0%, 100% { opacity: 0.15; transform: translateY(1px); } 45% { opacity: 1; transform: translateY(-1px); } }
+/* "..." and "·" are drawn on the baseline, so without this their ink would sit low in the row. */
+.mark.vs-working, .mark.vs-starting, .mark.vs-idle { padding-bottom: 5px; }
 .mark.vs-working, .mark.vs-starting { color: var(--blue); }
 .mark.vs-permission { color: var(--amber); }
 .mark.vs-option { color: var(--red); }

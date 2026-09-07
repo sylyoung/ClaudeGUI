@@ -118,6 +118,11 @@ interface State {
   interruptSession: (id: string) => Promise<void>
   /** Cut a chat back to one of your prompts; the prompt text goes back into the input box. */
   rewind: (id: string, messageId: string, restoreFiles: boolean) => Promise<void>
+  /**
+   * Take a prompt that is still waiting back out of Claude Code's queue. Returns false when Claude
+   * had already taken it, in which case it stays in the chat and is answered.
+   */
+  takeBackQueued: (id: string, messageId: string, toComposer?: boolean) => Promise<boolean>
   /** Put a text back into the input box of a chat (used by the prompt menu). */
   restoreComposer: (id: string, text: string) => void
   answerPermission: (id: string, requestId: string, decision: PermissionDecision) => Promise<void>
@@ -339,6 +344,22 @@ export const useStore = create<State>((set, get) => ({
       await window.api.sessions.interrupt(id)
     } catch (err) {
       get().toast(`Interrupt failed: ${(err as Error).message}`, 'error')
+    }
+  },
+
+  takeBackQueued: async (id, messageId, toComposer) => {
+    try {
+      const r = await window.api.sessions.cancelQueued(id, messageId)
+      if (!r.cancelled) {
+        get().toast('Claude had already taken that prompt off the queue, so it is being answered.', 'info')
+        return false
+      }
+      set((s) => ({ sentQueue: { ...s.sentQueue, [id]: (s.sentQueue[id] ?? []).filter((q) => q.text !== r.text) } }))
+      if (toComposer) get().restoreComposer(id, r.text)
+      return true
+    } catch (err) {
+      get().toast(`Taking the prompt back failed: ${(err as Error).message}`, 'error')
+      return false
     }
   },
 

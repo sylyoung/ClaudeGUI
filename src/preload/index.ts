@@ -17,6 +17,7 @@ import type {
   ModelInfoView,
   PermissionDecision,
   PermissionMode,
+  QueuedPromptTakeBack,
   RewindPreview,
   RewindResult,
   SessionEvent,
@@ -98,6 +99,7 @@ const api = {
     start: (id: string) => invoke<void>('sessions:start', id),
     stop: (id: string) => invoke<void>('sessions:stop', id),
     interrupt: (id: string) => invoke<void>('sessions:interrupt', id),
+    cancelQueued: (id: string, messageId: string) => invoke<QueuedPromptTakeBack>('sessions:cancelQueued', id, messageId),
     rewindPreview: (id: string, messageId: string) => invoke<RewindPreview>('sessions:rewindPreview', id, messageId),
     rewind: (id: string, messageId: string, restoreFiles: boolean) => invoke<RewindResult>('sessions:rewind', id, messageId, restoreFiles),
     answerPermission: (id: string, requestId: string, decision: PermissionDecision) =>

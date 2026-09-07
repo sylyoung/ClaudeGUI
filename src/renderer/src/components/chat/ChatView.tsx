@@ -168,24 +168,32 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   )
 
   const rewindTo = useCallback((messageId: string) => setRewindId(messageId), [])
+  const takeBackPrompt = useCallback<ChatCtx['takeBackPrompt']>(
+    (messageId) => void useStore.getState().takeBackQueued(record.id, messageId, true),
+    [record.id]
+  )
+  const waitingIds = live?.queuedIds
   const showPromptMenu = useCallback<ChatCtx['showPromptMenu']>(
     (messageId, text, x, y) => {
+      const waiting = (waitingIds ?? []).includes(messageId)
       setMenu({
         x,
         y,
         items: [
-          { label: 'Rewind the chat to here…', onClick: () => setRewindId(messageId) },
+          waiting
+            ? { label: 'Take this prompt back out of the queue', onClick: () => takeBackPrompt(messageId) }
+            : { label: 'Rewind the chat to here…', onClick: () => setRewindId(messageId) },
           { label: '', onClick: () => undefined, separator: true },
           { label: 'Copy this prompt', onClick: async () => { await window.api.shell.copy(text); toast('Prompt copied', 'success') } },
           { label: 'Put it back in the input box', onClick: () => useStore.getState().restoreComposer(record.id, text) }
         ]
       })
     },
-    [record.id, toast]
+    [record.id, toast, waitingIds, takeBackPrompt]
   )
   const ctx = useMemo<ChatCtx>(
-    () => ({ sessionId: record.id, cwd: record.cwd, openPath, showPathMenu, rewindTo, showPromptMenu }),
-    [record.id, record.cwd, openPath, showPathMenu, rewindTo, showPromptMenu]
+    () => ({ sessionId: record.id, cwd: record.cwd, openPath, showPathMenu, rewindTo, showPromptMenu, takeBackPrompt }),
+    [record.id, record.cwd, openPath, showPathMenu, rewindTo, showPromptMenu, takeBackPrompt]
   )
 
   const onSend = useCallback((text: string, images: { mediaType: string; data: string; name?: string }[]) => void send(record.id, text, images), [record.id, send])

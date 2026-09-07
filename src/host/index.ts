@@ -136,6 +136,8 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.stop(a[0])
     case 'interrupt':
       return manager.interrupt(a[0])
+    case 'cancelQueued':
+      return manager.cancelQueued(a[0], a[1])
     case 'rewindPreview':
       return manager.rewindPreview(a[0], a[1])
     case 'rewind':

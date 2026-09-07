@@ -19,6 +19,7 @@ import type {
   ModelInfoView,
   PermissionDecision,
   PermissionMode,
+  QueuedPromptTakeBack,
   RewindPreview,
   RewindResult,
   SdkUsage,
@@ -397,6 +398,10 @@ export class HostClient extends EventEmitter {
   }
   interrupt(id: string): Promise<void> {
     return this.call('interrupt', id)
+  }
+
+  cancelQueued(id: string, messageId: string): Promise<QueuedPromptTakeBack> {
+    return this.call('cancelQueued', id, messageId)
   }
 
   rewindPreview(id: string, messageId: string): Promise<RewindPreview> {

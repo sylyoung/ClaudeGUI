@@ -154,6 +154,8 @@ export interface SessionLiveState {
   slashCommands?: SlashCommandView[]
   models?: ModelInfoView[]
   queuedCount: number
+  /** Ids of the prompts Claude Code has not taken off its queue yet, oldest first. */
+  queuedIds: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +254,15 @@ export interface ResultChatMessage {
   errorText?: string
 }
 export type ChatMessage = UserChatMessage | AssistantChatMessage | SystemChatMessage | ResultChatMessage
+
+/** The outcome of taking a still-waiting prompt back out of Claude Code's queue. */
+export interface QueuedPromptTakeBack {
+  /** False when Claude Code had already taken the prompt, so it is being answered after all. */
+  cancelled: boolean
+  /** The prompt text, for the input box. */
+  text: string
+  images?: ImageAttachment[]
+}
 
 /** What a rewind to one of your prompts would do (asked before it is carried out). */
 export interface RewindPreview {
