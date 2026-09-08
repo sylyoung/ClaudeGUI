@@ -285,11 +285,8 @@ a:hover { text-decoration: underline; }
 .prompt-state { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; }
 .prompt-state .pmark { font-family: var(--mono); font-weight: 700; letter-spacing: 0.5px; }
 .prompt-state.st-queued { color: var(--amber); }
-.prompt-state.st-working { color: var(--accent); }
-.prompt-state.st-answered { color: var(--green); }
-.prompt-state.st-sent { color: var(--text-faint); }
+.prompt-state.st-registered { color: var(--green); }
 .msg-user.st-queued .bubble { border-style: dashed; border-color: var(--amber); background: var(--bg-elev2); }
-.msg-user.st-working .bubble { box-shadow: 0 0 0 1px var(--accent-soft); }
 /* Prompts still waiting are collected here, at the very end of the chat. */
 .queued-block { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--amber); padding-top: 8px; margin-top: 2px; }
 .queued-head { font-size: 13px; font-weight: 600; color: var(--amber); display: flex; align-items: center; gap: 6px; }

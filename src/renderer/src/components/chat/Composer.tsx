@@ -29,21 +29,34 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   const sentQueue = useStore((s) => s.sentQueue[sessionId])
   const busy = live?.status === 'running' || live?.status === 'requires_action' || live?.status === 'starting'
 
-  // ↑ / ↓ walk through the prompts you already typed in this chat (oldest last), like a shell
+  // ↑ / ↓ walk through the prompts you already typed in this chat (newest last), like a shell
   // history. Prompts that were sent but not answered yet are included, so nothing is lost.
   const history = useMemo(() => {
     const waiting = new Set(live?.queuedIds ?? [])
     const list: HistoryEntry[] = []
-    for (const m of messages ?? []) if (m.kind === 'user' && !m.synthetic && m.text.trim()) list.push({ text: m.text, id: m.id, queued: waiting.has(m.id) })
-    // Prompts we have just sent but not seen come back from the chat yet — added only when the
-    // chat does not hold them already, so the same prompt never appears twice in the walk.
-    const seen = new Set(list.map((e) => e.text))
-    for (const q of sentQueue ?? []) {
-      if (!q.text.trim() || seen.has(q.text)) continue
-      seen.add(q.text)
-      list.push({ text: q.text })
+    const ids = new Set<string>()
+    const texts = new Set<string>()
+    for (const m of messages ?? []) {
+      if (m.kind !== 'user' || m.synthetic || !m.text.trim()) continue
+      ids.add(m.id)
+      texts.add(m.text)
+      list.push({ text: m.text, id: m.id, queued: waiting.has(m.id), at: m.ts })
     }
-    return list
+    // Prompts we have just sent but not seen come back from the chat yet — added only when the
+    // chat does not hold them already, so the same prompt never appears twice in the walk. They
+    // are the newest thing typed, hence the largest time.
+    for (const q of sentQueue ?? []) {
+      if (!q.text.trim() || (q.id ? ids.has(q.id) : texts.has(q.text))) continue
+      if (q.id) ids.add(q.id)
+      texts.add(q.text)
+      list.push({ text: q.text, id: q.id, queued: q.id ? waiting.has(q.id) : false, at: Number.MAX_SAFE_INTEGER })
+    }
+    // The walk follows the order the prompts were typed in, which is no longer the order they
+    // stand in in the chat: when Claude Code takes a prompt off its queue, the chat moves it down
+    // to the answer it starts, so a prompt that is still waiting can end up above one typed before
+    // it. Without this, ↑ would hand you the prompt already being answered instead of the waiting
+    // one you meant to take back. Equal times keep the order of the chat.
+    return list.sort((a, b) => a.at - b.at)
   }, [messages, sentQueue, live?.queuedIds])
   const [historyIndex, setHistoryIndex] = useState(-1)
   const draftBeforeHistory = useRef('')
@@ -67,7 +80,12 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     // is not answered behind your back while you edit it.
     if (entry?.queued && entry.id) {
       void takeBackQueued(sessionId, entry.id).then((ok) => {
-        if (ok) toast('That prompt was taken back out of the queue; it is in the input box.', 'success')
+        if (!ok) return
+        toast('That prompt was taken back out of the queue; it is in the input box.', 'success')
+        // It has left the chat and the queue, so it is no longer a step of the walk: the walk ends
+        // here and the text becomes the draft, which ↓ brings back if you walk further up.
+        setHistoryIndex(-1)
+        draftBeforeHistory.current = entry.text
       })
     }
   }
@@ -242,12 +260,19 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     }
   }
 
+  /**
+   * A copy out of a word processor, a PDF viewer or a web page usually carries the same selection
+   * twice: as text, and as a picture of the formatted text. Word on macOS even offers the picture
+   * first, which is why pasting a paragraph used to land here as an image. Text is what was copied,
+   * so it wins: the picture is only taken when the clipboard holds no text at all (a screenshot, an
+   * image copied from a browser, a file copied in Finder).
+   */
   const onPaste = (e: React.ClipboardEvent) => {
-    const items = e.clipboardData.files
-    if (items.length) {
-      e.preventDefault()
-      void addFiles(items)
-    }
+    const files = Array.from(e.clipboardData.files)
+    if (!files.length) return
+    if (e.clipboardData.getData('text/plain').trim()) return
+    e.preventDefault()
+    void addFiles(files)
   }
 
   const pickImages = async () => {
@@ -344,11 +369,13 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   )
 }
 
-/** One step of the prompt history: what you typed, and whether it is still waiting in the queue. */
+/** One step of the prompt history: what you typed, when, and whether it is still waiting in the queue. */
 interface HistoryEntry {
   text: string
   id?: string
   queued?: boolean
+  /** When the prompt was sent; the walk is in this order, not in the order of the chat. */
+  at: number
 }
 
 export interface SlashToken {

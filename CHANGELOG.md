@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.15 — 2026-09-07
+
+### Two states for a prompt, and nothing else
+- **A prompt is either registered or queued.** Registered means Claude Code has taken it: the chat
+  moves it down so it stands directly above the answer it started. Queued means Claude Code has not
+  taken it yet: it waits at the very bottom, below the answer being written, and can be pulled back
+  into the input box. The older marks "being answered", "answered" and "sent" are gone — queued is
+  amber with a dashed bubble, registered is a green check.
+- **The guessing that went with those marks is gone too.** The chat no longer has to work out from a
+  reloaded conversation whether a turn finished; a prompt that Claude Code is not holding in its
+  queue has been taken, and that is all the chat claims.
+
+### Taking a waiting prompt back with ↑
+- **↑ offers the prompt you typed last, even after Claude Code has taken an earlier one.** The walk
+  through your earlier prompts now follows the order you typed them in. It used to follow the order
+  they stand in in the chat, which stopped being the same thing when a taken prompt began moving
+  down to its answer: with two prompts waiting, the first ↑ handed you the one already being
+  answered — which cannot be taken back — instead of the one still waiting below it.
+- **A prompt can be taken back in the moment before its row appears.** Sending a prompt now answers
+  with the id it has in the chat, so ↑ withdraws it from Claude Code's queue straight away instead
+  of leaving a copy to be answered behind your back.
+- **Taking a prompt back ends the walk**, and its text becomes the draft, so pressing ↑ again does
+  not throw away the prompt you just pulled out of the queue.
+
+### Pasting
+- **Text copied from a document is pasted as text.** A copy out of Word, a PDF viewer or a web page
+  puts the same selection on the clipboard twice — as text and as a picture of the formatted text —
+  and the app took the picture, so a pasted paragraph arrived as an image attachment. The text wins
+  now; the picture is only taken when the clipboard holds no text at all, as with a screenshot.
+
 ## 1.0.14 — 2026-09-07
 
 ### Where a prompt sits in the chat

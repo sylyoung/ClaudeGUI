@@ -9,17 +9,14 @@ import { useStore } from '@/store'
 import { useChatCtx } from './ChatContext'
 
 /**
- * What happened to a prompt you typed: it is still waiting in the queue, Claude is answering it
- * right now, the turn it started has finished, or it was delivered but the turn did not finish
- * (interrupted or the process stopped).
+ * What has happened to a prompt you typed. There are two states and no others: Claude Code has
+ * taken it (registered), or it is still waiting in Claude Code's queue (queued).
  */
-export type PromptState = 'queued' | 'working' | 'answered' | 'sent'
+export type PromptState = 'registered' | 'queued'
 
 const PROMPT_STATE: Record<PromptState, { mark: string; label: string; tip: string }> = {
-  queued: { mark: '⋯', label: 'queued', tip: 'Waiting: Claude is still on an earlier prompt. It is sent when that turn ends.' },
-  working: { mark: '...', label: 'being answered', tip: 'Claude has taken this prompt and is working on it now' },
-  answered: { mark: '✓', label: 'answered', tip: 'Claude finished the turn this prompt started' },
-  sent: { mark: '·', label: 'sent', tip: 'Delivered to Claude; the turn it started did not finish (interrupted or stopped)' }
+  registered: { mark: '✓', label: 'registered', tip: 'Claude Code has taken this prompt: what follows it is the answer it started' },
+  queued: { mark: '⋯', label: 'queued', tip: 'Waiting: Claude Code has not taken this prompt yet. It is sent when the current turn ends, and ↑ in the input box (or the take-back button) pulls it out of the queue again.' }
 }
 
 /**

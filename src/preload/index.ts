@@ -95,7 +95,7 @@ const api = {
       invoke<SessionRecord>('sessions:create', opts),
     importCli: (sessionId: string, cwd: string, title?: string) => invoke<SessionRecord>('sessions:importCli', sessionId, cwd, title),
     listCli: (dir?: string) => invoke<CliSessionSummary[]>('sessions:listCli', dir),
-    send: (id: string, text: string, images?: ImageAttachment[]) => invoke<void>('sessions:send', id, text, images),
+    send: (id: string, text: string, images?: ImageAttachment[]) => invoke<string>('sessions:send', id, text, images),
     start: (id: string) => invoke<void>('sessions:start', id),
     stop: (id: string) => invoke<void>('sessions:stop', id),
     interrupt: (id: string) => invoke<void>('sessions:interrupt', id),

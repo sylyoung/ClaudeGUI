@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-07 (session 4, v1.0.14)
+Last updated: 2026-09-07 (session 4, v1.0.15)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -133,6 +133,23 @@ survive app restarts.
 - [x] Verified live in an isolated instance (haiku, sandbox/compact-queue, port 45199) with a probe
       recording every state change: queued during the compaction → being answered when the CLI took
       it → answered when its turn ended; ordinary queueing during a normal turn unchanged
+
+### v1.0.15
+- [x] A prompt has two states and no others: registered (Claude Code has taken it; it stands above
+      the answer it started) and queued (it waits at the very bottom and can be taken back). The
+      earlier "being answered", "answered" and "sent" marks are gone, and with them the transcript
+      fallback that guessed between them
+- [x] ↑ walks the prompts in the order they were typed, not in the order they stand in in the chat,
+      so a waiting prompt is still the first thing ↑ offers after Claude Code has taken an earlier
+      one and the chat has moved that one down to its answer
+- [x] `sessions.send` answers with the id the prompt has in the chat, kept in `sentQueue`, so a
+      prompt can be taken out of the queue even in the moment before its row reaches the chat
+- [x] Pasting from a word processor inserts the text, not a picture of it: the app only takes an
+      image from the clipboard when the clipboard carries no text
+- [x] Verified live in the dev instance: with the chat holding [A, C(queued), B(registered)] — the
+      order that follows a take — ↑ recalled C and withdrew it (host queue empty, toast shown); a
+      synthetic paste of text+picture inserted the text and attached nothing, a picture-only paste
+      attached the image
 
 ### v1.0.14
 - [x] A prompt the CLI takes off its queue is moved to the end of the chat

@@ -121,14 +121,20 @@ chat has when it is read back from the CLI's transcript after a restart. `takePr
 runs before `transcript.apply` for `stream_event` and `assistant`, so the prompt reaches the end
 before the first row of the turn it started.
 
-The renderer reads those states directly and falls back to the transcript only for prompts replayed
-from an earlier run. That fallback looks at what follows a prompt up to the next prompt: an answer
-of Claude's own means answered, the CLI's `[Request interrupted…]` notice means the turn did not
-finish. It cannot look for a turn footer, because the footers this app draws are not part of the
-CLI's record — taking a missing footer as evidence used to mark every prompt in a reloaded chat as
-"sent". The waiting ones are collected at the end of the chat. `cancelQueued(messageId)` takes one back through the CLI's
-`cancel_async_message` control request (`query.cancelAsyncMessage`, implemented in the SDK but not
-declared on the public `Query` type); it fails harmlessly when the CLI has already taken the prompt.
+The chat shows two prompt states and no others: **queued** (the CLI has not taken it — it waits at
+the very end of the chat, in its own block, and can be taken back) and **registered** (the CLI has
+taken it, so it stands above the answer it started). Everything the host reports as `working`, every
+prompt it no longer tracks, and every prompt replayed from an earlier run is registered, so the
+renderer needs no fallback reading of the transcript for prompts it did not send itself.
+
+`cancelQueued(messageId)` takes a waiting prompt back through the CLI's `cancel_async_message`
+control request (`query.cancelAsyncMessage`, implemented in the SDK but not declared on the public
+`Query` type); it fails harmlessly when the CLI has already taken the prompt. Two things make that
+reachable from the input box: `send` answers with the id the prompt has in the chat, so a prompt can
+be withdrawn even in the moment before its row arrives, and the ↑ walk in the composer is sorted by
+the time each prompt was sent rather than by its position in the chat. The second matters because a
+registered prompt is moved down to its answer: without it, ↑ would offer the prompt already being
+answered instead of the one still waiting below it.
 
 ## Data flow
 1. Renderer calls `window.api.sessions.send(id, text)` → IPC → `HostClient.send` → socket request.

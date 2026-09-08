@@ -387,7 +387,8 @@ export class HostClient extends EventEmitter {
   listCli(dir?: string): Promise<CliSessionSummary[]> {
     return this.call('listCli', dir)
   }
-  send(id: string, text: string, images?: ImageAttachment[]): Promise<void> {
+  /** Returns the id the prompt has in the chat, so the window can point at it later. */
+  send(id: string, text: string, images?: ImageAttachment[]): Promise<string> {
     return this.call('send', id, text, images)
   }
   start(id: string): Promise<void> {

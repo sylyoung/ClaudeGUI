@@ -54,52 +54,23 @@ export function MessageList({
   const visible = messages.length > limit ? messages.slice(messages.length - limit) : messages
   const hidden = messages.length - visible.length
 
-  // What happened to each prompt you typed. The ones Claude has not taken off its queue yet are
-  // shown together at the bottom instead of where they were typed, so a prompt you sent in the
-  // middle of a turn does not disappear upwards under the output of the earlier one. When Claude
-  // takes one, the host moves it to the end of the chat, so it leaves the waiting block and
-  // reappears here, directly above the answer it starts.
-  const busy = live?.status === 'running' || live?.status === 'requires_action' || live?.status === 'starting'
+  // What has happened to each prompt you typed. There are two states and no others. A prompt
+  // Claude Code has not taken yet is queued: it waits at the very end of the chat, below the answer
+  // being written, and can be pulled back into the input box. A prompt Claude Code has taken is
+  // registered, and the host moves it down to sit directly above the answer it started, so it
+  // leaves the waiting block and reappears in the conversation itself.
   const { promptState, queuedIds } = useMemo(() => {
-    const promptState = new Map<string, PromptState>()
-    // What Claude Code itself says it has done with each prompt this app sent: still in its queue,
-    // or taken by the turn it is running.
+    // What Claude Code itself says it has done with each prompt this app sent. A prompt it says
+    // nothing about — read back from its own record, or already answered — has been taken.
     const delivery = live?.promptDelivery ?? {}
     const queuedIds = new Set(Object.keys(delivery).filter((id) => delivery[id] === 'queued'))
-    let lastPrompt = -1
-    for (let i = messages.length - 1; i >= 0; i--) { const m = messages[i]; if (m.kind === 'user' && !m.synthetic) { lastPrompt = i; break } }
-    // Prompts Claude Code says nothing about were sent by an earlier run of the app and read back
-    // from its record. Their state comes from what followed them, up to the next prompt: an answer
-    // of Claude's own means the prompt was answered, the notice Claude Code writes when a turn is
-    // stopped means it was not. The turn footers this app draws are not part of that record, so
-    // the answer itself has to be the evidence.
-    let openId: string | null = null
-    let openIndex = -1
-    let answered = false
-    let stopped = false
-    const settle = (): void => {
-      if (openId === null) return
-      const known = delivery[openId]
-      // Only the newest prompt can be the one a running turn is answering.
-      promptState.set(openId, known ?? (busy && openIndex === lastPrompt ? 'working' : stopped || !answered ? 'sent' : 'answered'))
-      openId = null
+    const promptState = new Map<string, PromptState>()
+    for (const m of messages) {
+      if (m.kind !== 'user' || m.synthetic) continue
+      promptState.set(m.id, queuedIds.has(m.id) ? 'queued' : 'registered')
     }
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i]
-      if (m.kind === 'user' && !m.synthetic) {
-        settle()
-        openId = m.id
-        openIndex = i
-        answered = false
-        stopped = false
-      } else if (openId === null) continue
-      else if (m.kind === 'user') stopped = stopped || m.text.startsWith('[Request interrupted')
-      else if (m.kind === 'result') answered = true
-      else if (m.kind === 'assistant' && !m.parentToolUseId) answered = true
-    }
-    settle()
     return { promptState, queuedIds }
-  }, [messages, live?.promptDelivery, busy])
+  }, [messages, live?.promptDelivery])
   const queued = visible.filter((m) => queuedIds.has(m.id))
   const flow = queuedIds.size ? visible.filter((m) => !queuedIds.has(m.id)) : visible
 

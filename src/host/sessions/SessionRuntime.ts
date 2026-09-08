@@ -512,7 +512,8 @@ export class SessionRuntime {
 
   // ------------------------------------------------------------------ input
 
-  async send(text: string, images?: ImageAttachment[]): Promise<void> {
+  /** Hand a prompt to Claude Code; the id it is known by in the chat is returned. */
+  async send(text: string, images?: ImageAttachment[]): Promise<string> {
     await this.ensureStarted()
     if (!this.queue) throw new Error('Session is not running')
     const uuid = randomUUID()
@@ -546,6 +547,7 @@ export class SessionRuntime {
     this.live.lastPreview = text.slice(0, 120)
     this.deps.saveRecord(this.record)
     this.scheduleFlush()
+    return uuid
   }
 
   /** Remember which prompts Claude Code has not taken off its queue yet. */

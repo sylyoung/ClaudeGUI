@@ -331,10 +331,11 @@ export class SessionManager {
     }))
   }
 
-  async send(id: string, text: string, images?: ImageAttachment[]): Promise<void> {
+  async send(id: string, text: string, images?: ImageAttachment[]): Promise<string> {
     const rt = this.get(id)
-    await rt.send(text, images)
+    const messageId = await rt.send(text, images)
     this.refreshBadge()
+    return messageId
   }
 
   async start(id: string): Promise<void> {

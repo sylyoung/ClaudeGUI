@@ -79,8 +79,12 @@ interface State {
   live: Record<string, SessionLiveState>
   groups: SessionGroup[]
   messages: Record<string, ChatMessage[]>
-  /** Prompts sent during the current turn (restored into the composer when the turn is interrupted). */
-  sentQueue: Record<string, { text: string; images: ImageAttachment[] }[]>
+  /**
+   * Prompts sent during the current turn (restored into the composer when the turn is interrupted).
+   * `id` is the id the prompt has in the chat; it arrives with the answer of the send call, so it is
+   * missing for the moment between pressing enter and the host answering.
+   */
+  sentQueue: Record<string, { id?: string; text: string; images: ImageAttachment[] }[]>
   /** Text to put back into the composer of a session (set by interruptSession). */
   composerRestore: Record<string, { text: string; images: ImageAttachment[]; nonce: number }>
   historyLoaded: Record<string, boolean>
@@ -321,9 +325,13 @@ export const useStore = create<State>((set, get) => ({
   },
 
   send: async (id, text, images) => {
-    set((s) => ({ sentQueue: { ...s.sentQueue, [id]: [...(s.sentQueue[id] ?? []), { text, images: images ?? [] }] } }))
+    const entry = { text, images: images ?? [] }
+    set((s) => ({ sentQueue: { ...s.sentQueue, [id]: [...(s.sentQueue[id] ?? []), entry] } }))
     try {
-      await window.api.sessions.send(id, text, images)
+      // The id the prompt has in the chat comes back here, so a prompt that is still waiting can be
+      // taken out of Claude Code's queue again even before its row has reached the chat.
+      const messageId = await window.api.sessions.send(id, text, images)
+      set((s) => ({ sentQueue: { ...s.sentQueue, [id]: (s.sentQueue[id] ?? []).map((q) => (q === entry ? { ...q, id: messageId } : q)) } }))
     } catch (err) {
       set((s) => ({ sentQueue: { ...s.sentQueue, [id]: (s.sentQueue[id] ?? []).filter((q) => q.text !== text) } }))
       get().toast(`Send failed: ${(err as Error).message}`, 'error')
@@ -354,7 +362,7 @@ export const useStore = create<State>((set, get) => ({
         get().toast('Claude had already taken that prompt off the queue, so it is being answered.', 'info')
         return false
       }
-      set((s) => ({ sentQueue: { ...s.sentQueue, [id]: (s.sentQueue[id] ?? []).filter((q) => q.text !== r.text) } }))
+      set((s) => ({ sentQueue: { ...s.sentQueue, [id]: (s.sentQueue[id] ?? []).filter((q) => (q.id ? q.id !== messageId : q.text !== r.text)) } }))
       if (toComposer) get().restoreComposer(id, r.text)
       return true
     } catch (err) {
