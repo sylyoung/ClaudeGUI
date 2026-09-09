@@ -159,6 +159,48 @@ export function resolveMentionedPath(raw: string, cwd: string, home: string): st
   return p
 }
 
+/** Chinese, Japanese and Korean: scripts written without spaces between the words. */
+const CJK = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}]/u
+
+/**
+ * Spellings of the same path to try when the one written in the chat does not exist. A sentence in
+ * Chinese, Japanese or Korean has no spaces, so the words around a path are glued to it — "打开" in
+ * "打开/Users/me/文件.md" is part of the sentence, not part of the name. Characters of those scripts
+ * are dropped one by one from the front and from the end, longest spelling first.
+ */
+function gluedVariants(raw: string): string[] {
+  const out = [raw]
+  const slash = raw.indexOf('/')
+  if (slash > 0 && !raw.startsWith('~') && !raw.startsWith('.')) {
+    const head = raw.slice(0, slash)
+    for (let i = 1; i <= head.length && i <= 12; i++) if (CJK.test(head[i - 1])) out.push(raw.slice(i))
+  }
+  for (const base of [...out]) {
+    let t = base
+    for (let i = 0; i < 12; i++) {
+      if (!CJK.test(t.slice(-1))) break
+      t = t.slice(0, -1)
+      if (t.includes('/')) out.push(t)
+    }
+  }
+  return [...new Set(out)]
+}
+
+/**
+ * The path a click in the chat should open: the one that was written when it exists, otherwise the
+ * longest spelling of it that does exist (see gluedVariants). Falls back to the path as written, so
+ * the caller still reports "not found" with the name the user saw.
+ */
+export function locatePath(raw: string, cwd: string, home: string): string {
+  const asWritten = resolveMentionedPath(raw, cwd, home)
+  if (!CJK.test(raw)) return asWritten
+  for (const variant of gluedVariants(raw.trim())) {
+    const full = resolveMentionedPath(variant, cwd, home)
+    if (fs.existsSync(full)) return full
+  }
+  return asWritten
+}
+
 type Listener = (dir: string) => void
 
 export class DirWatcher {

@@ -1,11 +1,20 @@
 import React, { useMemo } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { CodeBlock } from '../common/CodeBlock'
 import { useChatCtx } from './ChatContext'
 import { findPaths, isProbablyPath, splitLine } from '@/lib/paths'
 
 const FILE_PROTO = 'claudegui-file://'
+
+/**
+ * react-markdown drops the address of any link whose protocol it does not know, which silently
+ * emptied every file link this file creates. Our own protocol is let through; everything else is
+ * still checked the way react-markdown checks it.
+ */
+function urlTransform(url: string): string {
+  return url.startsWith(FILE_PROTO) ? url : defaultUrlTransform(url)
+}
 
 type MdNode = { type: string; value?: string; url?: string; children?: MdNode[] }
 
@@ -114,7 +123,7 @@ export function Markdown({ text }: { text: string }) {
   )
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkFilePaths]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkFilePaths]} components={components} urlTransform={urlTransform}>
         {text}
       </ReactMarkdown>
     </div>

@@ -139,6 +139,9 @@ const api = {
     probe: (file: string) => invoke<FileProbe>('fs:probe', file),
     exists: (p: string) => invoke<{ exists: boolean; isDir: boolean }>('fs:exists', p),
     resolve: (raw: string, cwd: string) => invoke<string>('fs:resolve', raw, cwd),
+    /** Like resolve, but when the path does not exist it also tries the spellings a sentence without
+     *  spaces (Chinese, Japanese, Korean) can glue to a name. */
+    locate: (raw: string, cwd: string) => invoke<string>('fs:locate', raw, cwd),
     watch: (dir: string) => invoke<void>('fs:watch', dir),
     unwatch: (dir: string) => invoke<void>('fs:unwatch', dir),
     home: () => invoke<string>('fs:home'),

@@ -10,7 +10,7 @@ import type { HostClient } from './hostClient'
 import type { UsageService } from './usageService'
 import type { Updater } from './updater'
 import type { PermissionService } from './permissions'
-import { DirWatcher, listDir, pathExists, probeFile, readFileContent, resolveMentionedPath } from './fsService'
+import { DirWatcher, listDir, locatePath, pathExists, probeFile, readFileContent, resolveMentionedPath } from './fsService'
 import { openExternal, openInEditor, openPath, openTerminal, openWithApp, showItemInFolder } from './shellService'
 import { getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache, getLoginShellEnv } from './env'
 import * as gitSvc from './gitService'
@@ -216,6 +216,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle('fs:probe', (file: string) => probeFile(file))
   handle('fs:exists', (p: string) => pathExists(p))
   handle('fs:resolve', (raw: string, cwd: string) => resolveMentionedPath(raw, cwd, os.homedir()))
+  handle('fs:locate', (raw: string, cwd: string) => locatePath(raw, cwd, os.homedir()))
   handle('fs:watch', (dir: string) => watcher.watch(dir))
   handle('fs:unwatch', (dir: string) => watcher.unwatch(dir))
   handle('fs:home', () => os.homedir())

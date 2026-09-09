@@ -7,6 +7,7 @@ import { useStore, type GitSelection } from '@/store'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
 import { DiffView } from '../common/DiffView'
 import { basename, relativeTime, timeAgo } from '@/lib/format'
+import { isComposing } from '@/lib/keys'
 
 const LETTER: Record<GitFileState, string> = {
   modified: 'M', added: 'A', deleted: 'D', renamed: 'R', copied: 'C', typechange: 'T', conflicted: '!', untracked: 'U', ignored: 'i'
@@ -310,7 +311,7 @@ export function GitPanel({ record }: { record: SessionRecord }) {
 
       {form && (
         <div className="git-form">
-          <input className="input" autoFocus placeholder={form.kind === 'publish' ? 'repository name' : 'new branch name'} value={formName} onChange={(e) => setFormName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void submitForm(); if (e.key === 'Escape') setForm(null) }} spellCheck={false} />
+          <input className="input" autoFocus placeholder={form.kind === 'publish' ? 'repository name' : 'new branch name'} value={formName} onChange={(e) => setFormName(e.target.value)} onKeyDown={(e) => { if (isComposing(e)) return; if (e.key === 'Enter') void submitForm(); if (e.key === 'Escape') setForm(null) }} spellCheck={false} />
           {form.kind === 'publish' && (
             <select className="select" value={formVisibility} onChange={(e) => setFormVisibility(e.target.value as 'public' | 'private')}>
               <option value="private">private</option>
@@ -323,7 +324,7 @@ export function GitPanel({ record }: { record: SessionRecord }) {
       )}
 
       <div className="git-commit">
-        <textarea className="input" rows={2} placeholder={info.hasCommits === false ? 'Initial commit message' : 'Commit message (⌘⏎ to commit)'} value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void commit(pushAfterCommit) } }} spellCheck={true} />
+        <textarea className="input" rows={2} placeholder={info.hasCommits === false ? 'Initial commit message' : 'Commit message (⌘⏎ to commit)'} value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !isComposing(e)) { e.preventDefault(); void commit(pushAfterCommit) } }} spellCheck={true} />
         <div className="git-commit-row">
           <label className="faint" data-tip="Replace the last commit instead of creating a new one">
             <input type="checkbox" checked={amend} onChange={(e) => setAmend(e.target.checked)} /> amend

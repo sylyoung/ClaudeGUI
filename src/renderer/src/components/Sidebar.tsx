@@ -12,6 +12,7 @@ import { StateMark } from './common/StateMark'
 import { visualState } from '@/lib/sessionState'
 import { sessionMenuItems } from '@/lib/sessionMenu'
 import { isDarkTheme } from '@/lib/theme'
+import { isComposing } from '@/lib/keys'
 
 // ---------------------------------------------------------------------------------------------
 // Drag & drop (pointer events: no HTML5 drag ghost, no "fly back" animation, no flicker)
@@ -463,6 +464,7 @@ export function Sidebar() {
             onPointerDown={(e) => e.stopPropagation()}
             onBlur={() => void commitSessionRename()}
             onKeyDown={(e) => {
+              if (isComposing(e)) return
               if (e.key === 'Enter') void commitSessionRename()
               if (e.key === 'Escape') setRenamingSession(null)
             }}
@@ -553,7 +555,7 @@ export function Sidebar() {
         </button>
       </div>
       <div className="sidebar-search">
-        <input ref={searchRef} placeholder="Search sessions (⌘K)" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setSearch('')} data-tip="Filter by title, folder or last message. Picking a result clears the search." />
+        <input ref={searchRef} placeholder="Search sessions (⌘K)" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && !isComposing(e) && setSearch('')} data-tip="Filter by title, folder or last message. Picking a result clears the search." />
         {search && (
           <button className="clear no-drag" onClick={() => setSearch('')} data-tip="Clear search">
             <X size={12} />
@@ -647,6 +649,7 @@ export function Sidebar() {
                       onClick={(e) => e.stopPropagation()}
                       onBlur={() => void commitRename()}
                       onKeyDown={(e) => {
+                        if (isComposing(e)) return
                         if (e.key === 'Enter') void commitRename()
                         if (e.key === 'Escape') setRenaming(null)
                       }}
@@ -679,6 +682,7 @@ export function Sidebar() {
               onChange={(e) => setNewGroup(e.target.value)}
               onBlur={() => void commitNewGroup()}
               onKeyDown={(e) => {
+                if (isComposing(e)) return
                 if (e.key === 'Enter') void commitNewGroup()
                 if (e.key === 'Escape') setNewGroup(null)
               }}

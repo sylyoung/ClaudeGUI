@@ -3,6 +3,7 @@ import { History } from 'lucide-react'
 import { useStore } from '@/store'
 import { Modal } from '../common/Modal'
 import { formatTime, timeAgo } from '@/lib/format'
+import { isComposing } from '@/lib/keys'
 
 /**
  * The list the double tap on Escape opens, the same step the terminal takes: it shows the prompts
@@ -36,6 +37,7 @@ export function RewindPicker({ sessionId, onPick, onClose }: { sessionId: string
   }, [sel])
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (isComposing(e)) return
     const last = prompts.length - 1
     lastKeyAt.current = Date.now()
     if (e.key === 'ArrowDown') { e.preventDefault(); setSel((n) => Math.min(last, n + 1)) }

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, ImagePlus, Keyboard, Square, X } from 'lucide-react'
 import type { ImageAttachment, SessionLiveState, SlashCommandView } from '@shared/types'
 import { useStore } from '@/store'
+import { isComposing } from '@/lib/keys'
 
 interface Props {
   sessionId: string
@@ -195,6 +196,9 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   }, [text, images, onSend, sessionId])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // A key the input method is using to build a character (pinyin candidates and the like) belongs
+    // to the input method, not to the chat box: Enter would send half-typed pinyin.
+    if (isComposing(e)) return
     const walkingHistory = historyIndex >= 0
     // While you are walking the history, ↑ and ↓ belong to the history even if the recalled prompt
     // is a command and the menu is open on it.

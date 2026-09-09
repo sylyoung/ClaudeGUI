@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-09 (session 4, v1.0.16)
+Last updated: 2026-09-09 (session 4, v1.0.17)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -133,6 +133,22 @@ survive app restarts.
 - [x] Verified live in an isolated instance (haiku, sandbox/compact-queue, port 45199) with a probe
       recording every state change: queued during the compaction → being answered when the CLI took
       it → answered when its turn ended; ordinary queueing during a normal turn unchanged
+
+### v1.0.17
+- [x] Paths of any writing system are found in the chat (`lib/paths.ts` under the `u` flag), so
+      `中文目录/测试文件.md` is clickable; Japanese, Korean, Russian and accented names too
+- [x] File links inside an answer work at all again: react-markdown was emptying the address of
+      every `claudegui-file://` link, so no path in rendered markdown could be clicked
+- [x] A sentence in a script without spaces glued to a path is cut off it, and `fs:locate` repairs
+      what cannot be cut by trying the shorter spellings before reporting the file missing
+- [x] Keys that belong to an input method are left to it (`lib/keys.ts`): Enter no longer sends
+      half-typed pinyin, and Escape no longer stops the turn while candidates are on screen
+- [x] The plan usage is text only — no bars — with the percentage coloured and the scale spelled out
+      in words in the breakdown
+- [x] Verified live in the dev instance with files named in Chinese under `sandbox/cjk`: every form
+      of the path (relative, absolute, `./`, with `:line`, in inline code, glued to a sentence) is a
+      link and a click opens the file in the viewer; Enter during a composition sent nothing and the
+      same Enter after it sent the prompt; screenshots of the pills in `sandbox/shots/v1017-*.png`
 
 ### v1.0.16
 - [x] Plan-usage bars show the whole scale at all times (green to the amber threshold, amber to 90 %,

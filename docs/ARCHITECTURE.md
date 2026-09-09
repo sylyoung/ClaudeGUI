@@ -189,6 +189,32 @@ answered instead of the one still waiting below it.
   `before-quit` continues on the next tick (`setImmediate`) because a nested `app.quit()` inside the
   handler is ignored by Electron.
 
+## File paths in the chat
+- `lib/paths.ts` finds paths in plain text (`findPaths`, used by `LinkifiedText` and by the remark
+  plugin in `Markdown.tsx`) and judges inline code (`isProbablyPath`). A segment is
+  `[\p{L}\p{N}\p{M}_.\-+@%~()]+` under the `u` flag: the letters and digits of every writing
+  system, because `\w` stops at the first Chinese character and cut such a path in half.
+- Chinese, Japanese and Korean are written without spaces, so a sentence touches the path it names.
+  Two heuristics keep that readable: `cutGluedSentence` ends a match at the file extension when the
+  text goes on in one of those scripts (`测试文件.md的内容`), and `cutGluedPrefix` starts an absolute
+  path at a root directory when the characters before it are of those scripts
+  (`打开/Users/me/文件.md`). A relative path glued to the words before it cannot be separated by
+  looking at the text alone, which is what `fs:locate` is for.
+- `fs:locate` (`locatePath` in `fsService.ts`) is `fs:resolve` plus repair: if the path as written
+  does not exist and it contains such characters, the spellings with those characters dropped from
+  the front of the first segment and from the end of the last are tried, longest first, and the
+  first one that exists is returned. Clicking a path in the chat and its right-click menu both go
+  through it; everything else still uses the plain `fs:resolve`.
+- `Markdown.tsx` marks the paths it finds as links with the internal address `claudegui-file://…`.
+  react-markdown empties the address of any protocol it does not know, which silently killed every
+  such link, so the component passes a `urlTransform` that lets that one address through and hands
+  everything else to react-markdown's own check.
+- `lib/keys.ts` holds `isComposing`, which is true while an input method is still assembling a
+  character. Chinese, Japanese and Korean input methods use Enter, Escape and the arrows to pick
+  among their candidates, so every handler that reads those keys (the chat box, the window-level
+  Escape and ⇧⇥ of `ChatView`, `Modal`, the filter lists, the rename boxes, the Git panel) returns
+  early while a composition is open.
+
 ## Plan usage
 - `UsageService` reads the OAuth token Claude Code stored at login (Keychain item
   `Claude Code-credentials`, or `~/.claude/.credentials.json`), calls the claude.ai usage endpoint
@@ -196,12 +222,10 @@ answered instead of the one still waiting below it.
   normalises the `limits[]` array (session / weekly_all / weekly_scoped per model) plus credits.
 - Fallbacks: the structured `/usage` of a running session (through the host), then the
   `rate_limit_event` messages every API response carries (merged per window).
-- Every bar (`ScaleBar` in `UsageStatus.tsx`) is painted with the whole scale — green up to the
-  amber threshold from the settings, amber up to 90 %, red above — with the stretch beyond the
-  current percentage faded by an overlay and a needle on the percentage itself. A bar in the colour
-  of the current level alone showed no red at all until a limit was nearly exhausted, which is not
-  what a meter is for; the thresholds themselves are unchanged and still match the terminal's
-  status line.
+- There are no bars: the percentage itself carries the colour (green below the warning threshold
+  from the settings, amber above it, red from `CRITICAL` = 90 %), and the breakdown states the scale
+  in a sentence whose words "green", "amber" and "red" are printed in the colours they name, so the
+  red is on screen at any level of use. The thresholds match the terminal's status line.
 
 ## Sidebar order, views and groups
 - `SessionRecord.groupId` / `order` / `lastPromptAt` / `lastModel`; `SessionGroup {id, name, order,

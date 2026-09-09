@@ -3,6 +3,7 @@ import type { CliSessionSummary } from '@shared/types'
 import { useStore } from '@/store'
 import { Modal } from '../common/Modal'
 import { formatBytes, shortenPath, timeAgo } from '@/lib/format'
+import { isComposing } from '@/lib/keys'
 
 export function ImportSessionDialog({ onClose }: { onClose: () => void }) {
   const [items, setItems] = useState<CliSessionSummary[] | null>(null)
@@ -63,6 +64,7 @@ export function ImportSessionDialog({ onClose }: { onClose: () => void }) {
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (isComposing(e)) return
     const last = filtered.length - 1
     lastKeyAt.current = Date.now()
     if (e.key === 'ArrowDown') { e.preventDefault(); setSel((n) => Math.min(last, n + 1)) }

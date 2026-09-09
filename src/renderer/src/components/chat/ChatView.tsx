@@ -7,6 +7,7 @@ import { useStore } from '@/store'
 import { PopupSelect, type PopupOption } from '../common/PopupSelect'
 import { GroupColorPicker } from '../common/GroupColorPicker'
 import { isDarkTheme } from '@/lib/theme'
+import { isComposing } from '@/lib/keys'
 import { MessageList } from './MessageList'
 import { StateMark } from '../common/StateMark'
 import { Composer } from './Composer'
@@ -123,7 +124,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const openPath = useCallback<ChatCtx['openPath']>(
     async (raw, line, opts) => {
       try {
-        const abs = await window.api.fs.resolve(raw, record.cwd)
+        const abs = await window.api.fs.locate(raw, record.cwd)
         const probe = await window.api.fs.probe(abs)
         if (probe.kind === 'missing') {
           toast(`Not found: ${abs}`, 'error')
@@ -151,7 +152,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
 
   const showPathMenu = useCallback<ChatCtx['showPathMenu']>(
     (raw, line, x, y) => {
-      const resolve = () => window.api.fs.resolve(raw, record.cwd)
+      const resolve = () => window.api.fs.locate(raw, record.cwd)
       setMenu({
         x,
         y,
@@ -212,7 +213,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   // ⌘⏎ answers the first pending permission with allow.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && e.metaKey && live?.pendingPermissions?.length && !(e.target instanceof HTMLTextAreaElement)) {
+      if (e.key === 'Enter' && e.metaKey && !isComposing(e) && live?.pendingPermissions?.length && !(e.target instanceof HTMLTextAreaElement)) {
         const p = live.pendingPermissions[0]
         if (p.toolName !== 'AskUserQuestion') onAnswer(p.requestId, { behavior: 'allow' })
       }
@@ -231,6 +232,8 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const running = status === 'running' || status === 'requires_action'
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Escape closes the candidate list of an input method; it must not also stop the turn.
+      if (isComposing(e)) return
       if (e.key === 'Escape' && !e.repeat) {
         if (useStore.getState().dialog || rewindId || pickRewind) return
         const doubleTap = Date.now() - escAt.current < 700
@@ -350,6 +353,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
               else e.currentTarget.textContent = record.title
             }}
             onKeyDown={(e) => {
+              if (isComposing(e)) return
               if (e.key === 'Enter') { e.preventDefault(); (e.currentTarget as HTMLElement).blur() }
               if (e.key === 'Escape') { e.currentTarget.textContent = record.title; setEditingTitle(false); (e.currentTarget as HTMLElement).blur() }
             }}

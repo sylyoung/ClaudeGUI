@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.17 — 2026-09-09
+
+### Files with Chinese names open from the chat
+- **A path is now recognised whatever alphabet it is written in.** The chat looked for paths with a
+  pattern that only accepted Latin letters, digits and `_`, so `中文目录/测试文件.md` was either
+  ignored or cut off at the first Chinese character; the same held for Japanese, Korean, Russian and
+  accented names. Letters and digits of every writing system now count as part of a name.
+- **Clicking a path in an answer works again at all.** Every file path the app found inside an
+  answer was turned into a link whose address react-markdown then threw away, because it does not
+  know our internal `claudegui-file://` address; the link stayed on screen but did nothing. Such
+  links are let through now — this affected Latin paths as much as Chinese ones.
+- **A sentence glued to a path no longer breaks it.** Chinese, Japanese and Korean are written
+  without spaces, so an answer says `打开/Users/me/文件.md的内容` with the words touching the name.
+  The chat cuts the sentence off an absolute path, and when a path as written does not exist the app
+  tries the shorter spellings before reporting it missing, so the click still opens the right file.
+- Right-click on such a path (open in the editor, reveal in Finder, copy) uses the same repair.
+
+### Chinese, Japanese and Korean typing in the chat box
+- **Enter no longer sends a half-typed prompt.** An input method uses Enter, Escape and the arrows
+  to choose among the characters it offers; the chat box took those key presses for itself, so
+  pressing Enter to pick 你好 sent the raw "nihao" instead. Every key that belongs to the input
+  method is now left to it — in the chat box, in the rename boxes, in the search and filter lists,
+  and in the Git panel.
+- **Escape while the input method is open does not stop the turn or close the window** any more.
+
+### The plan usage is text, not bars
+- **The bars are gone; the numbers carry the colour.** Each pill in the top right is now the name of
+  the limit and the percentage, coloured green below the warning threshold, amber above it and red
+  from 90 % of the limit.
+- **The breakdown says the scale in words**, each word in the colour it names: "A number is green
+  below 50 %, amber from 50 % and red from 90 % of the limit."
+
 ## 1.0.16 — 2026-09-09
 
 ### The plan-usage bars show the whole scale

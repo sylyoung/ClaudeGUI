@@ -5,6 +5,7 @@ import { CodeBlock } from '../common/CodeBlock'
 import { DiffView } from '../common/DiffView'
 import { Markdown } from './Markdown'
 import { useChatCtx } from './ChatContext'
+import { isComposing } from '@/lib/keys'
 
 interface Question {
   question: string
@@ -124,7 +125,7 @@ function ToolPermission({ request, onAnswer }: { request: PendingPermission; onA
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer({ behavior: 'deny', message: reason || undefined })
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !isComposing(e)) onAnswer({ behavior: 'deny', message: reason || undefined })
           }}
         />
       )}

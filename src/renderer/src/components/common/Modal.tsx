@@ -1,11 +1,13 @@
 import React, { useEffect } from 'react'
+import { isComposing } from '@/lib/keys'
 
 /** `tall` makes the dialog fill most of the window height; the content is then expected to scroll
  *  a `.grow` element inside it rather than the dialog itself. */
 export function Modal({ title, onClose, children, width, tall }: { title: string; onClose: () => void; children: React.ReactNode; width?: number; tall?: boolean }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      // Escape closes the candidate list of an input method first; the dialog stays open.
+      if (e.key === 'Escape' && !isComposing(e)) onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

@@ -10,6 +10,7 @@ import { ShortcutsDialog } from './components/dialogs/ShortcutsDialog'
 import { UsageStatus } from './components/status/UsageStatus'
 import { StatusBoard } from './components/StatusBoard'
 import { TooltipLayer } from './components/common/Tooltip'
+import { isComposing } from '@/lib/keys'
 
 function Resizer({ onDrag, onEnd }: { onDrag: (dx: number) => void; onEnd: () => void }) {
   const [dragging, setDragging] = React.useState(false)
@@ -110,7 +111,7 @@ export default function App() {
           void s.selectSession(target.id)
         }
       }
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !isComposing(e)) {
         const s = useStore.getState()
         if (s.dialog) setDialog(null)
         else if (s.selectedIds.length) s.setSelectedIds([])
