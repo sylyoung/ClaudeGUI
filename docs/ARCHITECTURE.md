@@ -103,6 +103,24 @@ there is no boundary message, so a "Context compacted earlier in this chat" row 
 the summary — otherwise the summary would appear as a prompt the user seemed to have typed. The rest
 stay as folded rows, named by `houseKeepingLabel` in the renderer instead of "system message".
 
+## The unread mark
+`SessionLiveState.unread` counts the finished turns the user has not looked at; it feeds the "N"
+mark and the count badge in the sidebar, the state pill in the chat header, the statistics bar and
+the number on the dock icon (`SessionManager.refreshBadge`). It is raised in
+`SessionManager.onTurnFinished` only when the turn was not in the foreground (the window focused
+*and* that session selected) and was not housekeeping, and it is cleared when the session is
+selected or the window regains focus (`setActive` → `SessionRuntime.markRead`) and, since 1.0.18,
+whenever a prompt is sent into the chat — writing into a chat means having it in front of you.
+
+A turn counts as housekeeping (`compactionOnly` in the `result` branch of `SessionRuntime`) when the
+only prompts it answered were a `/compact`. The prompts of a turn are the ones the result names
+(`user_message_uuids`) together with the ones still marked `working`, because a `/compact` the CLI
+refuses ("Not enough messages to compact") answers without naming anything; the notes the CLI writes
+itself are excluded (`synthetic`), and the command is recognised both as the user typed it and in
+the CLI's echo of it (`<command-name>/compact</command-name>`). A compaction that the CLI ran on its
+own in the middle of a turn is housekeeping only while the turn wrote nothing else
+(`turnHadCompaction && !turnHadText`): once there is an answer, there is something to read.
+
 ## What happened to each prompt
 A prompt sent while a turn is running goes into the CLI's own command queue. The host tracks every
 prompt the app sends in `SessionLiveState.promptDelivery` (`queued` = still in the CLI's queue,

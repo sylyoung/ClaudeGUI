@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-09 (session 4, v1.0.17)
+Last updated: 2026-09-09 (session 4, v1.0.18)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -133,6 +133,19 @@ survive app restarts.
 - [x] Verified live in an isolated instance (haiku, sandbox/compact-queue, port 45199) with a probe
       recording every state change: queued during the compaction → being answered when the CLI took
       it → answered when its turn ended; ordinary queueing during a normal turn unchanged
+
+### v1.0.18
+- [x] Sending a prompt marks the chat read (`SessionRuntime.send` → `markRead`), so a mark left by an
+      earlier answer cannot survive into a `/compact`
+- [x] A turn whose only prompt was a `/compact` is housekeeping even when the CLI refuses it ("Not
+      enough messages to compact"): the prompts of a turn are now the ones it consumed plus the ones
+      that were marked as being worked on, because a refused compaction names no prompt at all
+- [x] The prompts of a turn ignore the notes the CLI writes itself (`synthetic`), and the command is
+      matched in the CLI's own spelling (`<command-name>/compact</command-name>`)
+- [x] Verified live in the dev instance (sandbox/compact, window deliberately unfocused): an ordinary
+      answer still marks the chat unread; sending `/compact` clears the mark at once and it stays
+      clear through the compaction and after it; a refused `/compact` no longer marks it (it did
+      before the change)
 
 ### v1.0.17
 - [x] Paths of any writing system are found in the chat (`lib/paths.ts` under the `u` flag), so

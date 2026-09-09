@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.18 — 2026-09-09
+
+### Compacting the context leaves no unread mark
+- **A chat you have just written in counts as read.** Sending a prompt clears the chat's unread
+  mark, because typing into a chat means you are looking at it. Until now a mark left by an earlier
+  answer stayed on the chat while you typed `/compact`, so after the compaction the red circle was
+  still there and looked as though the compaction itself had left something new to read.
+- **A refused compaction is housekeeping too.** When the conversation is too short, Claude Code
+  answers `/compact` with a notice of its own ("Not enough messages to compact."); that reply marked
+  the chat unread and raised a notification. It no longer does.
+- **The command is recognised in the form the CLI writes it back.** A turn counts as housekeeping
+  when the only prompt it answered was a `/compact`, whether that prompt reads as you typed it or as
+  the CLI's own echo of it, and the notes the CLI puts in a chat itself (reminders, task
+  notifications, command echoes) no longer count as prompts of yours that need an answer.
+- A turn that compacted the context on its own and then went on answering is unchanged: the answer
+  still marks the chat unread, because there is something to read.
+
 ## 1.0.17 — 2026-09-09
 
 ### Files with Chinese names open from the chat

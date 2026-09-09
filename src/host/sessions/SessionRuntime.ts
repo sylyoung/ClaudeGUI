@@ -94,6 +94,15 @@ export interface RuntimeDeps {
   log(...args: unknown[]): void
 }
 
+/**
+ * A prompt that only asks Claude Code to tidy its own context rather than to answer something:
+ * "/compact" as the user typed it, or the shape the CLI echoes back for a slash command
+ * (`<command-name>/compact</command-name>…`), which is the same prompt written in its own words.
+ */
+function isCompactCommand(text: string): boolean {
+  return /^\s*(?:<command-name>\s*)?\/compact\b/.test(text)
+}
+
 const FLUSH_MS = 45
 /** How long a chat may stay quiet before a prompt still marked as being answered is let go. */
 const DELIVERY_QUIET_MS = 10_000
@@ -517,6 +526,11 @@ export class SessionRuntime {
     await this.ensureStarted()
     if (!this.queue) throw new Error('Session is not running')
     const uuid = randomUUID()
+    // Writing into a chat means having it in front of you: anything that was waiting to be read
+    // has been read by now, so the unread mark goes when the prompt is sent. Without this a mark
+    // left from an earlier answer stays on the chat through a "/compact" and looks as if the
+    // compaction itself had left something new to read.
+    this.markRead()
     this.transcript.addLocalUserMessage(uuid, text, images)
     const content: unknown[] = []
     if (text.trim()) content.push({ type: 'text', text })
@@ -896,6 +910,12 @@ export class SessionRuntime {
         if (last?.kind === 'result') this.live.lastTurn = last.stats
         this.live.activeTools = []
         this.live.activity = null
+        // The prompts that were being answered when this turn ended. The result usually names them
+        // (user_message_uuids below), but not always — a "/compact" the CLI refuses is answered
+        // without naming anything — so the ones marked as being worked on are kept as well.
+        const workingBefore = Object.entries(this.live.promptDelivery)
+          .filter(([, state]) => state === 'working')
+          .map(([id]) => id)
         // Which of the prompts still waiting were taken by this turn. Claude Code may fold several
         // of them into one turn, so counting one off per finished turn leaves prompts marked as
         // waiting long after they were answered; the result says exactly which ones it consumed
@@ -934,14 +954,22 @@ export class SessionRuntime {
         // A turn that only compacted the context is housekeeping, not an answer: it must not mark
         // the chat unread or raise a notification. A "/compact" the user typed counts as
         // housekeeping even though compacting writes a summary — that summary is not an answer to
-        // read — unless a real prompt was folded into the same turn.
-        const otherPrompts = [...consumed].filter((id) => {
+        // read — unless a real prompt was folded into the same turn. Only the prompts the user
+        // wrote count here: the notes the CLI puts in the chat itself (its echo of the command, a
+        // reminder, a task notification) are marked as such and are not something to read either,
+        // and a compaction that was refused ("Not enough messages to compact") is housekeeping too.
+        const turnPromptIds = new Set([...consumed, ...workingBefore.filter((id) => !takenNext.has(id))])
+        const prompts: string[] = []
+        for (const id of turnPromptIds) {
           const m = this.transcript.messages.find((x) => x.id === id)
-          return m?.kind === 'user' && !/^\s*\/compact\b/.test(m.text)
-        })
-        const compactionOnly = this.turnHadManualCompaction
-          ? otherPrompts.length === 0
-          : this.turnHadCompaction && !this.turnHadText
+          if (m && m.kind === 'user' && !m.synthetic) prompts.push(m.text)
+        }
+        const compactAsked = prompts.some(isCompactCommand)
+        const otherPrompts = prompts.filter((t) => !isCompactCommand(t))
+        const compactionOnly =
+          compactAsked || this.turnHadManualCompaction
+            ? otherPrompts.length === 0
+            : this.turnHadCompaction && !this.turnHadText
         this.turnHadCompaction = false
         this.turnHadManualCompaction = false
         this.turnHadText = false
