@@ -10,6 +10,13 @@ export const MODES: { value: PermissionMode; label: string; hint: string }[] = [
   { value: 'bypassPermissions', label: 'bypassPermissions — skip all permission checks', hint: 'Every action runs without asking (use with care)' }
 ]
 
+/**
+ * The modes ⇧⇥ steps through in a chat, in the order the terminal uses: ask before risky actions,
+ * then accept file edits, then read-only planning. The rarer modes stay in the picker in the chat
+ * header so a key press cannot land on them by accident.
+ */
+export const CYCLE_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan']
+
 export const EFFORTS: (EffortLevel | '')[] = ['', 'low', 'medium', 'high', 'xhigh', 'max']
 
 export const EFFORT_LABELS: Record<string, string> = {

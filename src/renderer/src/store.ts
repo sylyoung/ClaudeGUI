@@ -21,7 +21,7 @@ import type {
 import { applyTheme } from './lib/theme'
 import { comparatorFor } from '@shared/util'
 
-export type DialogKind = null | 'new-session' | 'import-session' | 'settings'
+export type DialogKind = null | 'new-session' | 'import-session' | 'settings' | 'shortcuts'
 export type SettingsTab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
 
 export interface Toast {

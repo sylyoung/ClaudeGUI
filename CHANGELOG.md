@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.16 — 2026-09-09
+
+### The plan-usage bars show the whole scale
+- **Every usage bar now carries the full scale at all times** — green up to the amber threshold,
+  amber up to 90 %, red above it — with the part you have not reached dimmed and a mark at the
+  point you stand on. Before, the bar was painted in one colour, the colour of the level you were
+  at, so at 2 % used there was no red anywhere on screen and nothing showed how far the red was.
+- **The percentage is coloured too**, in the same three colours, so a pill is never plain grey.
+- The breakdown behind the pills uses the same bars, one size larger, and says in words what the
+  scale means: "whole scale: green to 50 %, amber to 90 %, red above".
+
+### The keys of the terminal chat window
+- **Double tap on Escape rewinds**, as in the terminal. It opens a list of the prompts you have sent
+  in this chat, newest first, with a filter box; picking one opens the rewind window that asks
+  whether only the conversation or the conversation together with the files should go back.
+- **A single Escape stops the turn that is running** and puts the prompt back in the input box.
+- **⇧⇥ steps through the permission modes** — ask before risky actions → accept file edits →
+  read-only planning — and says in a message which one is now in force.
+- **A keyboard button beside the input box lists every shortcut** in plain language, also reachable
+  with ⌘/ and from the Session menu, because the terminal's "? for shortcuts" had no counterpart
+  here. The hint under the input box now mentions "esc esc rewind".
+
 ## 1.0.15 — 2026-09-07
 
 ### Two states for a prompt, and nothing else

@@ -75,6 +75,14 @@ src/
 ```
 
 ## Rewinding a chat
+A double tap on Escape opens `RewindPicker`, the list of the prompts you have sent in this chat
+(newest first, waiting ones left out because there is nothing after them to remove); picking one
+opens `RewindDialog`, which is where the choice between the conversation alone and the conversation
+together with the files is made. The same window is reachable from the button on your own prompt and
+from its right-click menu. Escape is handled in `ChatView`: a single press stops the turn that is
+running, a second press within 700 ms opens the picker, and a dialog that is open keeps Escape for
+itself. `⇧⇥` steps through `CYCLE_MODES` (default → acceptEdits → plan), as it does in the terminal.
+
 `SessionRuntime.rewindPreview(messageId)` asks the CLI (`query.rewindFiles(uuid, { dryRun: true })`)
 what would change on disk; `rewind(messageId, restoreFiles)` optionally calls `rewindFiles` for real,
 stops the process, drops every transcript message from that prompt on and remembers a fork point.
@@ -188,6 +196,12 @@ answered instead of the one still waiting below it.
   normalises the `limits[]` array (session / weekly_all / weekly_scoped per model) plus credits.
 - Fallbacks: the structured `/usage` of a running session (through the host), then the
   `rate_limit_event` messages every API response carries (merged per window).
+- Every bar (`ScaleBar` in `UsageStatus.tsx`) is painted with the whole scale — green up to the
+  amber threshold from the settings, amber up to 90 %, red above — with the stretch beyond the
+  current percentage faded by an overlay and a needle on the percentage itself. A bar in the colour
+  of the current level alone showed no red at all until a limit was nearly exhausted, which is not
+  what a meter is for; the thresholds themselves are unchanged and still match the terminal's
+  status line.
 
 ## Sidebar order, views and groups
 - `SessionRecord.groupId` / `order` / `lastPromptAt` / `lastModel`; `SessionGroup {id, name, order,

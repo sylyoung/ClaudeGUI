@@ -224,6 +224,7 @@ function buildMenu(): void {
         { label: 'Start All Session Processes', click: () => send('menu:start-all') },
         { type: 'separator' },
         { label: 'Interrupt Current Turn', accelerator: 'Cmd+.', click: () => send('menu:interrupt') },
+        { label: 'Keyboard Shortcuts', accelerator: 'Cmd+/', click: () => send('menu:shortcuts') },
         { type: 'separator' },
         { label: 'Refresh Usage Limits', click: () => void usage?.refresh('menu') }
       ]

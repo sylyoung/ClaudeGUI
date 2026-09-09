@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-07 (session 4, v1.0.15)
+Last updated: 2026-09-09 (session 4, v1.0.16)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -133,6 +133,22 @@ survive app restarts.
 - [x] Verified live in an isolated instance (haiku, sandbox/compact-queue, port 45199) with a probe
       recording every state change: queued during the compaction → being answered when the CLI took
       it → answered when its turn ended; ordinary queueing during a normal turn unchanged
+
+### v1.0.16
+- [x] Plan-usage bars show the whole scale at all times (green to the amber threshold, amber to 90 %,
+      red above), with the unreached stretch faded and a needle on the current percentage; the
+      percentage itself is coloured, and the breakdown says in words what the scale means
+- [x] Double tap on Escape opens the rewind list (`RewindPicker`) — the prompts of this chat, newest
+      first, with a filter box — and picking one opens the existing rewind window
+- [x] A single Escape stops the running turn and puts the prompt back into the input box
+- [x] `⇧⇥` steps through the permission modes (default → acceptEdits → plan) with a message naming
+      the new one
+- [x] Every shortcut is listed in a window of its own, reachable from a button beside the input box,
+      from `⌘/` and from the Session menu
+- [x] Verified live in the dev instance: Esc Esc opened the picker and Enter opened the rewind window
+      for the chosen prompt; ⇧⇥ walked default → acceptEdits → plan → default (host state read back
+      each time); Escape during a running turn interrupted it and the prompt reappeared in the box;
+      screenshots of the pills (light and dark) and of the breakdown in `sandbox/shots/`
 
 ### v1.0.15
 - [x] A prompt has two states and no others: registered (Claude Code has taken it; it stands above

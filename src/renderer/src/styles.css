@@ -445,13 +445,21 @@ code .file-link { border: none; background: none; }
 .usage-pill { display: inline-grid; grid-template-columns: auto auto; column-gap: 3px; row-gap: 2px; align-items: center; padding: 2px 5px 3px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-elev2); font-size: 10.5px; line-height: 1.1; color: var(--text-dim); }
 .usage-pill .u-label { font-weight: 600; letter-spacing: 0.02em; }
 .usage-pill .u-pct { font-family: var(--mono); text-align: right; }
-.usage-pill .u-bar { grid-column: 1 / span 2; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
-.usage-pill .u-bar > span { display: block; height: 100%; background: var(--ctx-ok); }
-.usage-pill.sev-warning { color: var(--ctx-warn); border-color: rgba(210, 153, 34, 0.5); }
-.usage-pill.sev-warning .u-bar > span { background: var(--ctx-warn); }
-.usage-pill.sev-critical, .usage-pill.sev-locked { color: var(--ctx-high); border-color: rgba(218, 54, 51, 0.5); }
-.usage-pill.sev-critical .u-bar > span, .usage-pill.sev-locked .u-bar > span { background: var(--ctx-high); }
+/* The bar carries the whole scale at all times — green up to the amber threshold, amber up to
+   90 %, red above — so the red end is on screen even when almost nothing is used. `.u-rest` dims
+   the part you have not reached and `.u-needle` marks exactly where you stand. */
+.usage-pill .u-bar { grid-column: 1 / span 2; position: relative; min-width: 82px; height: 6px; border-radius: 3px; overflow: hidden; }
+/* The stretch you have not reached is faded but still in its own colour, so the red end stays
+   recognisable; the needle is the sharp edge between "used" and "left". */
+.u-rest { position: absolute; top: 0; bottom: 0; right: 0; background: var(--bg-elev2); opacity: 0.5; }
+.u-needle { position: absolute; top: -1px; bottom: -1px; width: 3px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1px var(--bg-elev2); }
+.usage-pill .u-pct { color: var(--ctx-ok); }
+.usage-pill.sev-warning { border-color: rgba(210, 153, 34, 0.5); }
+.usage-pill.sev-warning .u-pct { color: var(--ctx-warn); }
+.usage-pill.sev-critical, .usage-pill.sev-locked { border-color: rgba(218, 54, 51, 0.5); }
+.usage-pill.sev-critical .u-pct, .usage-pill.sev-locked .u-pct { color: var(--ctx-high); }
 .usage-pill.sev-unknown { display: inline-flex; gap: 4px; }
+.usage-pill.sev-unknown .u-pct { color: inherit; }
 .usage-checked { display: inline-flex; align-items: center; gap: 2px; font-size: 10px; color: var(--text-faint); font-family: var(--mono); padding: 0 2px; white-space: nowrap; }
 .popover { position: fixed; z-index: 250; background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 12px 40px var(--shadow); padding: 12px 14px; user-select: text; max-height: calc(100vh - 80px); overflow: auto; }
 .pop-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
@@ -460,15 +468,23 @@ code .file-link { border: none; background: none; }
 .u-row-head { display: flex; justify-content: space-between; align-items: center; }
 .u-name { font-weight: 500; }
 .u-val { font-family: var(--mono); font-weight: 600; }
-.u-track { position: relative; height: 8px; border-radius: 4px; background: var(--bg-elev2); border: 1px solid var(--border); overflow: hidden; }
-.u-fill { height: 100%; background: var(--ctx-ok); transition: width 0.3s; }
-.u-mark { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--amber); opacity: 0.6; }
-.usage-row.sev-warning .u-fill, .usage-row.sev-warning .u-val { background-color: var(--ctx-warn); }
-.usage-row.sev-warning .u-val { background: none; color: var(--amber); }
-.usage-row.sev-critical .u-fill, .usage-row.sev-locked .u-fill { background: var(--ctx-high); }
+/* Same full scale in the breakdown, one size larger. */
+.u-track { display: block; position: relative; height: 10px; border-radius: 5px; border: 1px solid var(--border); overflow: hidden; }
+.u-track .u-needle { top: -1px; bottom: -1px; width: 3px; }
+.u-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-faint); }
+.u-legend .swatch { display: inline-block; width: 26px; height: 6px; border-radius: 3px; }
+.u-val { color: var(--ctx-ok); }
+.usage-row.sev-warning .u-val { color: var(--ctx-warn); }
 .usage-row.sev-critical .u-val, .usage-row.sev-locked .u-val { color: var(--ctx-high); }
+.usage-row.sev-unknown .u-val { color: var(--text-faint); }
 .u-sub { font-size: 11.5px; color: var(--text-faint); }
 .u-footer { font-size: 11px; line-height: 1.5; border-top: 1px solid var(--border); padding-top: 8px; }
+
+/* The keyboard-shortcut list: one key and its plain-language meaning per line. */
+.shortcuts { display: flex; flex-direction: column; gap: 16px; overflow: auto; }
+.sc-group h3 { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); margin: 0 0 6px; }
+.sc-row { display: grid; grid-template-columns: 96px 1fr; gap: 10px; align-items: baseline; padding: 3px 0; font-size: 12.5px; }
+.sc-row .kbd { justify-self: start; white-space: nowrap; }
 
 /* ---------- files panel ---------- */
 .files { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--bg-elev); border-left: 1px solid var(--border); flex-shrink: 0; min-width: 0; overflow: hidden; }

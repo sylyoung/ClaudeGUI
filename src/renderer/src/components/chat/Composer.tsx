@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, ImagePlus, Square, X } from 'lucide-react'
+import { ArrowUp, ImagePlus, Keyboard, Square, X } from 'lucide-react'
 import type { ImageAttachment, SessionLiveState, SlashCommandView } from '@shared/types'
 import { useStore } from '@/store'
 
@@ -62,6 +62,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
   const draftBeforeHistory = useRef('')
   const takeBackQueued = useStore((s) => s.takeBackQueued)
   const toast = useStore((s) => s.toast)
+  const setDialog = useStore((s) => s.setDialog)
   const recall = (index: number) => {
     const entry = index < 0 ? null : history[index]
     setHistoryIndex(index)
@@ -349,9 +350,13 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
           <button className="btn ghost icon" data-tip="Attach images (you can also paste or drop them here)" onClick={pickImages}>
             <ImagePlus size={15} />
           </button>
+          <button className="btn ghost icon" data-tip="All keyboard shortcuts (⌘/)" onClick={() => setDialog('shortcuts')}>
+            <Keyboard size={15} />
+          </button>
           <span className="composer-hint">
             {sendWithEnter ? '⏎ send · ⇧⏎ newline' : '⌘⏎ send'}
             {history.length > 0 ? ' · ↑ earlier prompt' : ''}
+            {' · esc esc rewind'}
             {live?.queuedCount ? ` · ${live.queuedCount} queued` : ''}
           </span>
           <span className="spacer" />

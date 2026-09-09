@@ -14,12 +14,13 @@ import { ContextBar } from './ContextBar'
 import { ChatProvider, type ChatCtx } from './ChatContext'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
 import { RewindDialog } from '../dialogs/RewindDialog'
+import { RewindPicker } from '../dialogs/RewindPicker'
 import { UsageStatus } from '../status/UsageStatus'
 import { formatBytes, formatDateTime, modelFamily, modelLabel, shortenPath, timeAgo } from '@/lib/format'
 import { visualState } from '@/lib/sessionState'
 import { sessionMenuItems } from '@/lib/sessionMenu'
 
-import { EFFORTS, EFFORT_LABELS, EFFORT_SHORT, MODES } from '@/lib/options'
+import { CYCLE_MODES, EFFORTS, EFFORT_LABELS, EFFORT_SHORT, MODES } from '@/lib/options'
 
 const EMPTY_MESSAGES: never[] = []
 /** Folder-size thresholds of the status row: amber above 5 GB, red above 20 GB. */
@@ -89,6 +90,8 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const [colorPick, setColorPick] = useState<{ x: number; y: number } | null>(null)
   /** Prompt the rewind window is open for. */
   const [rewindId, setRewindId] = useState<string | null>(null)
+  /** The list of earlier prompts that a double tap on Escape opens. */
+  const [pickRewind, setPickRewind] = useState(false)
   const toolDetailsMode = useStore((s) => s.toolDetails)
   const toolCardsExpanded = useStore((s) => s.settings?.toolCardsExpanded ?? false)
   const toolDetails = toolDetailsMode ? toolDetailsMode === 'expand' : toolCardsExpanded
@@ -217,6 +220,40 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [live?.pendingPermissions, onAnswer])
+
+  /**
+   * The keys the chat window in the terminal has: Escape stops the turn that is running, a second
+   * Escape within a moment opens the list of earlier prompts to rewind to, and ⇧⇥ steps through the
+   * permission modes. A dialog that is open owns Escape itself, and the command menu in the input
+   * box stops its own Escape from reaching here, so neither counts as a tap.
+   */
+  const escAt = useRef(0)
+  const running = status === 'running' || status === 'requires_action'
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.repeat) {
+        if (useStore.getState().dialog || rewindId || pickRewind) return
+        const doubleTap = Date.now() - escAt.current < 700
+        escAt.current = doubleTap ? 0 : Date.now()
+        if (doubleTap) setPickRewind(true)
+        else if (running) onInterrupt()
+        return
+      }
+      if (e.key === 'Tab' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (useStore.getState().dialog || rewindId || pickRewind) return
+        e.preventDefault()
+        const current = live?.permissionMode ?? record.permissionMode
+        const i = CYCLE_MODES.indexOf(current as PermissionMode)
+        const next = CYCLE_MODES[(i + 1) % CYCLE_MODES.length]
+        window.api.sessions
+          .setPermissionMode(record.id, next)
+          .then(() => toast(`Permission mode: ${MODES.find((m) => m.value === next)?.label ?? next}`, 'info'))
+          .catch((err) => toast((err as Error).message, 'error'))
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [running, onInterrupt, rewindId, pickRewind, live?.permissionMode, record.id, record.permissionMode, toast])
 
   const models = live?.models?.length ? live.models.map((m) => ({ value: m.value, label: `${m.displayName} (${m.value})`, short: m.displayName, hint: m.description })) : FALLBACK_MODELS.filter((m) => m.value).map((m) => ({ value: m.value, label: m.label, short: modelLabel(m.value) }))
   const currentModel = record.model ?? ''
@@ -455,6 +492,13 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
         <Composer sessionId={record.id} live={live} onSend={onSend} onInterrupt={onInterrupt} />
         {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
         {rewindId && <RewindDialog sessionId={record.id} messageId={rewindId} onClose={() => setRewindId(null)} />}
+        {pickRewind && (
+          <RewindPicker
+            sessionId={record.id}
+            onPick={(messageId) => { setPickRewind(false); setRewindId(messageId) }}
+            onClose={() => setPickRewind(false)}
+          />
+        )}
         {colorPick && group && (
           <GroupColorPicker x={colorPick.x} y={colorPick.y} color={group.color} title={`Colour of "${group.name}"`} onPick={(c) => window.api.sessions.setGroupColor(group.id, c).catch(fail)} onClose={() => setColorPick(null)} />
         )}

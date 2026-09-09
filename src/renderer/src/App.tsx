@@ -6,6 +6,7 @@ import { FilePanel } from './components/files/FilePanel'
 import { NewSessionDialog } from './components/dialogs/NewSessionDialog'
 import { ImportSessionDialog } from './components/dialogs/ImportSessionDialog'
 import { SettingsDialog } from './components/dialogs/SettingsDialog'
+import { ShortcutsDialog } from './components/dialogs/ShortcutsDialog'
 import { UsageStatus } from './components/status/UsageStatus'
 import { StatusBoard } from './components/StatusBoard'
 import { TooltipLayer } from './components/common/Tooltip'
@@ -88,6 +89,7 @@ export default function App() {
         case 'menu:toggle-git': s.showPanelTab('git'); break
         case 'menu:search': s.focusSearch(); break
         case 'menu:interrupt': if (s.activeId) void s.interruptSession(s.activeId); break
+        case 'menu:shortcuts': s.setDialog('shortcuts'); break
         case 'menu:toggle-board': void s.setSettings({ showStatusBoard: !(s.settings?.showStatusBoard ?? true) }); break
         case 'menu:toggle-view': void s.setSettings({ sidebarView: (s.settings?.sidebarView ?? 'groups') === 'groups' ? 'recent' : 'groups' }); break
         case 'menu:select-all': s.setSelectedIds(currentOrder(s).map((r) => r.id)); break
@@ -171,6 +173,7 @@ export default function App() {
       {dialog === 'new-session' && <NewSessionDialog onClose={() => setDialog(null)} />}
       {dialog === 'import-session' && <ImportSessionDialog onClose={() => setDialog(null)} />}
       {dialog === 'settings' && <SettingsDialog onClose={() => setDialog(null)} />}
+      {dialog === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
       <div className="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.kind}`} onClick={() => useStore.getState().dismissToast(t.id)}>

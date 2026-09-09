@@ -31,6 +31,34 @@ const SOURCE_LABEL: Record<string, string> = {
   none: 'nothing yet'
 }
 
+/**
+ * The whole scale, always on screen: green from 0 to the amber threshold, amber up to 90 %, red
+ * above it — the same cut-offs the status line in the terminal uses. Painting the full scale means
+ * the red end is visible even when almost nothing is used, so a bar can be read at a glance
+ * without remembering where the colours change.
+ */
+function scaleBackground(warn: number): string {
+  const w = Math.min(85, Math.max(10, Math.round(warn)))
+  return `linear-gradient(to right, var(--ctx-ok) 0 ${w}%, var(--ctx-warn) ${w}% ${CRITICAL}%, var(--ctx-high) ${CRITICAL}% 100%)`
+}
+
+/** Where the scale turns red. Matches CRITICAL_PERCENT in the main process's usage service. */
+const CRITICAL = 90
+
+/**
+ * A bar showing the full scale with the part you have not reached dimmed and a needle at the
+ * current percentage, so both "how much is used" and "how close to the red" are readable.
+ */
+function ScaleBar({ percent, warn, className }: { percent: number | null; warn: number; className: string }) {
+  const p = Math.min(100, Math.max(0, percent ?? 0))
+  return (
+    <span className={className} style={{ background: scaleBackground(warn) }}>
+      <span className="u-rest" style={{ left: `${p}%` }} />
+      {percent != null && <span className="u-needle" style={{ left: `min(max(0%, calc(${p}% - 1px)), calc(100% - 2px))` }} />}
+    </span>
+  )
+}
+
 /** "Update 1.0.3" / "Building…" / "Restart to 1.0.3" pill shown next to the usage limits. */
 export function UpdatePill() {
   const u = useStore((s) => s.update)
@@ -50,6 +78,7 @@ export function UpdatePill() {
 export function UsageStatus({ compact }: { compact?: boolean }) {
   const usage = useStore((s) => s.usage)
   const enabled = useStore((s) => s.settings?.showUsageStatus ?? true)
+  const warn = useStore((s) => s.settings?.usageWarnPercent ?? 50)
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLButtonElement>(null)
   useTick()
@@ -66,12 +95,14 @@ export function UsageStatus({ compact }: { compact?: boolean }) {
           </span>
         )}
         {shown.map((w) => (
-          <span key={w.key} className={`usage-pill sev-${w.severity}`} data-tip={`${w.label}: ${formatPercent(w.percent)} used${w.resetsAt ? ` · resets ${timeUntil(w.resetsAt)}` : ''}`}>
+          <span
+            key={w.key}
+            className={`usage-pill sev-${w.severity}`}
+            data-tip={`${w.label}: ${formatPercent(w.percent)} used${w.resetsAt ? ` · resets ${timeUntil(w.resetsAt)}` : ''}. The bar is the whole scale: green to ${warn} %, amber to ${CRITICAL} %, red above; the mark is where you stand.`}
+          >
             <span className="u-label">{shortLabel(w)}</span>
             <span className="u-pct">{formatPercent(w.percent)}</span>
-            <span className="u-bar">
-              <span style={{ width: `${Math.min(100, Math.max(0, w.percent ?? 0))}%` }} />
-            </span>
+            <ScaleBar className="u-bar" percent={w.percent} warn={warn} />
           </span>
         ))}
         <span className="usage-checked" data-tip={usage.fetchedAt ? `Last check ${formatDateTime(usage.fetchedAt)}` : 'Not checked yet'}>
@@ -90,7 +121,7 @@ export function UsageStatus({ compact }: { compact?: boolean }) {
 
 export function UsageDetails() {
   const usage = useStore((s) => s.usage)
-  const warn = useStore((s) => s.settings?.usageWarnPercent ?? 80)
+  const warn = useStore((s) => s.settings?.usageWarnPercent ?? 50)
   useTick(10_000)
   return (
     <div className="usage-details">
@@ -110,6 +141,12 @@ export function UsageDetails() {
         </div>
       )}
       {usage.windows.length === 0 && !usage.error && <div className="faint">No limit information yet. Limits appear after the first check or the first API response.</div>}
+      {usage.windows.length > 0 && (
+        <div className="u-legend">
+          <span className="swatch" style={{ background: scaleBackground(warn) }} />
+          <span>whole scale: green to {warn} %, amber to {CRITICAL} %, red above — the mark is where the limit stands</span>
+        </div>
+      )}
       {usage.windows.map((w) => (
         <div key={w.key} className={`usage-row sev-${w.severity}`}>
           <div className="u-row-head">
@@ -119,10 +156,7 @@ export function UsageDetails() {
             </span>
             <span className="u-val">{formatPercent(w.percent)}</span>
           </div>
-          <div className="u-track">
-            <div className="u-fill" style={{ width: `${Math.min(100, Math.max(0, w.percent ?? 0))}%` }} />
-            <div className="u-mark" style={{ left: `${warn}%` }} data-tip={`warning threshold ${warn}%`} />
-          </div>
+          <ScaleBar className="u-track" percent={w.percent} warn={warn} />
           <div className="u-sub">
             {w.resetsAt ? `resets ${timeUntil(w.resetsAt)} · ${formatDateTime(w.resetsAt)}` : 'no reset time reported'}
             {w.detail ? ` · ${w.detail}` : ''}
