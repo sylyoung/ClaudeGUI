@@ -162,6 +162,12 @@ export interface SessionLiveState {
    * reads its state from the transcript instead.
    */
   promptDelivery: Record<string, PromptDelivery>
+  /** Shell commands typed after "!" that are still running, by the id of their row in the chat. */
+  runningShellIds?: string[]
+  /** When this chat last failed because Claude Code's login was not accepted (cleared by the next real answer). */
+  authFailedAt?: number
+  /** What Claude Code said when that happened. */
+  authError?: string
 }
 
 /** A prompt is waiting in Claude Code's queue, or is being answered by the turn running now. */
@@ -511,6 +517,27 @@ export interface UsageSnapshot {
   error?: string
   nextCheckAt?: number
   checking?: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code login
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether Claude Code can authenticate, as far as the app can tell without touching the tokens:
+ * the login it stored (macOS Keychain or ~/.claude/.credentials.json) and `claude auth status`.
+ */
+export interface AuthState {
+  /** signed-in: a claude.ai login is stored · signed-out: none, chats cannot run · api-key: another way of signing in */
+  status: 'unknown' | 'signed-in' | 'signed-out' | 'api-key'
+  checkedAt: number
+  /** Since when the status has been what it is (epoch ms); chat failures from before do not count. */
+  statusSince?: number
+  subscription?: string
+  /** When Claude Code's stored refresh token stops being accepted (epoch ms), if it recorded that. */
+  loginEndsAt?: number
+  /** A sign-in started from the app: the browser page to finish it on, and how it went. */
+  signIn?: { phase: 'starting' | 'waiting' | 'done' | 'failed' | 'cancelled'; url?: string; message?: string }
 }
 
 // ---------------------------------------------------------------------------

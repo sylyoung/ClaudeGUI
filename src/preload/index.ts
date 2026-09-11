@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AppInfo,
+  AuthState,
   AppSettings,
   ChatMessage,
   CliSessionSummary,
@@ -88,6 +89,14 @@ const api = {
     get: () => invoke<UsageSnapshot>('usage:get'),
     refresh: () => invoke<UsageSnapshot>('usage:refresh')
   },
+  /** Claude Code's login: whether it can authenticate, and signing it in again. */
+  auth: {
+    state: () => invoke<AuthState>('auth:state'),
+    check: () => invoke<AuthState>('auth:check'),
+    signIn: () => invoke<AuthState>('auth:signIn'),
+    submitCode: (code: string) => invoke<void>('auth:submitCode', code),
+    cancelSignIn: () => invoke<void>('auth:cancelSignIn')
+  },
   sessions: {
     list: () => invoke<{ records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] }>('sessions:list'),
     history: (id: string) => invoke<ChatMessage[]>('sessions:history', id),
@@ -95,6 +104,11 @@ const api = {
       invoke<SessionRecord>('sessions:create', opts),
     importCli: (sessionId: string, cwd: string, title?: string) => invoke<SessionRecord>('sessions:importCli', sessionId, cwd, title),
     listCli: (dir?: string) => invoke<CliSessionSummary[]>('sessions:listCli', dir),
+    /** Copy a chat into a new one (like Claude Code's /branch); the original is not changed. */
+    fork: (id: string, name?: string) => invoke<SessionRecord>('sessions:fork', id, name),
+    /** Run a shell command typed after "!"; returns the id of its row in the chat. */
+    runShell: (id: string, command: string) => invoke<string>('sessions:runShell', id, command),
+    stopShell: (id: string, runId: string) => invoke<void>('sessions:stopShell', id, runId),
     send: (id: string, text: string, images?: ImageAttachment[]) => invoke<string>('sessions:send', id, text, images),
     start: (id: string) => invoke<void>('sessions:start', id),
     stop: (id: string) => invoke<void>('sessions:stop', id),
@@ -194,6 +208,7 @@ const api = {
     onSessionEvent: (cb: (e: SessionEvent) => void) => on<SessionEvent>('session:event', cb),
     onFsChanged: (cb: (dir: string) => void) => on<string>('fs:changed', cb),
     onUsage: (cb: (s: UsageSnapshot) => void) => on<UsageSnapshot>('usage:update', cb),
+    onAuth: (cb: (s: AuthState) => void) => on<AuthState>('auth:update', cb),
     onTheme: (cb: (t: ThemeInfo) => void) => on<ThemeInfo>('theme:changed', cb),
     onSettingsChanged: (cb: (s: AppSettings) => void) => on<AppSettings>('settings:changed', cb),
     onUpdate: (cb: (s: UpdateState) => void) => on<UpdateState>('update:changed', cb),

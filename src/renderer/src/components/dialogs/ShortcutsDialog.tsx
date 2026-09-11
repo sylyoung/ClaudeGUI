@@ -13,6 +13,8 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
       ['⏎', 'Send the message (⇧⏎ makes a new line). With "send with Enter" switched off it is ⌘⏎ that sends.'],
       ['↑ / ↓', 'Walk through the prompts you typed in this chat. A prompt Claude Code has not taken yet is pulled out of the queue when you bring it back here.'],
       ['/', 'Commands and skills, anywhere in the sentence — not only at the start of the box.'],
+      ['!', 'Run the rest of the line as a shell command in the chat\'s folder, as in the terminal. Claude reads the command and what it printed with your next message.'],
+      ['/branch', 'Fork the chat: the conversation is copied into a new chat in the same folder and you continue there; the original is not changed. Also in the right-click menu and the chat header.'],
       ['⌘L', 'Put the cursor in the input box.'],
       ['paste, drop', 'Text stays text; an image is attached only when the clipboard holds no text.']
     ]

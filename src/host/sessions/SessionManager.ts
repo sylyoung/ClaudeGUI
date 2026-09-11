@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { compareRecords, lastPromptOf } from '@shared/util'
 import { nextGroupColor } from '@shared/colors'
-import { deleteSession, listSessions } from '@anthropic-ai/claude-agent-sdk'
+import { deleteSession, forkSession, getSessionInfo, listSessions } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AppSettings,
   ChatMessage,
@@ -206,10 +206,15 @@ export class SessionManager {
   moveSession(id: string, move: SessionMove): void {
     const rt = this.get(id)
     const target = move.groupId || undefined
-    const members = [...this.runtimes.values()].filter((r) => r.id !== id && (r.record.groupId || undefined) === target).sort((a, b) => compareRecords(a.record, b.record))
+    // Chats working in the same folder belong to one group, so they move together — except when a
+    // chat is only being put in another place among them.
+    const siblings = [...this.runtimes.values()].filter((r) => r.id !== id && r.record.cwd === rt.record.cwd).sort((a, b) => compareRecords(a.record, b.record))
+    const moving = move.beforeId && siblings.some((r) => r.id === move.beforeId) ? [rt] : [rt, ...siblings]
+    const movingIds = new Set(moving.map((r) => r.id))
+    const members = [...this.runtimes.values()].filter((r) => !movingIds.has(r.id) && (r.record.groupId || undefined) === target).sort((a, b) => compareRecords(a.record, b.record))
     const idx = move.beforeId ? members.findIndex((r) => r.id === move.beforeId) : -1
-    members.splice(idx >= 0 ? idx : members.length, 0, rt)
-    rt.record.groupId = target
+    members.splice(idx >= 0 ? idx : members.length, 0, ...moving)
+    for (const r of moving) r.record.groupId = target
     members.forEach((r, i) => {
       r.record.order = i
     })
@@ -263,7 +268,8 @@ export class SessionManager {
     const id = randomUUID()
     const now = Date.now()
     const settings = this.host.getSettings()
-    const groupId = opts.groupId && this.store.listGroups().some((g) => g.id === opts.groupId) ? opts.groupId : undefined
+    // Chats that work in the same folder belong to the same group, unless a group was chosen.
+    const groupId = opts.groupId && this.store.listGroups().some((g) => g.id === opts.groupId) ? opts.groupId : this.folderGroup(cwd)
     const record: SessionRecord = {
       id,
       claudeSessionId: id,
@@ -304,7 +310,8 @@ export class SessionManager {
       createdAt: now,
       lastActiveAt: now,
       source: 'cli-import',
-      order: this.topOrder(undefined)
+      groupId: this.folderGroup(cwd),
+      order: this.topOrder(this.folderGroup(cwd))
     }
     this.store.upsertSession(record)
     const rt = this.makeRuntime(record)
@@ -312,6 +319,75 @@ export class SessionManager {
     this.host.broadcast({ type: 'record', record })
     this.host.broadcast({ type: 'state', state: rt.live })
     return record
+  }
+
+  /** The group of the chats already working in this folder, if any. */
+  private folderGroup(cwd: string): string | undefined {
+    return [...this.runtimes.values()].find((r) => r.record.cwd === cwd && r.record.groupId)?.record.groupId
+  }
+
+  /**
+   * Copy a chat into a new one, as Claude Code's /branch does: the new chat gets the conversation so
+   * far under its own id, name and history, in the same folder and group, and the original chat is
+   * left exactly as it was — its process, its queue and its transcript file are not touched.
+   */
+  async fork(id: string, name?: string): Promise<SessionRecord> {
+    const src = this.get(id).record
+    const title = name?.trim() || this.branchTitle(src.title)
+    let sessionId: string
+    try {
+      sessionId = (await forkSession(src.claudeSessionId, { dir: src.cwd, title })).sessionId
+    } catch (err) {
+      const info = await getSessionInfo(src.claudeSessionId, { dir: src.cwd }).catch(() => undefined)
+      if (!info) throw new Error('This chat has no conversation yet, so there is nothing to fork.')
+      throw err
+    }
+    const now = Date.now()
+    const record: SessionRecord = {
+      id: sessionId,
+      claudeSessionId: sessionId,
+      title,
+      autoTitle: false,
+      cwd: src.cwd,
+      model: src.model,
+      permissionMode: src.permissionMode,
+      effort: src.effort,
+      createdAt: now,
+      lastActiveAt: now,
+      lastPromptAt: src.lastPromptAt,
+      lastModel: src.lastModel,
+      source: 'gui',
+      groupId: src.groupId,
+      // Directly below the original in a group ordered by hand.
+      order: typeof src.order === 'number' ? src.order + 0.5 : undefined
+    }
+    this.store.upsertSession(record)
+    const rt = this.makeRuntime(record)
+    this.runtimes.set(record.id, rt)
+    this.host.broadcast({ type: 'record', record })
+    this.host.broadcast({ type: 'state', state: rt.live })
+    this.host.log(`[manager] forked ${id} -> ${sessionId}`)
+    return record
+  }
+
+  /** "<title> (Branch)", then "(Branch 2)", "(Branch 3)"… — the names Claude Code gives its branches. */
+  private branchTitle(title: string): string {
+    const base = title.replace(/ \(Branch(?: \d+)?\)$/, '') || 'Chat'
+    const taken = new Set([...this.runtimes.values()].map((r) => r.record.title))
+    if (!taken.has(`${base} (Branch)`)) return `${base} (Branch)`
+    let n = 2
+    while (taken.has(`${base} (Branch ${n})`)) n++
+    return `${base} (Branch ${n})`
+  }
+
+  async runShell(id: string, command: string): Promise<string> {
+    const runId = await this.get(id).runShell(command)
+    this.refreshBadge()
+    return runId
+  }
+
+  stopShell(id: string, runId: string): void {
+    this.get(id).stopShell(runId)
   }
 
   async listCli(dir?: string, limit = 300): Promise<CliSessionSummary[]> {

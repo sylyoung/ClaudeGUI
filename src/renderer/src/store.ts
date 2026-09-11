@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  AuthState,
   AppInfo,
   AppSettings,
   ChatMessage,
@@ -21,7 +22,7 @@ import type {
 import { applyTheme } from './lib/theme'
 import { comparatorFor } from '@shared/util'
 
-export type DialogKind = null | 'new-session' | 'import-session' | 'settings' | 'shortcuts'
+export type DialogKind = null | 'new-session' | 'import-session' | 'settings' | 'shortcuts' | 'sign-in'
 export type SettingsTab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
 
 export interface Toast {
@@ -74,6 +75,8 @@ interface State {
   settings?: AppSettings
   theme: ThemeInfo
   usage: UsageSnapshot
+  /** Whether Claude Code can authenticate (see AuthNotice). */
+  auth: AuthState
   update: UpdateState
   records: Record<string, SessionRecord>
   live: Record<string, SessionLiveState>
@@ -142,6 +145,9 @@ interface State {
   receiveSettings: (s: AppSettings) => void
   setTheme: (t: ThemeInfo) => void
   setUsage: (u: UsageSnapshot) => void
+  setAuth: (a: AuthState) => void
+  /** Copy a chat into a new one, as Claude Code's /branch does, and open the new chat. */
+  forkSession: (id: string, name?: string) => Promise<void>
   openFile: (sessionId: string, path: string, line?: number) => void
   closeFile: (sessionId: string, path: string) => void
   setActiveFile: (sessionId: string, path: string | undefined) => void
@@ -190,6 +196,7 @@ export const useStore = create<State>((set, get) => ({
   ready: false,
   theme: { systemDark: localStorage.getItem('theme-dark') !== '0', accent: '#007aff' },
   usage: { fetchedAt: 0, source: 'none', windows: [] },
+  auth: { status: 'unknown', checkedAt: 0 },
   update: { status: 'idle', currentVersion: '', log: [], autoRestart: true },
   records: {},
   live: {},
@@ -231,6 +238,7 @@ export const useStore = create<State>((set, get) => ({
     for (const l of list.live) live[l.id] = l
     applyTheme(settings, theme)
     set({ appInfo: info, settings, theme, usage, update, records, live, groups: list.groups ?? [], ready: true })
+    window.api.auth.state().then((auth) => set({ auth })).catch(() => undefined)
     const last = localStorage.getItem('activeId')
     const initial = last && records[last] ? last : currentOrder({ records, groups: list.groups ?? [], showArchived: false, settings })[0]?.id
     if (initial) await get().selectSession(initial)
@@ -240,6 +248,19 @@ export const useStore = create<State>((set, get) => ({
         if (n) get().toast(n.text, n.kind)
       })
       .catch(() => undefined)
+  },
+
+  setAuth: (auth) => set({ auth }),
+
+  forkSession: async (id, name) => {
+    try {
+      const record = await window.api.sessions.fork(id, name)
+      set((s) => ({ records: { ...s.records, [record.id]: record } }))
+      await get().selectSession(record.id)
+      get().toast(`Forked into "${record.title}". The original chat is unchanged.`, 'success')
+    } catch (err) {
+      get().toast(`Fork failed: ${(err as Error).message}`, 'error')
+    }
   },
 
   reloadSessions: async () => {
@@ -325,6 +346,23 @@ export const useStore = create<State>((set, get) => ({
   },
 
   send: async (id, text, images) => {
+    // "!" at the start runs the line as a shell command, as in the terminal ("！" is the same key
+    // typed with a Chinese input method on).
+    if (/^[!！]/.test(text) && !images?.length) {
+      try {
+        await window.api.sessions.runShell(id, text.slice(1))
+      } catch (err) {
+        get().restoreComposer(id, text)
+        get().toast((err as Error).message, 'error')
+      }
+      return
+    }
+    // "/branch [name]" forks the chat, as Claude Code's own /branch does.
+    const branch = /^\/branch(?:\s+([\s\S]*))?$/.exec(text.trim())
+    if (branch && !images?.length) {
+      await get().forkSession(id, branch[1])
+      return
+    }
     const entry = { text, images: images ?? [] }
     set((s) => ({ sentQueue: { ...s.sentQueue, [id]: [...(s.sentQueue[id] ?? []), entry] } }))
     try {

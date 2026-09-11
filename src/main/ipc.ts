@@ -8,6 +8,7 @@ import { splitList } from '@shared/util'
 import type { SettingsStore } from './store'
 import type { HostClient } from './hostClient'
 import type { UsageService } from './usageService'
+import type { AuthService } from './authService'
 import type { Updater } from './updater'
 import type { PermissionService } from './permissions'
 import { DirWatcher, listDir, locatePath, pathExists, probeFile, readFileContent, resolveMentionedPath } from './fsService'
@@ -19,6 +20,7 @@ export interface IpcContext {
   store: SettingsStore
   host: HostClient
   usage: UsageService
+  auth: AuthService
   updater: Updater
   permissions: PermissionService
   getWindow(): BrowserWindow | null
@@ -31,6 +33,21 @@ export interface IpcContext {
   takeStartupNotice(): StartupNotice | null
   replaceHost(): Promise<void>
   broadcast(channel: string, payload: unknown): void
+}
+
+/**
+ * The session host keeps running across updates, so it can be older than this window and not know a
+ * method the window now calls. Say what to do instead of "Unknown host method".
+ */
+async function needsCurrentHost<T>(call: Promise<T>, what: string): Promise<T> {
+  try {
+    return await call
+  } catch (err) {
+    if (/Unknown host method/.test((err as Error).message)) {
+      throw new Error(`${what} needs the session host of this ClaudeGUI version. The one running was started by an older version and keeps your chats alive; quit ClaudeGUI completely (⌘Q) and open it again to start the new one.`)
+    }
+    throw err
+  }
 }
 
 export function registerIpc(ctx: IpcContext): void {
@@ -94,6 +111,13 @@ export function registerIpc(ctx: IpcContext): void {
   handle('usage:get', () => ctx.usage.snapshot)
   handle('usage:refresh', () => ctx.usage.refresh('manual'))
 
+  // ---- Claude Code login
+  handle('auth:state', () => ctx.auth.state)
+  handle('auth:check', () => ctx.auth.check('manual'))
+  handle('auth:signIn', () => ctx.auth.signIn())
+  handle('auth:submitCode', (code: string) => ctx.auth.submitSignInCode(code))
+  handle('auth:cancelSignIn', () => ctx.auth.cancelSignIn())
+
   // ---- session host
   handle('host:status', async (): Promise<HostStatus> => {
     if (!host.connected) return host.status
@@ -139,6 +163,9 @@ export function registerIpc(ctx: IpcContext): void {
     return record
   })
   handle('sessions:listCli', (dir?: string) => host.listCli(dir))
+  handle('sessions:fork', (id: string, name?: string) => needsCurrentHost(host.fork(id, name), 'Forking a chat'))
+  handle('sessions:runShell', (id: string, command: string) => needsCurrentHost(host.runShell(id, command), 'Running a shell command with "!"'))
+  handle('sessions:stopShell', (id: string, runId: string) => host.stopShell(id, runId))
   handle('sessions:send', (id: string, text: string, images?: ImageAttachment[]) => host.send(id, text, images))
   handle('sessions:start', (id: string) => host.start(id))
   handle('sessions:stop', (id: string) => host.stop(id))

@@ -384,6 +384,15 @@ export class HostClient extends EventEmitter {
   importCli(sessionId: string, cwd: string, title?: string): Promise<SessionRecord> {
     return this.call('importCli', sessionId, cwd, title)
   }
+  fork(id: string, name?: string): Promise<SessionRecord> {
+    return this.call('fork', id, name)
+  }
+  runShell(id: string, command: string): Promise<string> {
+    return this.call('runShell', id, command)
+  }
+  stopShell(id: string, runId: string): Promise<void> {
+    return this.call('stopShell', id, runId)
+  }
   listCli(dir?: string): Promise<CliSessionSummary[]> {
     return this.call('listCli', dir)
   }

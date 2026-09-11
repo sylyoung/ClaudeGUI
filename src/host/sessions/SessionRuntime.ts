@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 import fs from 'fs'
 import os from 'os'
@@ -106,6 +107,58 @@ function isCompactCommand(text: string): boolean {
 const FLUSH_MS = 45
 /** How long a chat may stay quiet before a prompt still marked as being answered is let go. */
 const DELIVERY_QUIET_MS = 10_000
+/** A shell command typed after "!" is stopped after this long. */
+const SHELL_TIMEOUT_MS = 10 * 60_000
+/** How much of a shell command's output is kept from its beginning, and as much again from its end. */
+const SHELL_OUTPUT_KEEP = 15_000
+
+/**
+ * Stop a shell command and everything it started. The command runs as an interactive shell, which
+ * ignores SIGTERM and would go on to the next part of "a; b" once "a" is killed, so the whole
+ * process group gets SIGHUP (on which such a shell exits) and SIGTERM, and whatever is still
+ * there a moment later is killed outright.
+ */
+function killShell(child: ChildProcess): void {
+  const pid = child.pid
+  if (!pid || child.exitCode !== null || child.signalCode !== null) return
+  const send = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig)
+    } catch {
+      /* already gone */
+    }
+  }
+  send('SIGHUP')
+  send('SIGTERM')
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) send('SIGKILL')
+  }, 1500).unref?.()
+}
+
+/** Output of a shell command: the beginning and the end of it, as a long scrollback is read. */
+class ShellOutput {
+  private head = ''
+  private tail = ''
+  private dropped = 0
+  add(chunk: string): void {
+    if (this.head.length < SHELL_OUTPUT_KEEP) {
+      const take = chunk.slice(0, SHELL_OUTPUT_KEEP - this.head.length)
+      this.head += take
+      chunk = chunk.slice(take.length)
+    }
+    if (!chunk) return
+    this.tail += chunk
+    if (this.tail.length > SHELL_OUTPUT_KEEP) {
+      this.dropped += this.tail.length - SHELL_OUTPUT_KEEP
+      this.tail = this.tail.slice(-SHELL_OUTPUT_KEEP)
+    }
+  }
+  text(): string {
+    const all = this.dropped ? `${this.head}\n… ${this.dropped} characters left out …\n${this.tail}` : this.head + this.tail
+    // Colours and cursor movements are for a terminal; in the chat and for Claude they are noise.
+    return all.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '').replace(/\s+$/, '')
+  }
+}
 
 export class SessionRuntime {
   readonly transcript = new TranscriptState()
@@ -135,6 +188,14 @@ export class SessionRuntime {
   private checkpointing = false
   /** Clears prompts left marked as being answered when no turn ever came for them. */
   private deliverySweep: NodeJS.Timeout | null = null
+  /** Shell commands typed after "!" that are still running, so Stop can end them. */
+  private shellRuns = new Map<string, ChildProcess>()
+  /** Why a shell command was ended early ("stopped", or the time limit), by the id of its row. */
+  private shellStopReasons = new Map<string, string>()
+  /** Shell output handed to Claude Code as conversation that starts no turn. */
+  private shellAppendIds = new Set<string>()
+  /** Claude Code took shell output while no prompt was being answered: the empty result that follows is its. */
+  private shellResultExpected = false
 
   constructor(
     public record: SessionRecord,
@@ -401,6 +462,10 @@ export class SessionRuntime {
   }
 
   async stop(graceful = true): Promise<void> {
+    for (const [id, child] of this.shellRuns) {
+      this.shellStopReasons.set(id, 'stopped')
+      killShell(child)
+    }
     const q = this.q
     if (!q) return
     this.stopping = true
@@ -511,12 +576,103 @@ export class SessionRuntime {
   }
 
   async interrupt(): Promise<void> {
+    for (const [id, child] of this.shellRuns) {
+      this.shellStopReasons.set(id, 'stopped')
+      killShell(child)
+    }
     if (!this.q) return
     try {
       await this.q.interrupt()
     } catch (err) {
       this.deps.log(`[session ${this.id}] interrupt failed: ${(err as Error).message}`)
     }
+  }
+
+  // ------------------------------------------------------------------ shell
+
+  /**
+   * Run a shell command typed after "!", as the terminal chat does: in this chat's folder, with the
+   * environment the Claude process gets and the aliases of the user's own shell, shown in the chat
+   * as its own row. When it has finished, the command and its output are handed to Claude Code as
+   * conversation that starts no turn (`shouldQuery: false`), so Claude reads them with the next
+   * prompt. Returns the id of the row.
+   */
+  async runShell(command: string): Promise<string> {
+    const cmd = command.trim()
+    if (!cmd) throw new Error('Type a command after "!"')
+    await this.ensureStarted()
+    const id = randomUUID()
+    this.markRead()
+    this.transcript.addLocalShellRun(id, `<bash-input>${cmd}</bash-input>`)
+    this.live.runningShellIds = [...(this.live.runningShellIds ?? []), id]
+    this.stateDirty = true
+    this.scheduleFlush()
+    void this.finishShell(id, cmd)
+    return id
+  }
+
+  /** Stop a shell command typed after "!" that is still running. */
+  stopShell(id: string): void {
+    const child = this.shellRuns.get(id)
+    if (!child) return
+    this.shellStopReasons.set(id, 'stopped')
+    killShell(child)
+  }
+
+  private async finishShell(id: string, cmd: string): Promise<void> {
+    const out = new ShellOutput()
+    const err = new ShellOutput()
+    let code: number | null = null
+    let signal: NodeJS.Signals | null = null
+    try {
+      const env = await this.deps.getEnv()
+      const shell = env.SHELL && fs.existsSync(env.SHELL) ? env.SHELL : '/bin/zsh'
+      await new Promise<void>((resolve) => {
+        // -i -l: the aliases and functions of the user's shell work as they do in a terminal.
+        // detached: its own process group, so Stop reaches everything the command started.
+        const child = spawn(shell, ['-ilc', cmd], { cwd: this.record.cwd, env: { ...env, TERM: 'dumb' }, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+        this.shellRuns.set(id, child)
+        const timer = setTimeout(() => {
+          this.shellStopReasons.set(id, `stopped after ${SHELL_TIMEOUT_MS / 60_000} minutes`)
+          killShell(child)
+        }, SHELL_TIMEOUT_MS)
+        // A decoder per stream, so a character split between two chunks (Chinese output) stays whole.
+        child.stdout.setEncoding('utf8')
+        child.stderr.setEncoding('utf8')
+        child.stdout.on('data', (d: string) => out.add(d))
+        child.stderr.on('data', (d: string) => err.add(d))
+        child.on('error', (e) => err.add(e.message))
+        child.on('close', (c, s) => {
+          clearTimeout(timer)
+          code = c
+          signal = s
+          resolve()
+        })
+      })
+    } catch (e) {
+      err.add((e as Error).message)
+    } finally {
+      this.shellRuns.delete(id)
+    }
+    const stderr = err.text()
+    const ending = this.shellStopReasons.get(id) ?? (signal ? `ended by ${signal}` : code ? `exit code ${code}` : '')
+    this.shellStopReasons.delete(id)
+    const text = `<bash-input>${cmd}</bash-input>\n<bash-stdout>${out.text()}</bash-stdout><bash-stderr>${stderr}${ending ? `${stderr ? '\n' : ''}(${ending})` : ''}</bash-stderr>`
+    this.transcript.setLocalText(id, text)
+    this.live.runningShellIds = (this.live.runningShellIds ?? []).filter((x) => x !== id)
+    this.stateDirty = true
+    this.scheduleFlush()
+    this.deps.log(`[session ${this.id}] shell command finished${ending ? ` (${ending})` : ''}`)
+    if (!this.queue) return
+    this.shellAppendIds.add(id)
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      uuid: id as never,
+      session_id: this.record.claudeSessionId,
+      shouldQuery: false
+    })
   }
 
   // ------------------------------------------------------------------ input
@@ -616,6 +772,24 @@ export class SessionRuntime {
     const rest = this.live.queuedIds.filter((id) => !taken.has(id))
     if (rest.length !== this.live.queuedIds.length) {
       this.setQueued(rest)
+      this.stateDirty = true
+      this.scheduleFlush()
+    }
+  }
+
+  /** What Claude Code reported doing with a message it was handed (see handle()). */
+  private handleLifecycle(id: string | undefined, state: string | undefined): void {
+    if (!id) return
+    if (this.shellAppendIds.has(id)) {
+      if (state === 'started' && !Object.values(this.live.promptDelivery).includes('working')) this.shellResultExpected = true
+      if (state === 'completed' || state === 'cancelled') this.shellAppendIds.delete(id)
+      return
+    }
+    if (state === 'started') {
+      this.takePrompts({ user_message_uuids: [id] })
+    } else if (state === 'cancelled' && (id in this.live.promptDelivery || this.live.queuedIds.includes(id))) {
+      this.setDelivery(id, null)
+      this.setQueued(this.live.queuedIds.filter((q) => q !== id))
       this.stateDirty = true
       this.scheduleFlush()
     }
@@ -860,6 +1034,15 @@ export class SessionRuntime {
   private handle(msg: SDKMessage): void {
     const ts = Date.now()
     this.live.lastActivityAt = ts
+    // Claude Code says what it does with every message it is handed: "queued", "started",
+    // "completed" or "cancelled". This is the only report of a prompt sent while a turn is running
+    // being taken: Claude Code reads such a prompt inside the running turn, together with a tool
+    // result, and no message names it until the whole turn is over.
+    const lifecycle = msg as unknown as { type: string; command_uuid?: string; state?: string }
+    if (lifecycle.type === 'command_lifecycle') {
+      this.handleLifecycle(lifecycle.command_uuid, lifecycle.state)
+      return
+    }
     switch (msg.type) {
       // The prompts a turn has taken are read before its first row is written into the chat:
       // taking a prompt moves it to the end of the chat, and it has to get there before the
@@ -873,6 +1056,20 @@ export class SessionRuntime {
       case 'assistant': {
         if (!msg.parent_tool_use_id) this.takePrompts(msg)
         this.transcript.apply(msg, ts)
+        if (!msg.parent_tool_use_id) {
+          // Claude Code could not authenticate (its login expired or could not be renewed). The
+          // window reads this to say so plainly and to offer signing in again; the next real
+          // answer in this chat clears it.
+          const failure = (msg as { error?: string }).error
+          if (failure === 'authentication_failed') {
+            const said = msg.message.content.find((b) => b.type === 'text') as { text?: string } | undefined
+            this.live.authFailedAt = ts
+            this.live.authError = said?.text?.slice(0, 300) || 'Failed to authenticate'
+          } else if (this.live.authFailedAt && !failure && msg.message.model !== '<synthetic>') {
+            this.live.authFailedAt = undefined
+            this.live.authError = undefined
+          }
+        }
         if (this.live.status === 'idle' || this.live.status === 'starting') this.setStatus('running')
         const usage = msg.message.usage as unknown as Record<string, number> | undefined
         if (usage && !msg.parent_tool_use_id) {
@@ -898,6 +1095,15 @@ export class SessionRuntime {
         break
       }
       case 'result': {
+        // The empty result Claude Code gives for shell output it was handed is not a turn: nothing
+        // was asked or answered, so it leaves no footer, no unread mark and no notification.
+        const named = msg as { user_message_uuids?: string[]; user_message_uuid?: string }
+        const shellOnly = this.shellResultExpected && !named.user_message_uuids?.length && !named.user_message_uuid
+        this.shellResultExpected = false
+        if (shellOnly) {
+          this.live.activity = null
+          break
+        }
         this.transcript.apply(msg, ts)
         {
           const processCost = msg.total_cost_usd ?? 0

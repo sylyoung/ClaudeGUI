@@ -375,6 +375,9 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <span className="spacer" />
           {!filesOpen && <UsageStatus compact />}
           <span className="hdr-actions no-drag">
+            <button className="btn ghost icon" data-tip="Fork this chat: copy the conversation into a new chat in the same folder, as Claude Code's /branch does (you can also type /branch). The original chat is not changed." onClick={() => void useStore.getState().forkSession(record.id)}>
+              <GitBranch size={15} />
+            </button>
             <button
               className="btn ghost icon"
               data-tip={toolDetails ? 'Hide the details of every tool operation in this chat' : 'Show the details of every tool operation in this chat'}

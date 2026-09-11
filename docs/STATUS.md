@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-09 (session 4, v1.0.18)
+Last updated: 2026-09-11 (session 4, v1.0.19)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -133,6 +133,54 @@ survive app restarts.
 - [x] Verified live in an isolated instance (haiku, sandbox/compact-queue, port 45199) with a probe
       recording every state change: queued during the compaction → being answered when the CLI took
       it → answered when its turn ended; ordinary queueing during a normal turn unchanged
+
+### v1.0.19
+Requests from the user, in the order given:
+- [x] Login expiry. Diagnosis: the CLI renews the 8-hour access token itself; on 2026-09-10 the renewal
+      was refused, the CLI removed the stored login and every chat failed with `authentication_failed`.
+      A refused refresh token needs a browser sign-in; no program can renew it silently. Plan: detect
+      the failure in the host (assistant `error: 'authentication_failed'`), check the login
+      (`claude auth status --json`, keychain `expiresAt` / `refreshTokenExpiresAt`, never the tokens),
+      one notice across the window with an in-app "Sign in" that runs `claude auth login` (stdout
+      carries the fallback URL, stdin takes a pasted code), a warning a few days before the refresh
+      token's end date, and a truthful usage-meter message (no more "API-key users" when signed out).
+- [x] Fork a chat: whole chat only, like the CLI's `/branch` (title "<title> (Branch)", then
+      "(Branch 2)"…, the user lands in the new chat, the original is untouched), same folder. The SDK's
+      `forkSession(sessionId, { dir })` copies the transcript. In the groups view, chats that share a
+      folder are gathered under that folder's row even when folder rows are off.
+- [x] "!" at the start of a prompt runs a shell command, as in the terminal. Confirmed with an SDK
+      probe: the host runs the command itself and appends `<bash-input>` / `<bash-stdout>` user
+      messages with `shouldQuery: false`; each append only produces an empty `result` (no model call,
+      must stay silent: no footer, no unread), and the model sees the output with the next prompt.
+- [x] A queued prompt must switch to "registered" as soon as Claude Code takes it. Confirmed cause:
+      a prompt sent mid-turn is folded into the running turn and no assistant message names it; only
+      `{type:'command_lifecycle', command_uuid, state:'queued'|'started'|'completed'|'cancelled'}`
+      says when it was taken ("started"). Fix: treat "started" like a named prompt.
+- Sidebar decision: Recent view stays strictly by time; in the Groups view chats sharing a folder are
+      gathered under the folder row and belong to one group automatically (a fork inherits the group,
+      moving one chat moves its folder siblings). None of the 32 existing chats share a folder.
+- Implementation written (typecheck clean): host — `command_lifecycle` handling, `runShell`/`stopShell`,
+      `authFailedAt` on assistant `error: 'authentication_failed'`, `SessionManager.fork` (SDK
+      `forkSession`, "(Branch)" titles), folder-group rule in create/import/move; main — `claudeLogin.ts`
+      (stored-login reader), `authService.ts` (checks, `claude auth login` sign-in), usage messages,
+      `needsCurrentHost` IPC wrapper for calls an older running host does not know; window —
+      `AuthNotice`, `SignInDialog`, shell rows, "!" / "/branch" routing, fork menu item and header
+      button, folder rows for shared folders in the groups view.
+- [x] Live checks in the dev instance (Haiku chat in sandbox/v1019-check/work):
+      queued prompt sent 5 s into a running turn: queued at once, registered 14.5 s later while the
+      turn still ran (3.1 s before it ended); "!" while idle: footers 1 → 1, unread 0 → 0, Claude
+      answered from the output ("你好"), "！" works; Stop on `sleep 30; echo …` ended in 0.4 s with
+      "(stopped)" and nothing after it (first attempt failed: interactive zsh ignores SIGTERM → now
+      the process group gets SIGHUP + SIGTERM, SIGKILL after 1.5 s); fork: "(Branch)", "(Branch 2)",
+      "(Branch 3)", `/branch named copy`, fork answers on its own, original transcript size and mtime
+      unchanged, all shell rows copied.
+- [x] UI checks (screenshots reviewed): the groups view gathers the five same-folder chats under the
+      folder row; signed-out (red), login-ending-in-2-days and failed-chat (amber) notices; sign-in
+      dialog with a stand-in `claude` script: link shown, wrong code → "Login failed: Invalid code…",
+      right code → dialog closes with the success toast; `claudeExecutable` restored afterwards.
+- Not exercised live: the `needsCurrentHost` message (needs an older host) and a real expired login.
+- Host-side changes (queued fix, "!", fork, noticing failed chats) reach the user's app only after a
+      full quit (⌘Q): the in-app update leaves the running 1.0.18 host in place.
 
 ### v1.0.18
 - [x] Sending a prompt marks the chat read (`SessionRuntime.send` → `markRead`), so a mark left by an

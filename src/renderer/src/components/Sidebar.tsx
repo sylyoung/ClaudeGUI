@@ -500,10 +500,15 @@ export function Sidebar() {
 
   const renderSessions = (sec: SidebarSection) => {
     const list = sec.sessions
-    if (!groupByFolder || view === 'recent') return list.map((r, i) => renderRow(r, sec, list[i + 1]?.id))
+    // The recent view is ordered by your last prompt and nothing else.
+    if (view === 'recent') return list.map((r, i) => renderRow(r, sec, list[i + 1]?.id))
     const byFolder = new Map<string, SessionRecord[]>()
     for (const r of list) byFolder.set(r.cwd, [...(byFolder.get(r.cwd) ?? []), r])
+    // With folder rows switched off, chats that share a folder (a chat and its fork) still sit
+    // together under that folder's row; a folder with a single chat stays a plain row.
+    if (!groupByFolder && ![...byFolder.values()].some((rows) => rows.length > 1)) return list.map((r, i) => renderRow(r, sec, list[i + 1]?.id))
     return [...byFolder.entries()].map(([cwd, rows]) => {
+      if (!groupByFolder && rows.length === 1) return renderRow(rows[0], sec, list[list.indexOf(rows[0]) + 1]?.id)
       const key = `${sec.group?.id ?? ''}:${cwd}`
       const collapsed = folderCollapsed[key]
       return (

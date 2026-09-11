@@ -4,10 +4,12 @@ import { Sidebar } from './components/Sidebar'
 import { ChatView } from './components/chat/ChatView'
 import { FilePanel } from './components/files/FilePanel'
 import { NewSessionDialog } from './components/dialogs/NewSessionDialog'
+import { SignInDialog } from './components/dialogs/SignInDialog'
 import { ImportSessionDialog } from './components/dialogs/ImportSessionDialog'
 import { SettingsDialog } from './components/dialogs/SettingsDialog'
 import { ShortcutsDialog } from './components/dialogs/ShortcutsDialog'
 import { UsageStatus } from './components/status/UsageStatus'
+import { AuthNotice } from './components/status/AuthNotice'
 import { StatusBoard } from './components/StatusBoard'
 import { TooltipLayer } from './components/common/Tooltip'
 import { isComposing } from '@/lib/keys'
@@ -58,6 +60,7 @@ export default function App() {
     const offs = [
       window.api.events.onSessionEvent(applyEvent),
       window.api.events.onUsage((u) => useStore.getState().setUsage(u)),
+      window.api.events.onAuth((a) => useStore.getState().setAuth(a)),
       window.api.events.onTheme((t) => useStore.getState().setTheme(t)),
       window.api.events.onSettingsChanged((s) => useStore.getState().receiveSettings(s)),
       window.api.events.onUpdate((u) => useStore.getState().setUpdate(u)),
@@ -137,6 +140,7 @@ export default function App() {
         </>
       )}
       <div className="main">
+        <AuthNotice />
         {showBoard && <StatusBoard />}
         <div className="main-row">
           {record ? (
@@ -172,6 +176,7 @@ export default function App() {
       </div>
       <TooltipLayer />
       {dialog === 'new-session' && <NewSessionDialog onClose={() => setDialog(null)} />}
+      {dialog === 'sign-in' && <SignInDialog onClose={() => setDialog(null)} />}
       {dialog === 'import-session' && <ImportSessionDialog onClose={() => setDialog(null)} />}
       {dialog === 'settings' && <SettingsDialog onClose={() => setDialog(null)} />}
       {dialog === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}

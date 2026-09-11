@@ -1,8 +1,6 @@
-import { execFile, spawn } from 'child_process'
-import fs from 'fs'
-import os from 'os'
-import path from 'path'
-import type { SdkUsage, UsageSeverity, UsageSnapshot, UsageWindow } from '@shared/types'
+import { spawn } from 'child_process'
+import type { AuthState, SdkUsage, UsageSeverity, UsageSnapshot, UsageWindow } from '@shared/types'
+import { readStoredLogin } from './claudeLogin'
 
 /**
  * Tracks the claude.ai plan rate-limit windows (5-hour session, weekly, per-model, monthly credits).
@@ -18,6 +16,8 @@ export interface UsageDeps {
   getSettings(): { usageRefreshMinutes: number; usageWarnPercent: number }
   /** Plan limits through an already-running Claude session, or null when none is alive. */
   sessionUsage(): Promise<SdkUsage | null>
+  /** Whether Claude Code is signed in, to say truthfully why no plan limits can be read. */
+  checkAuth(): Promise<AuthState>
   emit(snapshot: UsageSnapshot): void
   log(...args: unknown[]): void
 }
@@ -81,15 +81,30 @@ export class UsageService {
     let error: string | undefined
     try {
       const env = await this.deps.getEnv()
-      const creds = await readCredentials()
-      if (creds) {
-        const res = await curlJson(USAGE_URL, [`Authorization: Bearer ${creds.token}`, 'anthropic-beta: oauth-2025-04-20', 'Accept: application/json', 'User-Agent: ClaudeGUI'], env)
+      const login = await readStoredLogin()
+      if (login) {
+        const res = await curlJson(USAGE_URL, [`Authorization: Bearer ${login.accessToken}`, 'anthropic-beta: oauth-2025-04-20', 'Accept: application/json', 'User-Agent: ClaudeGUI'], env)
         if (res.status === 200 && res.json) {
-          next = { fetchedAt: Date.now(), source: 'endpoint', windows: normalizeEndpoint(res.json as Record<string, unknown>, warn), subscription: creds.subscription ?? this.snapshot.subscription }
+          next = { fetchedAt: Date.now(), source: 'endpoint', windows: normalizeEndpoint(res.json as Record<string, unknown>, warn), subscription: login.subscription ?? this.snapshot.subscription }
         } else if (res.status === 401 || res.status === 403) {
-          error = `claude.ai rejected the stored login token (HTTP ${res.status}). Run \`claude\` in a terminal once to refresh the login.`
+          // An expired access token is normal between messages: Claude Code renews it when a chat
+          // next talks to Claude. Anything else means the login itself was not accepted.
+          error =
+            login.accessExpiresAt && login.accessExpiresAt < Date.now()
+              ? 'The stored login token has expired and Claude Code has not renewed it yet; it does so with the next message a chat sends.'
+              : `claude.ai did not accept the stored login (HTTP ${res.status}). If chats fail as well, sign in again.`
         } else error = `usage endpoint returned HTTP ${res.status}`
-      } else error = 'No claude.ai login found (API-key users have no plan limits).'
+      } else {
+        // No stored login can mean signed out (the login expired and Claude Code removed it) or a
+        // different way of signing in; `claude auth status` tells them apart.
+        const auth = await this.deps.checkAuth().catch(() => null)
+        error =
+          auth?.status === 'api-key'
+            ? 'Claude Code signs in with an API key here, so there are no plan limits to show.'
+            : auth?.status === 'signed-in'
+              ? 'Claude Code is signed in, but its login could not be read here, so the plan limits come from the chats instead.'
+              : 'Claude Code is signed out: its login has expired, so chats cannot run and plan limits cannot be read. Sign in again from the notice at the top of the window.'
+      }
       if (!next) {
         const viaSession = await this.deps.sessionUsage().catch(() => null)
         if (viaSession?.rate_limits) {
@@ -126,45 +141,7 @@ export class UsageService {
   }
 }
 
-// ---------------------------------------------------------------- credentials
-
-interface Credentials {
-  token: string
-  subscription?: string
-}
-
-function parseCredentials(raw: string): Credentials | null {
-  try {
-    const j = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; subscriptionType?: string } }
-    const o = j?.claudeAiOauth
-    if (o?.accessToken) return { token: String(o.accessToken), subscription: o.subscriptionType ? String(o.subscriptionType) : undefined }
-  } catch {
-    /* not json */
-  }
-  return null
-}
-
-async function readCredentials(): Promise<Credentials | null> {
-  if (process.platform === 'darwin') {
-    try {
-      const raw = await new Promise<string>((resolve, reject) =>
-        execFile('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], { timeout: 10_000, encoding: 'utf8' }, (e, out) => (e ? reject(e) : resolve(String(out))))
-      )
-      const c = parseCredentials(raw.trim())
-      if (c) return c
-    } catch {
-      /* not in keychain */
-    }
-  }
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  try {
-    const c = parseCredentials(fs.readFileSync(path.join(configDir, '.credentials.json'), 'utf8'))
-    if (c) return c
-  } catch {
-    /* no file */
-  }
-  return null
-}
+// ---------------------------------------------------------------- endpoint
 
 /** GET a JSON document with curl (honours the proxy variables of the captured shell environment). */
 function curlJson(url: string, headers: string[], env: Record<string, string>): Promise<{ status: number; json: unknown }> {

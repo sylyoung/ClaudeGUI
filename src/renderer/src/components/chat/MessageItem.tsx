@@ -40,12 +40,63 @@ function houseKeepingLabel(text: string): string {
   return 'system message'
 }
 
+/**
+ * The parts of a shell command typed after "!" (or run in the terminal's shell mode), as Claude Code
+ * writes them into the conversation; null when the text is something else.
+ */
+function parseShellRun(text: string): { command?: string; stdout?: string; stderr?: string } | null {
+  const t = text.trimStart()
+  if (!t.startsWith('<bash-input>') && !t.startsWith('<bash-stdout>')) return null
+  return {
+    command: /<bash-input>([\s\S]*?)<\/bash-input>/.exec(text)?.[1],
+    stdout: /<bash-stdout>([\s\S]*?)<\/bash-stdout>/.exec(text)?.[1],
+    stderr: /<bash-stderr>([\s\S]*?)<\/bash-stderr>/.exec(text)?.[1]
+  }
+}
+
+/** A shell command and what it printed, shown as it would read in a terminal. */
+function ShellRun({ message, shell }: { message: ChatMessage; shell: { command?: string; stdout?: string; stderr?: string } }) {
+  const chat = useChatCtx()
+  const showTs = useStore((s) => s.settings?.showTimestamps ?? true)
+  const running = useStore((s) => (chat ? Boolean(s.live[chat.sessionId]?.runningShellIds?.includes(message.id)) : false))
+  const out = shell.stdout?.replace(/\s+$/, '')
+  const err = shell.stderr?.replace(/\s+$/, '')
+  return (
+    <div className="msg shell-run">
+      {shell.command !== undefined && (
+        <div className="shell-cmd" data-tip="A shell command run in this chat's folder. Claude reads it and its output with your next message.">
+          <span className="shell-bang">!</span>
+          <span className="mono shell-text">{shell.command}</span>
+          <span className="spacer" />
+          {running && <span className="faint">running…</span>}
+          {running && chat && (
+            <button className="btn ghost sm" data-tip="Stop this command" onClick={() => void window.api.sessions.stopShell(chat.sessionId, message.id)}>
+              Stop
+            </button>
+          )}
+          {showTs && <span className="faint">{formatTime(message.ts)}</span>}
+        </div>
+      )}
+      {(out || err) && (
+        <pre className="shell-out">
+          {out}
+          {out && err ? '\n' : ''}
+          {err && <span className="shell-err">{err}</span>}
+        </pre>
+      )}
+      {!running && shell.stdout !== undefined && !out && !err && <div className="faint shell-none">no output</div>}
+    </div>
+  )
+}
+
 export const MessageItem = memo(function MessageItem({ message, depth = 0, state }: { message: ChatMessage; depth?: number; state?: PromptState }) {
   const showTs = useStore((s) => s.settings?.showTimestamps ?? true)
   const chat = useChatCtx()
   switch (message.kind) {
     case 'user':
       if (message.synthetic) {
+        const shell = parseShellRun(message.text)
+        if (shell) return <ShellRun message={message} shell={shell} />
         return (
           <details className="msg msg-user synthetic" style={{ alignItems: 'stretch' }}>
             <summary className="faint" style={{ cursor: 'pointer', fontSize: 11.5 }}>

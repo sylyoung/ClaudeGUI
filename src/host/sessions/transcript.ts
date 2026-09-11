@@ -113,6 +113,26 @@ export class TranscriptState {
     return msg
   }
 
+  /**
+   * A shell command typed after "!": its own row in the chat, written as Claude Code writes the
+   * terminal's shell mode (`<bash-input>`, later `<bash-stdout>` / `<bash-stderr>`), and not a
+   * prompt of the user's — it asks Claude nothing.
+   */
+  addLocalShellRun(uuid: string, text: string): UserChatMessage {
+    this.localUserUuids.add(uuid)
+    const msg: UserChatMessage = { kind: 'user', id: uuid, ts: now(), text, synthetic: true, parentToolUseId: null }
+    this.addTop(msg)
+    return msg
+  }
+
+  /** Replace the text of a row the app wrote itself (a shell command whose output has come in). */
+  setLocalText(id: string, text: string): void {
+    const m = this.topById.get(id)
+    if (!m || m.kind !== 'user') return
+    m.text = text
+    this.touch(m)
+  }
+
   /** Add a note of the app's own (not from Claude Code) to the chat. */
   addLocalNotice(text: string, level: SystemChatMessage['level'] = 'notice'): void {
     this.addTop({ kind: 'system', id: this.nextId('sys'), ts: now(), subtype: 'claudegui', level, text })

@@ -10,6 +10,7 @@ import { getLoginShellEnv, getSpawnEnv, parseExtraEnv } from './env'
 import { detectEditorCommand } from './shellService'
 import { startDebugServer } from './debugServer'
 import { UsageService } from './usageService'
+import { AuthService } from './authService'
 import { HostClient, HostProtocolMismatch } from './hostClient'
 import { Updater } from './updater'
 import { loadWindowState, trackWindowState } from './windowState'
@@ -32,6 +33,7 @@ let mainWindow: BrowserWindow | null = null
 let store: SettingsStore
 let host: HostClient
 let usage: UsageService
+let auth: AuthService
 let updater: Updater
 let permissions: PermissionService
 let startupNotice: StartupNotice | null = null
@@ -282,6 +284,20 @@ function notify(opts: { sessionId: string; title: string; body: string; kind: 't
   n.show()
 }
 
+/** Claude Code has just become signed out: chats cannot run until it is signed in again. */
+function notifySignedOut(): void {
+  const s = store.get()
+  if (!s.notifications || !s.notifyOnError || !Notification.isSupported()) return
+  const n = new Notification({ title: '⛔ Claude Code is signed out', body: 'Its login has expired, so chats cannot run. Open ClaudeGUI to sign in again.', silent: !s.notificationSound })
+  n.on('click', () => {
+    if (!mainWindow) mainWindow = createWindow()
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
+  n.show()
+}
+
 function setBadge(count: number): void {
   if (process.platform !== 'darwin') return
   const show = store.get().dockBadge && count > 0
@@ -294,6 +310,12 @@ function handleHostEvent(ev: HostEvent): void {
   switch (ev.e) {
     case 'session':
       broadcast(ev.d)
+      // A chat could not authenticate: find out whether Claude Code is signed out or it was a
+      // passing failure, so the window can say which.
+      if (auth && ev.d.type === 'state' && (ev.d.state.authFailedAt ?? 0) > auth.lastFailureSeen) {
+        auth.lastFailureSeen = ev.d.state.authFailedAt ?? 0
+        void auth.check('a chat failed to authenticate')
+      }
       if (ev.d.type === 'state' && host.status.stale) scheduleStaleHostCheck()
       break
     case 'notify':
@@ -382,6 +404,7 @@ async function handleQuit(): Promise<void> {
   if (updating) {
     quitting = true
     usage.stop()
+    auth.stop()
     log('restarting to apply an update: leaving the session host and its sessions running')
     expectDisconnect = true
     host.detach()
@@ -408,6 +431,7 @@ async function handleQuit(): Promise<void> {
   }
   quitting = true
   usage.stop()
+  auth.stop()
   updater.cancel()
   if (host.connected) {
     log('quitting: stopping the session host')
@@ -462,10 +486,19 @@ if (!gotLock) {
           .catch((err) => log(`[host] reconnect failed: ${(err as Error).message}`))
       }, 500)
     })
+    auth = new AuthService({
+      getEnv: () => getSpawnEnv(parseExtraEnv(store.get().extraEnv)),
+      getExecutable: resolveExecutable,
+      emit: (state) => sendAll('auth:update', state),
+      notifySignedOut,
+      onSignedIn: () => void usage.refresh('signed in'),
+      log
+    })
     usage = new UsageService({
       getEnv: () => getSpawnEnv(parseExtraEnv(store.get().extraEnv)),
       getSettings: () => store.get(),
       sessionUsage: () => (host.connected ? host.planUsage() : Promise.resolve(null)),
+      checkAuth: () => auth.current(),
       emit: (snapshot: UsageSnapshot) => sendAll('usage:update', snapshot),
       log
     })
@@ -488,6 +521,7 @@ if (!gotLock) {
       store,
       host,
       usage,
+      auth,
       updater,
       permissions,
       getWindow: () => mainWindow,
@@ -528,6 +562,7 @@ if (!gotLock) {
       dialog.showMessageBox({ type: 'error', message: 'ClaudeGUI could not start its session host.', detail: `${(err as Error).message}\n\nLog: ${path.join(app.getPath('logs'), 'session-host.log')}` }).catch(() => undefined)
     }
     usage.start()
+    auth.start()
     if (host.connected) host.resumeOnLaunch().catch((err) => log(`[host] resumeOnLaunch failed: ${(err as Error).message}`))
     const proxyKeys = Object.keys(env).filter((k) => /proxy/i.test(k))
     log(`ClaudeGUI ${app.getVersion()} started. user=${os.userInfo().username} sdk=${sdkVersion()} exe=${resolveExecutable()} bundle=${bundlePath() ?? '(dev)'} envVars=${Object.keys(env).length} proxyVars=${proxyKeys.join(',') || 'none'} theme=${s.theme} log=${logFile}`)

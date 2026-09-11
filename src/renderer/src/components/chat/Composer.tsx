@@ -132,7 +132,10 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     }
     setSlash(token.start === dismissedStart.current ? null : token)
   }
-  const slashActive = slash !== null
+  // "!" at the start makes the line a shell command, as in the terminal ("！" with a Chinese input
+  // method on); a "/" inside a command is a path, not a Claude Code command.
+  const shellMode = /^[!！]/.test(text)
+  const slashActive = slash !== null && !shellMode
   useEffect(() => {
     if (!slashActive) return
     if (live?.slashCommands?.length) setCommands(live.slashCommands)
@@ -330,9 +333,10 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
         )}
         <textarea
           ref={ref}
+          className={shellMode ? 'shell-mode' : undefined}
           value={text}
           rows={1}
-          placeholder={busy ? 'Queue a message… (sent after the current turn)' : 'Message Claude…  ( / for commands, ↑ for an earlier prompt, drop files or paste images )'}
+          placeholder={busy ? 'Queue a message… (sent after the current turn)' : 'Message Claude…  ( / for commands, ! for a shell command, ↑ for an earlier prompt, drop files or paste images )'}
           onChange={(e) => {
             noMenu.current = false
             setText(e.target.value)
@@ -358,6 +362,7 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
             <Keyboard size={15} />
           </button>
           <span className="composer-hint">
+            {shellMode ? 'shell command in this chat\'s folder; Claude reads its output with your next message · ' : ''}
             {sendWithEnter ? '⏎ send · ⇧⏎ newline' : '⌘⏎ send'}
             {history.length > 0 ? ' · ↑ earlier prompt' : ''}
             {' · esc esc rewind'}

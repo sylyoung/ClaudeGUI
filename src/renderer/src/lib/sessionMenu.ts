@@ -1,5 +1,6 @@
 import type { SessionGroup, SessionLiveState, SessionRecord } from '@shared/types'
 import type { MenuItem } from '@/components/common/ContextMenu'
+import { useStore } from '@/store'
 
 export interface SessionMenuOpts {
   groups: SessionGroup[]
@@ -23,6 +24,7 @@ export function sessionMenuItems(r: SessionRecord, l: SessionLiveState | undefin
   if (o.onNewGroup) groupItems.push({ label: 'New group…', onClick: o.onNewGroup })
   const items: MenuItem[] = []
   if (o.onRename) items.push({ label: 'Rename…', onClick: o.onRename })
+  items.push({ label: 'Fork chat', tip: "Copy this conversation into a new chat in the same folder, as Claude Code's /branch does. The original chat is not changed.", onClick: () => void useStore.getState().forkSession(r.id) })
   items.push(
     { label: r.pinned ? 'Unpin' : 'Pin to top of group', tip: 'Pinned sessions stay at the top of their group', onClick: () => window.api.sessions.setPinned(r.id, !r.pinned).catch(fail) },
     { label: r.archived ? 'Unarchive' : 'Archive', tip: 'Archived sessions are hidden unless "show archived" is on', onClick: () => window.api.sessions.setArchived(r.id, !r.archived).catch(fail) },

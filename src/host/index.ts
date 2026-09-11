@@ -126,6 +126,12 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.create(a[0])
     case 'importCli':
       return manager.importCli(a[0], a[1], a[2])
+    case 'fork':
+      return manager.fork(a[0], a[1])
+    case 'runShell':
+      return manager.runShell(a[0], a[1])
+    case 'stopShell':
+      return manager.stopShell(a[0], a[1])
     case 'listCli':
       return manager.listCli(a[0])
     case 'send':

@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.0.19 — 2026-09-11
+
+### When Claude Code's login runs out
+- **The window says so, and signs Claude Code in again.** Claude Code renews its 8-hour access token
+  by itself. When the login server stops accepting the longer-lived refresh token behind it, Claude
+  Code removes the stored login and every chat fails with "Failed to authenticate"; only signing in
+  again in a browser brings it back, so no app can renew it silently. A notice above the chat now
+  says that Claude Code is signed out, and **Sign in…** runs `claude auth login` from the app: the
+  browser opens Claude's sign-in page, and if the page shows a code, it is pasted into the dialog.
+  The chats keep their history and continue with your next message; nothing has to restart.
+- **A warning before the login ends.** Claude Code records when its refresh token stops being
+  accepted; three days before that date the notice appears, so you can sign in again before chats
+  fail. A system notification is sent when Claude Code becomes signed out.
+- **A failure while the login is still there is named as one.** When chats fail to authenticate but
+  the login is still stored — a network problem, or a renewal that was in progress — the notice says
+  that, and that sending the message again is the first thing to try.
+- **The usage meter tells the truth.** It said "API-key users have no plan limits" when Claude Code
+  was signed out; it now says the login expired and offers Sign in, and describes an access token
+  that expired between messages as the normal thing it is.
+- ClaudeGUI still only reads the login; renewing it stays Claude Code's job, because a second
+  renewer would invalidate the refresh token Claude Code holds.
+
+### Forking a chat
+- **Fork chat copies a conversation into a new chat, as Claude Code's `/branch` does.** The new chat
+  is named "<title> (Branch)", then "(Branch 2)" and so on, you continue in it, and the original chat
+  — its process, its queue and its transcript file — is not touched. It is in the chat's right-click
+  menu and in the chat header, and typing `/branch` (optionally followed by a name) does the same.
+- **Chats that work in the same folder belong to one group.** A fork lands in its original's group,
+  a new or imported chat joins the group of the chats already in its folder, and moving one moves the
+  others. In the Groups view they sit together under the folder's row, even with folder rows
+  switched off; the Recent view stays ordered by your last prompt and nothing else.
+
+### Shell commands with "!"
+- **"!" at the start of a message runs the rest as a shell command, as in the terminal** — in the
+  chat's folder, with your own shell's environment and aliases; "！" typed with a Chinese input
+  method works as well. The command and what it printed get their own row, with a Stop button while
+  it runs (Stop ends everything the command started). Claude reads the command and its output with
+  your next message; running it starts no turn, adds no footer and leaves no unread mark. Very long
+  output keeps its beginning and its end, and a command is stopped after 10 minutes.
+
+### A queued prompt turns "registered" when Claude Code takes it
+- A prompt sent while Claude is working is often read by Claude Code inside the running turn,
+  together with a tool result, instead of in a turn of its own, and no message named it until that
+  whole turn was over — so it kept its amber "queued" mark long after Claude had read it. The app now
+  follows Claude Code's own report of taking each prompt, and the mark turns green at that moment.
+
+### After updating
+- Forking, "!" commands, the queued-prompt fix and noticing failed chats live in the session host,
+  which keeps running across updates so your chats survive. Quit ClaudeGUI completely (⌘Q) and open
+  it again once to start the new host; until then, forking and "!" say so instead of failing.
+
 ## 1.0.18 — 2026-09-09
 
 ### Compacting the context leaves no unread mark

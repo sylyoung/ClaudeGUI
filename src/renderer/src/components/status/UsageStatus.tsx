@@ -106,6 +106,8 @@ export function UsageStatus({ compact }: { compact?: boolean }) {
 export function UsageDetails() {
   const usage = useStore((s) => s.usage)
   const warn = useStore((s) => s.settings?.usageWarnPercent ?? 50)
+  const signedOut = useStore((s) => s.auth.status === 'signed-out')
+  const setDialog = useStore((s) => s.setDialog)
   useTick(10_000)
   return (
     <div className="usage-details">
@@ -122,6 +124,11 @@ export function UsageDetails() {
         <div className="msg-system warning">
           <AlertTriangle size={14} />
           <div className="body">{usage.error}</div>
+          {signedOut && (
+            <button className="btn sm primary" onClick={() => setDialog('sign-in')} data-tip="Runs claude auth login, the same as in a terminal">
+              Sign in…
+            </button>
+          )}
         </div>
       )}
       {usage.windows.length === 0 && !usage.error && <div className="faint">No limit information yet. Limits appear after the first check or the first API response.</div>}

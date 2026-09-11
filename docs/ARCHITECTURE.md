@@ -93,6 +93,37 @@ the fork point is cleared once `system/init` confirms the start, and dropped wit
 chat if the CLI refuses it. File backups exist only when the session was started with
 `enableFileCheckpointing` (settings: `fileCheckpointing`).
 
+## Forking a chat
+`SessionManager.fork(id, name?)` does what the CLI's `/branch` does, through the SDK's
+`forkSession(claudeSessionId, { dir: cwd, title })`: the transcript is copied under a new session id
+(message uuids remapped, no file-history snapshots), and a new record gets that id, the title
+"<title> (Branch)" / "(Branch N)" (`branchTitle`, an existing suffix is stripped first) or the name
+given to `/branch`, and the original's folder, group, model, permission mode, effort and last-prompt
+time. The original runtime is not involved at all — no stop, no queue change, no write to its
+transcript file (checked live: size and modification time unchanged while the fork answered). The
+renderer selects the fork (`forkSession` in the store); `/branch [name]` typed in the input box is
+routed there instead of being sent to the CLI. A fork of a running chat copies what the transcript
+holds at that moment; the result footers are not part of a transcript, so a fork shows none for the
+copied turns.
+
+## Shell commands typed after "!"
+`SessionRuntime.runShell(command)` is the terminal's shell mode: the renderer routes a message that
+starts with `!` (or `！`) there. The host adds a synthetic row `<bash-input>…</bash-input>`
+(`TranscriptState.addLocalShellRun`), lists its id in `live.runningShellIds`, and runs
+`$SHELL -ilc <command>` in the chat's folder with the session environment, `detached` so it has its
+own process group. When it ends, the row becomes `<bash-input>` + `<bash-stdout>` + `<bash-stderr>`
+(output kept to its first and last 15 000 characters, terminal escape codes removed, an exit code or
+"(stopped)" appended to stderr), and the same text is pushed to the CLI with `shouldQuery: false`:
+it is appended to the conversation without starting a turn and merged into the next prompt that
+does (the SDK documents this for the desktop app's bash mode). Each such append still produces an
+empty `result` naming no prompt; `handleLifecycle` sets `shellResultExpected` when the append is
+`started` while no prompt is being answered, and that result is dropped — no footer, no unread
+mark, no notification. Stop (`stopShell`, also on interrupt and stop) sends SIGHUP and SIGTERM to
+the process group and SIGKILL 1.5 s later: an interactive zsh ignores SIGTERM and would otherwise go
+on to the next part of `a; b`. Commands are stopped after 10 minutes. The renderer shows these rows
+(`ShellRun` in MessageItem.tsx), including the ones the terminal's own shell mode left in an
+imported transcript.
+
 ## Messages the CLI writes about its own housekeeping
 Some user-role messages in the stream are not prompts: the summary kept when the context is
 compacted (`isCompactSummary`, or its fixed opening words on a replay), the CLI's
@@ -136,6 +167,12 @@ chat:
   the queue without being named were taken for the turn that starts next, so they become `working`,
   not answered. This is what a `/compact` used to get wrong: its own result names no prompt at all,
   so a prompt typed during the compaction jumped straight to "answered";
+- `{type: 'command_lifecycle', command_uuid, state}` frames (not declared in the SDK's message union)
+  report every message the CLI was handed: `queued`, `started`, `completed`, `cancelled`. `started`
+  is treated like a named prompt → `working`, and `cancelled` drops it. This is the only report of a
+  prompt sent during a running turn being taken: the CLI folds such a prompt into that turn together
+  with the next tool result, and no reply frame names it until the turn's result (an SDK probe: sent
+  at 5.8 s, `started` at 13.3 s, first naming at the result, 16.4 s);
 - prompts left marked after ten quiet seconds, or when the process ends, are let go.
 
 Taking a prompt also moves it to the end of the transcript (`TranscriptState.moveToEnd`, emitted as
@@ -233,9 +270,35 @@ answered instead of the one still waiting below it.
   Escape and ⇧⇥ of `ChatView`, `Modal`, the filter lists, the rename boxes, the Git panel) returns
   early while a composition is open.
 
+## Claude Code's login
+- Claude Code renews its 8-hour access token itself with a refresh token; the refresh token has an
+  end date of its own (`refreshTokenExpiresAt` in the stored login, possibly moved by each renewal).
+  When the login server refuses it, the CLI removes the stored login and every turn fails with an
+  assistant frame carrying `error: 'authentication_failed'` (model `<synthetic>`). Only a browser
+  sign-in brings it back; the app never renews or writes the login, because a second renewer would
+  invalidate the refresh token the CLI holds.
+- `claudeLogin.ts` (`readStoredLogin`) is the one reader of the stored login (Keychain item
+  `Claude Code-credentials`, or `~/.claude/.credentials.json`): the access token for the usage
+  check, and the two expiry dates. Tokens are never logged or sent to the renderer.
+- The host sets `live.authFailedAt` / `authError` on such a frame and clears them with the next real
+  answer. The main process re-checks the login whenever a state event carries a newer
+  `authFailedAt`.
+- `AuthService` (main): `check()` every 10 minutes, at startup and on a failure: a stored login →
+  `signed-in` (with `loginEndsAt`); otherwise `claude auth status --json` → `signed-out` or
+  `api-key` (only `loggedIn`, `authMethod`, `subscriptionType` are read). Becoming signed out raises
+  a system notification. `signIn()` runs `claude auth login` with piped stdio: its stdout carries
+  "If the browser didn't open, visit: <url>" (the CLI opens the browser itself through `open` on
+  PATH), stdin takes a pasted `code#state`, exit 0 means signed in. State goes to the renderer as
+  `auth:update` (`AuthState`).
+- Renderer: `AuthNotice` above the chat — signed out (red, cannot be dismissed), chats that failed
+  since the status last changed while a login is stored (amber, "send again"), or a login ending
+  within three days (amber) — each with **Sign in…**, which opens `SignInDialog`.
+- Calls the window adds for a newer host (fork, `runShell`) go through `needsCurrentHost` in ipc.ts,
+  which turns an older host's "Unknown host method" into "quit ClaudeGUI completely and open it
+  again", because the host outlives updates.
+
 ## Plan usage
-- `UsageService` reads the OAuth token Claude Code stored at login (Keychain item
-  `Claude Code-credentials`, or `~/.claude/.credentials.json`), calls the claude.ai usage endpoint
+- `UsageService` reads the OAuth token Claude Code stored at login (through `readStoredLogin`), calls the claude.ai usage endpoint
   through `curl` (so proxy variables apply; the token travels in a config document on stdin), and
   normalises the `limits[]` array (session / weekly_all / weekly_scoped per model) plus credits.
 - Fallbacks: the structured `/usage` of a running session (through the host), then the
@@ -254,6 +317,11 @@ answered instead of the one still waiting below it.
   `sidebarSections` (renderer store) builds the sections: per group + ungrouped, or Pinned + Recent;
   inside a section `compareByLastPrompt` (pinned first, newest prompt first) or `compareRecords`
   (pinned first, manual `order`). Only `moveSession` renumbers `order`.
+- Chats working in the same folder belong to one group: `create` and `importCli` put a chat into
+  the group of the chats already in its folder when no group was chosen, a fork inherits its
+  original's group, and `moveSession` moves the folder's other chats along (unless a chat is only
+  being put in another place among them). In the groups view, folders with two or more chats are
+  gathered under a folder row even with `groupSessionsByFolder` off; the recent view never is.
 - Group colours: `nextGroupColor` picks the first unused palette colour; groups without a colour
   get one when the host starts (`assignMissingGroupColors`). The renderer maps a palette colour to
   its dark variant in dark mode (`groupColorFor`).
