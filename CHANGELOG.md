@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.20 — 2026-09-11
+
+### The chat shows that it is working from the moment Claude Code takes a prompt
+- **A queued `/compact` no longer runs behind a chat that says idle.** When a `/compact` typed
+  during a turn was taken after that turn, the prompt was marked registered but the sidebar, the
+  status board and the chat header showed idle for the whole compaction (measured: 14 seconds). The
+  end of the earlier turn had set the chat idle, and a compaction writes no answer that would have
+  set it working again. Taking a prompt now counts as working, and so does Claude Code reporting
+  that it is compacting or waiting for the model.
+- **The same gap for an ordinary prompt is closed.** A queued prompt taken after a turn showed the
+  chat idle for about a second, until the first token of its answer; it now shows working from the
+  moment Claude Code takes it.
+- **A prompt waiting behind a `/compact` is no longer marked registered too early.** At the end of a
+  turn Claude Code reports how many prompts are still waiting, and that number is 0 even when
+  prompts are waiting; the host read it as "all taken" and marked every waiting prompt registered
+  at once, moving it up the chat while it was still in the queue. The host now trusts only Claude
+  Code's per-prompt "started" report, which arrives the moment a prompt is really taken.
+- These changes live in the session host: after updating, quit ClaudeGUI completely (⌘Q) and reopen
+  it once; the chats keep their history.
+
 ## 1.0.19 — 2026-09-11
 
 ### When Claude Code's login runs out

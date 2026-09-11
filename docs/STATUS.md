@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-11 (session 4, v1.0.19)
+Last updated: 2026-09-11 (session 4, v1.0.20)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,31 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.20
+Request: "when a prompt like /compact was queued, registered later, the chat would not show that the
+model is executing the compact but shows idle. I am not sure if for a normal prompt this is also the
+case." Seen on the user's 1.0.18 host (still running at 08:32Z with the 1.0.19 window attached); the
+1.0.19 host code has the same status gap.
+- Measured with an SDK probe (`sandbox/tools/compact-queue-probe.mjs`, Haiku, two warm-up turns so
+  the compaction is not refused as "Not enough messages to compact"): a turn's result reports
+  `queued_turn_count=0` with two prompts waiting that were sent mid-turn; the `/compact`'s
+  `command_lifecycle started` and `status: "compacting"` arrive in the same millisecond as that
+  result; the compaction runs 14.5 s with no other frame and ends with `status: null`, `system/init`,
+  `compact_boundary (manual)`, the summary as a user message, a
+  `<local-command-stdout>Compacted</local-command-stdout>` user message and an empty result naming no
+  prompt; the next queued prompt's `started` follows at once, its first token 0.85 s later.
+  `session_state_changed` frames only exist with `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` set (the
+  host does not set it); with it on, `idle` comes only once the whole queue is drained.
+- Fix (host, `SessionRuntime`): taking a prompt sets the status running; a `status` frame with
+  `compacting` / `requesting` sets it running; a `completed` frame for a prompt no result answered
+  clears the mark. The `queued_turn_count` backstop at the result (1.0.14) is removed: with the count
+  always 0 it marked the prompt waiting behind the `/compact` as registered, and moved it up the
+  chat, while it was still queued — seen in the first live trace of the dev instance.
+- [x] Live trace in the dev instance after the fix (`sandbox/tools/status-trace.mjs`):
+      `running / compacting [B=working C=queued]` for the whole compaction, then
+      `running / requesting [C=working]`, then idle. Only the dev data folder was used.
+- Not checked in the user's own app: needs the new host, i.e. a full quit (⌘Q) after the update.
 
 ### v1.0.19
 Released: commit a3d9f12, tag `v1.0.19` pushed 2026-09-11 03:14 (local). It was pushed by this

@@ -163,17 +163,31 @@ chat:
 - `user_message_uuid` / `user_message_uuids` on the turn's first reply frame name the prompts that
   turn has taken → `working`, and the same fields on the result name the prompts it answered →
   dropped from the map;
-- `queued_turn_count` on the result says how many sends are still in the queue; prompts that leave
-  the queue without being named were taken for the turn that starts next, so they become `working`,
-  not answered. This is what a `/compact` used to get wrong: its own result names no prompt at all,
-  so a prompt typed during the compaction jumped straight to "answered";
+- `queued_turn_count` on the result is not used. Measured with Claude Code 2.1.263 (probe
+  `sandbox/tools/compact-queue-probe.mjs`): it is 0 even with two prompts waiting that were sent
+  mid-turn, so counting prompts off the queue with it (1.0.14–1.0.19) marked a prompt as taken, and
+  moved it up the chat, while it was still waiting. A prompt leaves the queue only when a frame
+  names it or a `started` frame reports it;
 - `{type: 'command_lifecycle', command_uuid, state}` frames (not declared in the SDK's message union)
   report every message the CLI was handed: `queued`, `started`, `completed`, `cancelled`. `started`
   is treated like a named prompt → `working`, and `cancelled` drops it. This is the only report of a
   prompt sent during a running turn being taken: the CLI folds such a prompt into that turn together
   with the next tool result, and no reply frame names it until the turn's result (an SDK probe: sent
-  at 5.8 s, `started` at 13.3 s, first naming at the result, 16.4 s);
+  at 5.8 s, `started` at 13.3 s, first naming at the result, 16.4 s). A `completed` frame for a
+  prompt still marked `working` means no result answered it (the CLI dropped the message): the mark
+  goes and, with nothing else running, the status turns idle;
+- taking a prompt (`startWorking`) sets the session status to `running`, and so does a `status`
+  frame saying `compacting` or `requesting`. Every result sets the status idle — nothing in it says
+  that a turn follows — and for a queued `/compact` the `started` frame and `status: "compacting"`
+  arrive in the same millisecond as that result, followed by about 14 s of compaction with no other
+  frame; a queued ordinary prompt has the same gap for about a second, until its first token. Before
+  1.0.20 the chat read idle for that whole time although the prompt was marked registered;
 - prompts left marked after ten quiet seconds, or when the process ends, are let go.
+
+The CLI's `session_state_changed` frames (`idle` / `running` / `requires_action`) are only sent when
+`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` is set in its environment, which the host does not do; the
+handler for them is kept in case that changes. Measured with the variable on: `running` at the first
+prompt, `idle` only once the CLI's queue is drained, nothing in between.
 
 Taking a prompt also moves it to the end of the transcript (`TranscriptState.moveToEnd`, emitted as
 `message-removed` followed by `message`, which the renderer re-appends). A prompt is written into

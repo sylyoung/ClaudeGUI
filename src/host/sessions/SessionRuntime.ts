@@ -752,6 +752,10 @@ export class SessionRuntime {
   private startWorking(id: string): void {
     this.setDelivery(id, 'working')
     this.transcript.moveToEnd(id)
+    // Being taken is the moment the chat is working again, not the first token of the answer: a
+    // "/compact" taken from the queue never writes a token (measured: 14 s of compacting after a
+    // result that had set the chat idle), and a normal prompt waits about a second for the model.
+    if (this.live.status === 'idle' || this.live.status === 'starting') this.setStatus('running')
     this.scheduleFlush()
   }
 
@@ -787,6 +791,14 @@ export class SessionRuntime {
     }
     if (state === 'started') {
       this.takePrompts({ user_message_uuids: [id] })
+    } else if (state === 'completed' && this.live.promptDelivery[id] === 'working') {
+      // Claude Code is done with a prompt that no result answered (it dropped the message): let
+      // the mark go, and with nothing else on the go the chat is idle again. After an answered
+      // prompt this frame follows its result, which has cleared the mark already.
+      this.setDelivery(id, null)
+      if (!this.hasUnfinishedPrompt() && this.live.status === 'running' && !this.live.pendingPermissions.length && !this.live.activeTools.length) this.setStatus('idle')
+      this.stateDirty = true
+      this.scheduleFlush()
     } else if (state === 'cancelled' && (id in this.live.promptDelivery || this.live.queuedIds.includes(id))) {
       this.setDelivery(id, null)
       this.setQueued(this.live.queuedIds.filter((q) => q !== id))
@@ -1122,35 +1134,25 @@ export class SessionRuntime {
         const workingBefore = Object.entries(this.live.promptDelivery)
           .filter(([, state]) => state === 'working')
           .map(([id]) => id)
-        // Which of the prompts still waiting were taken by this turn. Claude Code may fold several
-        // of them into one turn, so counting one off per finished turn leaves prompts marked as
-        // waiting long after they were answered; the result says exactly which ones it consumed
-        // (user_message_uuids) and how many of ours are still in its queue (queued_turn_count).
-        const r = msg as { queued_turn_count?: number; user_message_uuid?: string; user_message_uuids?: string[] }
+        // Which prompts this turn answered: the result names them (user_message_uuids). Claude Code
+        // may fold several into one turn, so counting one off per finished turn would leave
+        // prompts marked as waiting long after they were answered.
+        const r = msg as { user_message_uuid?: string; user_message_uuids?: string[] }
         const consumed = new Set(r.user_message_uuids ?? (r.user_message_uuid ? [r.user_message_uuid] : []))
-        let waiting = this.live.queuedIds.filter((id) => !consumed.has(id))
-        // Backstop for a prompt taken without being named: the queue is first in, first out, and
-        // queued_turn_count says how many of our sends are still in it. A prompt that leaves the
-        // queue here without being named was taken for the turn that starts next — it is being
-        // answered, not answered, which is the difference the chat used to get wrong after a
-        // /compact (the compaction's own result names no prompt at all).
-        const takenNext = new Set<string>()
-        if (typeof r.queued_turn_count === 'number' && r.queued_turn_count < waiting.length) {
-          for (const id of waiting.slice(0, waiting.length - r.queued_turn_count)) takenNext.add(id)
-          waiting = waiting.slice(waiting.length - r.queued_turn_count)
-        }
+        const waiting = this.live.queuedIds.filter((id) => !consumed.has(id))
         // The prompts this turn answered are finished, and so is anything it was working on:
-        // Claude Code runs one turn at a time. The prompts it has just taken for the next turn
-        // are the exception — they are being answered from now on.
+        // Claude Code runs one turn at a time. Prompts still waiting stay waiting: the CLI reports
+        // the moment it takes each of them (the lifecycle "started" frame, handled above), and
+        // when its queue is not empty that frame follows this result at once. The result's
+        // queued_turn_count is no use for this — measured with Claude Code 2.1.263, it is 0 even
+        // with two prompts waiting that were sent mid-turn, and counting prompts off the queue
+        // with it marked a prompt as taken (and moved it up the chat) while it was still waiting.
         for (const id of consumed) this.setDelivery(id, null)
         for (const [id, state] of Object.entries(this.live.promptDelivery)) {
-          if (state === 'working' && !takenNext.has(id)) this.setDelivery(id, null)
+          if (state === 'working') this.setDelivery(id, null)
         }
-        for (const id of takenNext) this.startWorking(id)
         this.setQueued(waiting)
-        const queued = r.queued_turn_count ?? waiting.length
-        if (queued > 0) this.setStatus('running')
-        else if (this.live.status !== 'requires_action') this.setStatus('idle')
+        if (this.live.status !== 'requires_action') this.setStatus('idle')
         this.sweepDeliveryWhenQuiet()
         const preview = msg.subtype === 'success' ? msg.result : humanResultSubtype(msg.subtype, (msg as { errors?: string[] }).errors)
         const text = (this.lastAssistantText || preview || '').trim()
@@ -1164,7 +1166,7 @@ export class SessionRuntime {
         // wrote count here: the notes the CLI puts in the chat itself (its echo of the command, a
         // reminder, a task notification) are marked as such and are not something to read either,
         // and a compaction that was refused ("Not enough messages to compact") is housekeeping too.
-        const turnPromptIds = new Set([...consumed, ...workingBefore.filter((id) => !takenNext.has(id))])
+        const turnPromptIds = new Set([...consumed, ...workingBefore])
         const prompts: string[] = []
         for (const id of turnPromptIds) {
           const m = this.transcript.messages.find((x) => x.id === id)
@@ -1260,6 +1262,10 @@ export class SessionRuntime {
       }
       case 'status': {
         this.live.activity = (s.status as 'compacting' | 'requesting' | null) ?? null
+        // "compacting" or "requesting" is the CLI at work whatever the last result left the status
+        // at: a compaction queued behind a turn starts right after that turn's result, which
+        // reported nothing queued (queued_turn_count is 0 for prompts sent mid-turn) and set idle.
+        if (this.live.activity && (this.live.status === 'idle' || this.live.status === 'starting')) this.setStatus('running')
         if (s.permissionMode) this.live.permissionMode = s.permissionMode as PermissionMode
         break
       }
