@@ -134,6 +134,19 @@ survive app restarts.
       recording every state change: queued during the compaction → being answered when the CLI took
       it → answered when its turn ended; ordinary queueing during a normal turn unchanged
 
+### Known issues found after the v1.0.19 release (to fix next)
+- **The session host ran out of JavaScript memory.** 2026-09-11 03:06:42 (local): the user's 1.0.18
+  host (pid 29226, 32 live chats, up 57 min) aborted in `node::OOMErrorHandler` (crash report
+  `~/Library/Logs/DiagnosticReports/ClaudeGUI Helper-2026-09-11-030647.ips`). The app started a new
+  host at once with no live chats; the user quit and reopened it at 03:09. Likely cause: every live
+  chat keeps its whole transcript (tool results, images) in the host's heap. Not caused by the
+  v1.0.19 tests (separate dev process and data folder).
+- **A crashed host leaves its Claude processes running, and the reopened app starts a second one per
+  chat.** After the crash, five CLI processes had parent pid 1 (two still running tools), and the new
+  host resumed the same five sessions, so two processes wrote to one transcript each. Fix ideas: the
+  host records its children's pids and the next host stops leftovers before resuming; or the CLI
+  children are tied to the host's lifetime.
+
 ### v1.0.19
 Requests from the user, in the order given:
 - [x] Login expiry. Diagnosis: the CLI renews the 8-hour access token itself; on 2026-09-10 the renewal
