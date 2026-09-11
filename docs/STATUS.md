@@ -147,7 +147,64 @@ survive app restarts.
   host records its children's pids and the next host stops leftovers before resuming; or the CLI
   children are tied to the host's lifetime.
 
+### Incident 2026-09-11 03:06:42 (local): the user's session host crashed (set aside)
+- Set aside at the user's request ("ok leave out the crash for now. finish my required updates in the
+  new version"): no crash hardening, no restart-after-crash and no host memory reading in 1.0.19 (the
+  reading written for the investigation was removed again). Notes below are the starting point.
+- Evidence: `~/Library/Logs/DiagnosticReports/ClaudeGUI Helper-2026-09-11-030647.ips` — pid 29226
+  (host 1.0.18, started 02:09:32 with 32 resumed chats) aborted in `node::OOMErrorHandler`; the
+  host's JavaScript heap limit is 4192 MB (Electron pointer compression). No stop command reached
+  it: my dev-copy stops ran at 03:03:19 and 03:08:44 and only touched `sandbox/userdata`.
+- Not the cause (measured): screenshots (all 32 chats hold 6 pictures, 4 MB); the 783 MB transcript
+  `649fe6da…` (belongs to 套磁视频, not a ClaudeGUI chat, not open).
+- Mechanism found: the SDK's `getSessionMessages` reads the whole transcript into the calling
+  process's heap. In an Electron-as-Node process with the host's limit: HSDA (1246 MB file) peak heap
+  ~1333 MB / process 2688 MB for 6 returned messages; 报奖 (834 MB) ~1235 MB; MMBCI (904 MB) ~932 MB;
+  DataPruning (536 MB) ~568 MB. `getSessionInfo` is cheap (11 MB). Two or three such loads at once
+  exceed 4 GB. The trigger at 03:06:42 is not yet known.
+- Also measured: the Import dialog's `listSessions` peaks at 56 MB; history loads happen once per
+  chat per host; in the host's last hour all chats wrote ~35 MB (busiest: this chat, 9.9 MB incl.
+  7.7 MB of screenshots), so neither is it.
+- Crash report vmSummary: "Memory Tag 253" 51.8 G virtual in 2317 regions (Chromium's page tags:
+  253 = PartitionAlloc, which backs Node Buffers / ArrayBuffers; 255 = V8, 1.4 T reserved). So the
+  process ran out of buffer memory, not JavaScript heap. Leading hypothesis to verify: the host
+  re-sends a whole changed top message on every 45 ms flush; after six 1.3 MB screenshots the top
+  message was ~7.7 MB and kept changing while the reply streamed, and `writeFrame` ignores socket
+  backpressure, so unsent frames piled up in the host until the buffer partition was exhausted
+  (crash 21–25 s after the screenshots, during the next streamed reply).
+- Code check: each API assistant message is its own top message, so the screenshots' message was only
+  re-sent as each result arrived (~27 MB in all). But every change inside a subagent touches the
+  parent top message, and `flush()` re-sends the whole top message (all subagent children) every
+  45 ms while anything in it streams; `emit()` ignores `socket.write` backpressure. MMBCI had at
+  least three subagents running across the crash (06:52–07:44, 06:56–07:24, 06:56–07:18 UTC,
+  2.4 / 0.9 / 1.2 MB). Reproduction in the dev copy prepared: `sandbox/host-memory-check/
+  repro_backlog.py` with the new host "[memory]" reading (`CLAUDEGUI_HOST_MEMORY_MS`).
+- Reproduction in the dev copy (Haiku, host "[memory]" reading every 2 s): three parallel subagents
+  reading 360 KB files → 19 MB sent in 108 s, nothing waiting for the window, host ≤ 122 MB; six
+  1.4 MB images then a long reply → 17 MB sent in 49 s, at most 3.9 MB waiting, host ≤ 156 MB.
+  Not reproduced. A suspected 12-minute stall of the user's window before the crash is refuted:
+  few turns ended then, and usage checks followed TDBrain's turn ends at 06:57:10 and 07:05:25 UTC.
+- Conclusion so far: out-of-memory in the host's buffer memory; trigger not determinable from the
+  logs. Weak spots confirmed in code (none reproduced to crash size): `emit()` ignores socket
+  backpressure; `flush()` re-sends whole changed top messages; `attachToolResult` keeps `structured`
+  tool output unbounded; `getSessionMessages` / `forkSession` load whole transcripts in the host.
+- After the crash several old Claude processes kept running detached (at 03:22: 29645 VLMEEG,
+  29759 MMBCI, 29939, 30491, 30527 = this chat), next to the new processes the user started — the
+  "two of every chat" the user saw. They kept working unattended (this chat's copy committed and
+  pushed). All but MMBCI's ended on their own within minutes.
+- MMBCI leftover (pid 29759) stopped with SIGKILL at the user's choice; its monitor
+  `monitor_both_drivers.sh` (pid 78830) keeps running and writing its log.
+- Aftermath: 31 old Claude processes ended with the host; MMBCI's (pid 29759) survived detached and
+  later started `scripts/speech_rebalance_20260910/monitor_both_drivers.sh`; not stopped yet (the
+  user approved stopping it before it had that child; asking again). No transcript split into two
+  branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
+- User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
+  the chats that were running.
+
 ### v1.0.19
+Released: commit a3d9f12, tag `v1.0.19` pushed 2026-09-11 03:14 (local). It was pushed by this
+chat's own old Claude process (pid 30527), which outlived the session host crash detached from any
+window and finished the release steps on its own while the user reopened the chat.
 Requests from the user, in the order given:
 - [x] Login expiry. Diagnosis: the CLI renews the 8-hour access token itself; on 2026-09-10 the renewal
       was refused, the CLI removed the stored login and every chat failed with `authentication_failed`.
