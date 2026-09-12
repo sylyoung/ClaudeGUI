@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-12 (session 4, v1.0.22)
+Last updated: 2026-09-12 (session 4, v1.0.23)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,44 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.23
+Request: "I wanna also use other models other than claude native ones, like ChatGPT ones from my
+codex month subscription. I used to already set that up for ghostty." Asked: all providers, "not
+limited to the said models, but also up-to-date ones like GPT-6 Terra, DeepSeek V4.1, etc.,
+depending on the offerers"; "can I not just select them in the app? like how I select claude
+models?"; permissions: app default ("you decide").
+- What the terminal has: `~/.zshrc` functions `cc-gpt` (Claude Code through
+  `~/.local/bin/claude-code-proxy-cc-gpt-v2 serve --port 18769`, Homebrew `raine/claude-code-proxy`
+  0.1.29, ChatGPT login of the Codex CLI; models gpt-5.6 sol/terra/luna, normal/fast, `[1m]`),
+  `cc-ds` (DeepSeek, key from the Keychain) and `cc-kimi` (Moonshot). Each sets ANTHROPIC_BASE_URL /
+  ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL, compaction limits, proxies, and passes `--effort`,
+  `--permission-mode=bypassPermissions`, `--disallowed-tools=EnterPlanMode`.
+- Design: a provider = a launcher command (Settings `providers`, defaults cc-gpt / cc-ds / cc-kimi).
+  `src/main/env.ts captureLauncher()` runs it in the login shell with a stand-in `claude` that dumps
+  env + argv (the same trick as the `claude` wrapper capture). `src/host/providers/ProviderService.ts`
+  lists providers with their models (codex: bridge `/v1/models` merged with `~/.codex/models_cache.json`,
+  current models the bridge lacks are `unavailable`; others: the `modelsUrl` with the launcher's token
+  as Bearer) and builds the launch env for a chat (`launch()`: launcher re-run at every process
+  start so the bridge/route checks happen, ANTHROPIC_MODEL = the chat's model, `--effort` as
+  fallback effort, disallowed tools merged, `--permission-mode` ignored, `--settings` via extraArgs).
+  `SessionRecord.provider`; `SessionRuntime.start` uses the launch env; `setModel(model, provider)`
+  restarts the process (resume) when the provider changes. Renderer: `lib/providers.ts` encodes
+  "provider::model" picker values; PopupSelect got heading rows; NewSessionDialog uses a select with
+  optgroups; Settings → Claude → "Other model providers" rows + Refresh; store `providers`.
+- Not possible today: GPT-6 (`gpt-6-astra`, in the Codex cache) is rejected by the bridge 0.1.29
+  ("Unknown model"); Homebrew has 0.1.35, not tried (the user's copy is their "stabilized" build).
+- [x] `npm run typecheck` clean.
+- [x] Live check in the dev instance (fresh dev host): providers listed (codex 19 models with
+      gpt-6-astra greyed, deepseek 3, kimi 4); one chat created on `gpt-5.6-luna-fast[1m]` answered
+      "OK" (answer model gpt-5.6-luna-fast); switched to `deepseek-flash` → restart (resume) →
+      "OK" from deepseek-flash; back to `claude-haiku-4-5` → restart → "OK" from Haiku; Kimi
+      `kimi-k3` → the request reached Moonshot, which answered 429 "insufficient balance" (the
+      user's Kimi account, not the app). A launcher that does not exist (`cc-nope`) is listed as
+      unavailable with the reason, and a chat on it fails to start with the same message.
+      Screenshots: `sandbox/shots/v1023-model-picker.png`, `v1023-new-session.png`,
+      `v1023-settings-providers.png`.
+- Needs Cmd-Q in the user's app (host change). Their host was 1.0.22 (pid 509) at 16:31Z.
 
 ### v1.0.22
 Request: "after rewind, the chat process is automatically terminated." The user had rewound their

@@ -873,6 +873,12 @@ button.stat:disabled { opacity: 0.5; cursor: default; }
 .popup-select .ps-arrow { color: var(--text-faint); flex-shrink: 0; }
 .popup-list { overflow-y: auto; }
 .popup-list button { white-space: normal; text-align: left; line-height: 1.35; }
+.popup-list .popup-heading { padding: 8px 10px 3px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); font-weight: 600; border-top: 1px solid var(--border); margin-top: 4px; }
+.popup-list .popup-heading:first-child { border-top: none; margin-top: 0; }
+
+/* ---- other model providers (Settings, Claude tab) ---- */
+.provider-row { display: grid; grid-template-columns: auto 1.1fr 0.9fr 1.4fr auto; gap: 8px; align-items: center; }
+.provider-row .status { grid-column: 2 / -1; font-size: 11.5px; color: var(--text-faint); }
 .chat-status { display: flex; align-items: center; gap: 10px; padding: 3px 12px; border-bottom: 1px solid var(--border); background: var(--bg-elev); font-size: 11.5px; font-family: var(--mono); color: var(--text-dim); min-height: 26px; white-space: nowrap; overflow: hidden; flex-shrink: 0; }
 .cs-item { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex-shrink: 0; color: inherit; font: inherit; }
 .cs-item.cwd { flex: 0 1 auto; min-width: 90px; }

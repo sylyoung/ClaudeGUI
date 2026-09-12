@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Check as CheckIcon, ExternalLink } from 'lucide-react'
-import type { AccentColor, AppSettings, Density, DoubleClickAction, EffortLevel, OpenFilesWith, PermissionMode, ResumeOnLaunch, ThemeMode, ThinkingDisplay } from '@shared/types'
+import type { AccentColor, AppSettings, Density, DoubleClickAction, EffortLevel, ModelProviderSetting, OpenFilesWith, PermissionMode, ResumeOnLaunch, ThemeMode, ThinkingDisplay } from '@shared/types'
 import { useStore } from '@/store'
 import { Modal } from '../common/Modal'
 import { ACCENTS, applyTheme, isDarkTheme } from '@/lib/theme'
@@ -59,6 +59,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const theme = useStore((s) => s.theme)
   const setSettings = useStore((s) => s.setSettings)
   const toast = useStore((s) => s.toast)
+  const providers = useStore((s) => s.providers)
+  const providersError = useStore((s) => s.providersError)
+  const loadProviders = useStore((s) => s.loadProviders)
   const requestedTab = useStore((s) => s.settingsTab)
   const [tab, setTab] = useState<Tab>(() => requestedTab || (localStorage.getItem('settingsTab') as Tab) || 'general')
   const [draft, setDraft] = useState<AppSettings>({ ...settings })
@@ -87,6 +90,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   )
 
   const upd = (patch: Partial<AppSettings>) => setDraft((d) => ({ ...d, ...patch }))
+  const updProvider = (i: number, patch: Partial<ModelProviderSetting>) => setDraft((d) => ({ ...d, providers: (d.providers ?? []).map((p, j) => (j === i ? { ...p, ...patch } : p)) }))
   const save = async () => {
     saved.current = true
     await setSettings(draft)
@@ -264,6 +268,39 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   Captured from your login shell via the `claude` wrapper: {envInfo ? `${envInfo.count} variables` : '…'}
                   {envInfo?.proxy.length ? ` · proxy: ${envInfo.proxy.join(', ')}` : envInfo ? ' · no proxy variables detected' : ''}{' '}
                   <button className="btn ghost sm" onClick={async () => { await window.api.app.reloadEnv(); setEnvInfo(await window.api.app.envInfo()); toast('Environment reloaded', 'success') }}>reload</button>
+                </div>
+              </Section>
+              <Section title="Other model providers (GPT via Codex, DeepSeek, Kimi...)">
+                <div className="hint">
+                  Each row is a command from your shell (a function in ~/.zshrc such as cc-gpt) that runs Claude Code against another API.
+                  The app runs it the way your terminal would, with a stand-in claude, to read the environment it sets, then starts
+                  Claude Code with that environment and the model you pick. The models of every provider that works are listed in the
+                  model picker of each chat, grouped by provider. Chats on these providers use the same permission mode rules as any other chat.
+                </div>
+                {(draft.providers ?? []).map((p, i) => {
+                  const view = providers.find((v) => v.id === p.id)
+                  const status = !p.enabled
+                    ? 'switched off'
+                    : view
+                      ? view.available
+                        ? `${view.models.length} model${view.models.length === 1 ? '' : 's'}${view.reason ? ` (${view.reason})` : ''}`
+                        : `not available: ${view.reason ?? 'unknown reason'}`
+                      : providersError ?? 'checking...'
+                  return (
+                    <div key={p.id} className="provider-row">
+                      <input type="checkbox" checked={p.enabled} onChange={(e) => updProvider(i, { enabled: e.target.checked })} data-tip="Offer this provider's models in the model picker" />
+                      <input className="input" value={p.name} onChange={(e) => updProvider(i, { name: e.target.value })} placeholder="Name in the model picker" data-tip="Group name shown in the model picker" />
+                      <input className="input" value={p.launcher} onChange={(e) => updProvider(i, { launcher: e.target.value })} placeholder="shell command, e.g. cc-gpt" spellCheck={false} data-tip="Shell command that runs Claude Code on this provider, exactly as you type it in the terminal" />
+                      <input className="input" value={p.modelsUrl} onChange={(e) => updProvider(i, { modelsUrl: e.target.value })} placeholder="models URL (empty = base URL + /v1/models)" spellCheck={false} data-tip="Where the provider lists its models; the launcher's token is sent as the bearer token" />
+                      <button className="btn ghost sm" onClick={() => setDraft((d) => ({ ...d, providers: (d.providers ?? []).filter((_, j) => j !== i) }))} data-tip="Remove this provider">Remove</button>
+                      <div className="status">{status}</div>
+                    </div>
+                  )
+                })}
+                <div className="row">
+                  <button className="btn sm" onClick={() => setDraft((d) => ({ ...d, providers: [...(d.providers ?? []), { id: `p${Date.now().toString(36)}`, name: 'New provider', launcher: '', modelsUrl: '', enabled: true }] }))}>Add provider</button>
+                  <button className="btn sm" onClick={() => { void loadProviders(true); toast('Asking the shell and the providers again...', 'info') }} data-tip="Run the launchers again and re-read every model list (also done at every app start)">Refresh model lists</button>
+                  <span className="faint" style={{ fontSize: 11.5 }}>Changes take effect after Save; a running chat picks its provider up at its next process start.</span>
                 </div>
               </Section>
             </>

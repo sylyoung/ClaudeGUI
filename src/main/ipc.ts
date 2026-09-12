@@ -152,7 +152,7 @@ export function registerIpc(ctx: IpcContext): void {
   // ---- sessions (all forwarded to the session host process)
   handle('sessions:list', () => host.list())
   handle('sessions:history', (id: string) => host.history(id))
-  handle('sessions:create', async (opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }) => {
+  handle('sessions:create', async (opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }) => {
     const record = await host.create(opts)
     store.addRecentDirectory(record.cwd)
     return record
@@ -174,7 +174,12 @@ export function registerIpc(ctx: IpcContext): void {
   handle('sessions:rewindPreview', (id: string, messageId: string) => host.rewindPreview(id, messageId))
   handle('sessions:rewind', (id: string, messageId: string, restoreFiles: boolean) => host.rewind(id, messageId, restoreFiles))
   handle('sessions:answerPermission', (id: string, requestId: string, decision: PermissionDecision) => host.answerPermission(id, requestId, decision))
-  handle('sessions:setModel', (id: string, model: string) => host.setModel(id, model))
+  handle('sessions:setModel', (id: string, model: string, provider?: string) => {
+    // An older host would set the model name without the provider's environment, and the chat would fail.
+    if (provider && host.status.stale) throw new Error('Using a model of another provider needs the session host of this ClaudeGUI version. The one running was started by an older version and keeps your chats alive; quit ClaudeGUI completely (Cmd-Q) and open it again to start the new one.')
+    return host.setModel(id, model, provider)
+  })
+  handle('providers:list', (refresh?: boolean) => needsCurrentHost(host.providers(refresh), 'Listing the model providers'))
   handle('sessions:setPermissionMode', (id: string, mode: PermissionMode) => host.setPermissionMode(id, mode))
   handle('sessions:setEffort', (id: string, level: EffortLevel | '') => host.setEffort(id, level))
   handle('sessions:rename', (id: string, title: string) => host.rename(id, title))

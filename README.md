@@ -13,7 +13,7 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.22** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.23** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
@@ -77,6 +77,12 @@ repository (ClaudeGUI → Check for Updates…).
   interrupted prompt back into the box.
 - **Model / permission mode / effort** switchable per session at any time; the option lists show the
   full names (model id, "acceptEdits — accept file edits automatically", "xhigh — extra high"…).
+- **Models of other providers in the same picker** — GPT through the Codex bridge of your ChatGPT
+  subscription, DeepSeek, Kimi: Settings → Claude lists a launcher command per provider (the
+  `cc-gpt`, `cc-ds`, `cc-kimi` functions of your shell). The app runs the launcher the way the
+  terminal would, with a stand-in `claude`, to read the environment it sets, asks the provider for
+  its current model list, and starts Claude Code with that environment and the model you pick.
+  Switching a chat to another provider restarts Claude Code and continues the conversation there.
 - **Renamed or deleted folders**: a session whose working directory disappeared shows a clear banner;
   "Change working directory…" points it at the new location and moves the transcript along, so the
   history is kept.

@@ -9,6 +9,7 @@ import { GroupColorPicker } from '../common/GroupColorPicker'
 import { isDarkTheme } from '@/lib/theme'
 import { isComposing } from '@/lib/keys'
 import { openFileFromClick } from '@/lib/openFiles'
+import { decodeModelChoice, encodeModelChoice, providerModelLabel, providerModelOptions } from '@/lib/providers'
 import { MessageList } from './MessageList'
 import { StateMark } from '../common/StateMark'
 import { Composer } from './Composer'
@@ -255,13 +256,24 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     return () => window.removeEventListener('keydown', onKey)
   }, [running, onInterrupt, rewindId, pickRewind, live?.permissionMode, record.id, record.permissionMode, toast])
 
-  const models = live?.models?.length ? live.models.map((m) => ({ value: m.value, label: `${m.displayName} (${m.value})`, short: m.displayName, hint: m.description })) : FALLBACK_MODELS.filter((m) => m.value).map((m) => ({ value: m.value, label: m.label, short: modelLabel(m.value) }))
-  const currentModel = record.model ?? ''
-  const defaultOpt: PopupOption = live?.model && !record.model
+  const providers = useStore((s) => s.providers)
+  // A chat on another provider keeps the fixed Claude list: what its process reports as "opus" or
+  // "sonnet" is that provider's stand-in for them, not a Claude model.
+  const claudeModels: PopupOption[] = !record.provider && live?.models?.length ? live.models.map((m) => ({ value: m.value, label: `${m.displayName} (${m.value})`, short: m.displayName, hint: m.description })) : FALLBACK_MODELS.filter((m) => m.value).map((m) => ({ value: m.value, label: m.label, short: modelLabel(m.value) }))
+  const currentModel = encodeModelChoice(record.provider, record.model ?? '')
+  const defaultOpt: PopupOption = live?.model && !record.model && !record.provider
     ? { value: '', label: `Default — ${modelLabel(live.model)} (${live.model}), from settings.json`, short: `Default · ${modelLabel(live.model)}` }
     : { value: '', label: 'Default (from settings.json)', short: 'Default' }
-  const modelOptions: PopupOption[] = [defaultOpt, ...models]
-  if (!modelOptions.some((m) => m.value === currentModel)) modelOptions.push({ value: currentModel, label: `${modelLabel(currentModel)} (${currentModel})`, short: modelLabel(currentModel) })
+  const modelOptions: PopupOption[] = [
+    defaultOpt,
+    ...(providers.length ? [{ value: 'heading:claude', label: 'Claude', heading: true, hint: 'Your Claude subscription' }] : []),
+    ...claudeModels,
+    ...providerModelOptions(providers)
+  ]
+  if (!modelOptions.some((m) => m.value === currentModel)) {
+    const name = providerModelLabel(providers, record.provider, record.model)
+    modelOptions.push({ value: currentModel, label: `${name} (${record.model ?? ''})`, short: name })
+  }
   const modeOptions: PopupOption[] = MODES.map((m) => ({ value: m.value, label: m.label, short: m.value, hint: m.hint }))
   const effortOptions: PopupOption[] = EFFORTS.map((e) => ({ value: e, label: EFFORT_LABELS[e] ?? e, short: EFFORT_SHORT[e] ?? e }))
   const vs = visualState(live)
@@ -428,7 +440,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           </div>
         )}
         <div className="chat-config">
-          <PopupSelect className={`m-${modelFamily(live?.model || record.model || record.lastModel)}`} label="model" value={currentModel} options={modelOptions} tip="Model used for this session's next turns. The list shows the full model ids." onChange={(v) => window.api.sessions.setModel(record.id, v).catch(fail)} minWidth={340} />
+          <PopupSelect className={`m-${modelFamily(live?.model || record.model || record.lastModel)}`} label="model" value={currentModel} options={modelOptions} tip="Model for this chat's next turns: a Claude model, or one from another provider (GPT via Codex, DeepSeek, Kimi...). Switching to another provider restarts Claude Code and continues the conversation there." onChange={(v) => { const c = decodeModelChoice(v); window.api.sessions.setModel(record.id, c.model, c.provider).catch(fail) }} minWidth={340} />
           <PopupSelect label="permissions" value={live?.permissionMode ?? record.permissionMode} options={modeOptions} tip="Permission mode: what Claude may do without asking. The list explains every mode." onChange={(v) => window.api.sessions.setPermissionMode(record.id, v as PermissionMode).catch(fail)} minWidth={380} />
           <PopupSelect label="effort" value={record.effort ?? ''} options={effortOptions} tip="Effort level: how much reasoning the model spends per turn (higher = slower, more thorough)" onChange={(v) => window.api.sessions.setEffort(record.id, v as EffortLevel | '').catch(fail)} minWidth={280} />
           <span className="spacer" />

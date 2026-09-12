@@ -9,6 +9,7 @@ import type {
   GitStatusResult,
   ImageAttachment,
   PermissionDecision,
+  ProviderView,
   SessionEvent,
   SessionGroup,
   SessionLiveState,
@@ -78,6 +79,10 @@ interface State {
   /** Whether Claude Code can authenticate (see AuthNotice). */
   auth: AuthState
   update: UpdateState
+  /** Other model providers and their models (Settings, Claude tab), read at start and on demand. */
+  providers: ProviderView[]
+  providersAt: number
+  providersError?: string
   records: Record<string, SessionRecord>
   live: Record<string, SessionLiveState>
   groups: SessionGroup[]
@@ -117,6 +122,8 @@ interface State {
   bulkBusy: Record<string, 'start' | 'stop'>
 
   init: () => Promise<void>
+  /** Read the other model providers; refresh = run their launchers and ask for their model lists again. */
+  loadProviders: (refresh?: boolean) => Promise<void>
   applyEvent: (e: SessionEvent) => void
   selectSession: (id: string | undefined) => Promise<void>
   ensureHistory: (id: string) => Promise<void>
@@ -198,6 +205,8 @@ export const useStore = create<State>((set, get) => ({
   usage: { fetchedAt: 0, source: 'none', windows: [] },
   auth: { status: 'unknown', checkedAt: 0 },
   update: { status: 'idle', currentVersion: '', log: [], autoRestart: true },
+  providers: [],
+  providersAt: 0,
   records: {},
   live: {},
   groups: [],
@@ -238,6 +247,7 @@ export const useStore = create<State>((set, get) => ({
     for (const l of list.live) live[l.id] = l
     applyTheme(settings, theme)
     set({ appInfo: info, settings, theme, usage, update, records, live, groups: list.groups ?? [], ready: true })
+    void get().loadProviders()
     window.api.auth.state().then((auth) => set({ auth })).catch(() => undefined)
     const last = localStorage.getItem('activeId')
     const initial = last && records[last] ? last : currentOrder({ records, groups: list.groups ?? [], showArchived: false, settings })[0]?.id
@@ -251,6 +261,16 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setAuth: (auth) => set({ auth }),
+
+  loadProviders: async (refresh = false) => {
+    if (!refresh && get().providers.length && Date.now() - get().providersAt < 10 * 60_000) return
+    try {
+      const providers = await window.api.providers.list(refresh)
+      set({ providers, providersAt: Date.now(), providersError: undefined })
+    } catch (err) {
+      set({ providersAt: Date.now(), providersError: (err as Error).message })
+    }
+  },
 
   forkSession: async (id, name) => {
     try {
@@ -454,6 +474,7 @@ export const useStore = create<State>((set, get) => ({
     const settings = await window.api.settings.set(patch)
     applyTheme(settings, get().theme)
     set({ settings })
+    if (patch.providers) void get().loadProviders(true)
   },
   receiveSettings: (settings) => {
     applyTheme(settings, get().theme)

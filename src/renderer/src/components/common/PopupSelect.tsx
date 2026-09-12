@@ -10,6 +10,8 @@ export interface PopupOption {
   /** Explanation shown as a tooltip while hovering the option. */
   hint?: string
   disabled?: boolean
+  /** A group title in the open list (not a choice). */
+  heading?: boolean
 }
 
 /**
@@ -51,21 +53,25 @@ export function PopupSelect({ label, value, options, onChange, tip, className, m
       </button>
       {open && (
         <div className="ctx-menu popup-list" ref={list} style={{ left, top, width, maxHeight: Math.max(160, window.innerHeight - top - 12) }}>
-          {options.map((o) => (
-            <button
-              key={o.value}
-              className={o.value === value ? 'checked' : ''}
-              disabled={o.disabled}
-              data-tip={o.hint}
-              onClick={() => {
-                setOpen(false)
-                if (o.value !== value) onChange(o.value)
-              }}
-            >
-              <span className="ctx-label">{o.label}</span>
-              {o.value === value && <Check size={12} className="ctx-check" />}
-            </button>
-          ))}
+          {options.map((o) =>
+            o.heading ? (
+              <div key={o.value} className="popup-heading" data-tip={o.hint}>{o.label}</div>
+            ) : (
+              <button
+                key={o.value}
+                className={o.value === value ? 'checked' : ''}
+                disabled={o.disabled}
+                data-tip={o.hint}
+                onClick={() => {
+                  setOpen(false)
+                  if (o.value !== value) onChange(o.value)
+                }}
+              >
+                <span className="ctx-label">{o.label}</span>
+                {o.value === value && <Check size={12} className="ctx-check" />}
+              </button>
+            )
+          )}
         </div>
       )}
     </>

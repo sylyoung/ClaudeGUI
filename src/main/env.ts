@@ -94,6 +94,45 @@ async function captureLoginEnv(): Promise<Record<string, string>> {
   }
 }
 
+export interface LauncherCapture {
+  env: Record<string, string>
+  /** Arguments the launcher would have given the CLI ("--effort", "xhigh", "--permission-mode=..."). */
+  argv: string[]
+  stderr: string
+  exitCode: number | null
+}
+
+/**
+ * Run a launcher command (a shell function or alias such as `cc-gpt sol xhigh fast`) in the login
+ * shell with a stand-in `claude` first on PATH. Whatever the launcher does first (health checks,
+ * starting a local bridge, reading keys from the Keychain) happens as in the terminal; the stand-in
+ * then records the environment and the arguments the real CLI would have received.
+ */
+export async function captureLauncher(command: string): Promise<LauncherCapture> {
+  const shell = process.env.SHELL && fs.existsSync(process.env.SHELL) ? process.env.SHELL : '/bin/zsh'
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudegui-launch-'))
+  try {
+    const fake = path.join(dir, 'claude')
+    const dump = `printf '%s' '${MARKER}'; python3 -c 'import os,json,sys;print(json.dumps({"env":dict(os.environ),"argv":sys.argv[1:]}))' "$@"; printf '%s' '${MARKER}'`
+    fs.writeFileSync(fake, `#!/bin/sh\n${dump}\n`, { mode: 0o755 })
+    const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
+      execFile(shell, ['-ilc', `export PATH="${dir}:$PATH"; ${command}`], { timeout: 60000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, TERM: 'dumb' } }, (err, stdout, stderr) => {
+        resolve({ stdout: String(stdout || ''), stderr: String(stderr || ''), code: err ? ((err as { code?: number }).code ?? 1) : 0 })
+      })
+    })
+    const start = result.stdout.indexOf(MARKER)
+    const end = result.stdout.lastIndexOf(MARKER)
+    if (start < 0 || end <= start) return { env: {}, argv: [], stderr: result.stderr, exitCode: result.code }
+    const parsed = JSON.parse(result.stdout.slice(start + MARKER.length, end).trim()) as { env: Record<string, unknown>; argv: unknown[] }
+    const env: Record<string, string> = {}
+    for (const [k, v] of Object.entries(parsed.env ?? {})) if (typeof v === 'string') env[k] = v
+    if (env.PATH) env.PATH = env.PATH.split(':').filter((p) => p !== dir).join(':')
+    return { env, argv: (parsed.argv ?? []).map(String), stderr: result.stderr, exitCode: result.code }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 /** Parse "KEY=VALUE" lines (comments with # allowed) into an object. */
 export function parseExtraEnv(text: string | undefined): Record<string, string> {
   const out: Record<string, string> = {}
@@ -112,10 +151,14 @@ export function parseExtraEnv(text: string | undefined): Record<string, string> 
 
 /** Environment to give spawned tools: process.env overlaid with the login/wrapper env, then extras. */
 export async function getSpawnEnv(extra: Record<string, string | undefined> = {}): Promise<Record<string, string>> {
-  const login = await getLoginShellEnv()
+  return mergeSpawnEnv(await getLoginShellEnv(), extra)
+}
+
+/** process.env overlaid with a captured shell environment, then extras, minus Electron's own variables. */
+export function mergeSpawnEnv(captured: Record<string, string>, extra: Record<string, string | undefined> = {}): Record<string, string> {
   const merged: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string') merged[k] = v
-  for (const [k, v] of Object.entries(login)) merged[k] = v
+  for (const [k, v] of Object.entries(captured)) merged[k] = v
   for (const [k, v] of Object.entries(extra)) if (typeof v === 'string') merged[k] = v
   // Electron-specific variables must not leak into the CLI process.
   delete merged.ELECTRON_RUN_AS_NODE

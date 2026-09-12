@@ -24,11 +24,13 @@ import type {
 } from '@shared/types'
 import type { SessionsStore } from '../../main/store'
 import { SessionRuntime, lastPromptTimeFromFile, projectDirFor, type RateLimitEventInfo } from './SessionRuntime'
+import type { ProviderLaunch } from '../providers/ProviderService'
 
 export type NotifyKind = 'turn' | 'permission' | 'error'
 
 export interface ManagerHost {
   getEnv(): Promise<Record<string, string>>
+  launchProvider(providerId: string, model?: string): Promise<ProviderLaunch>
   getExecutable(): string | undefined
   getSettings(): AppSettings
   appVersion: string
@@ -86,6 +88,7 @@ export class SessionManager {
   private makeRuntime(record: SessionRecord): SessionRuntime {
     return new SessionRuntime(record, {
       getEnv: () => this.host.getEnv(),
+      launchProvider: (id, model) => this.host.launchProvider(id, model),
       getExecutable: () => this.host.getExecutable(),
       getSettings: () => this.host.getSettings(),
       appVersion: this.host.appVersion,
@@ -262,7 +265,7 @@ export class SessionManager {
     return min - 1
   }
 
-  create(opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): SessionRecord {
+  create(opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): SessionRecord {
     const cwd = opts.cwd.replace(/\/+$/, '') || '/'
     if (!dirExists(cwd)) throw new Error(`Directory does not exist: ${cwd}`)
     const id = randomUUID()
@@ -276,7 +279,8 @@ export class SessionManager {
       title: opts.title?.trim() || 'New session',
       autoTitle: settings.autoTitle !== false && !opts.title?.trim(),
       cwd,
-      model: opts.model || settings.defaultModel || undefined,
+      model: opts.model || (opts.provider ? undefined : settings.defaultModel || undefined),
+      provider: opts.provider && opts.provider !== 'anthropic' ? opts.provider : undefined,
       permissionMode: opts.permissionMode || settings.defaultPermissionMode || 'default',
       effort: (opts.effort ?? settings.defaultEffort) || undefined,
       createdAt: now,
@@ -350,6 +354,7 @@ export class SessionManager {
       autoTitle: false,
       cwd: src.cwd,
       model: src.model,
+      provider: src.provider,
       permissionMode: src.permissionMode,
       effort: src.effort,
       createdAt: now,

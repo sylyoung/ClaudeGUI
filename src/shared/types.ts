@@ -15,6 +15,11 @@ export interface SessionRecord {
   autoTitle?: boolean
   cwd: string
   model?: string
+  /**
+   * Model provider of the chat: the id of one of the launchers in Settings (Claude tab) - 'codex',
+   * 'deepseek', 'kimi', ... - whose environment points Claude Code at another API; undefined = Anthropic.
+   */
+  provider?: string
   permissionMode: PermissionMode
   effort?: EffortLevel
   createdAt: number
@@ -122,6 +127,48 @@ export interface ModelInfoView {
   displayName: string
   description: string
   supportedEffortLevels?: EffortLevel[]
+}
+
+/**
+ * A model provider other than Anthropic. `launcher` is a command from the user's shell (a function
+ * in ~/.zshrc such as `cc-gpt`) that runs Claude Code against another API: a local bridge to the
+ * ChatGPT subscription, DeepSeek, Kimi... The app runs it in the login shell with a stand-in `claude`
+ * to read the environment it sets, then starts Claude Code with that environment and the chosen
+ * model, so the models of every provider sit in the same picker.
+ */
+export interface ModelProviderSetting {
+  id: string
+  /** Group name in the model picker ("GPT via Codex"). */
+  name: string
+  /** Shell command, run as typed in the terminal: "cc-gpt", "cc-ds", "cc-kimi". */
+  launcher: string
+  /** Where the provider lists its models (Bearer token = the launcher's ANTHROPIC_AUTH_TOKEN); empty = <ANTHROPIC_BASE_URL>/v1/models. */
+  modelsUrl: string
+  enabled: boolean
+}
+
+export interface ProviderModelView {
+  /** Model id as Claude Code receives it (with the launcher's "[1m]" suffix when it uses one). */
+  value: string
+  label: string
+  description?: string
+  supportedEffortLevels?: EffortLevel[]
+  /** Why this model cannot be used right now (the bridge does not know it yet, ...). */
+  unavailable?: string
+}
+
+export interface ProviderView {
+  id: string
+  name: string
+  launcher: string
+  /** The launcher ran and set ANTHROPIC_BASE_URL; chats can start on it. */
+  available: boolean
+  /** What is wrong (launcher missing, login needed, model list not reachable...). */
+  reason?: string
+  models: ProviderModelView[]
+  /** Model the launcher would use by itself. */
+  defaultModel?: string
+  checkedAt: number
 }
 
 export interface SessionLiveState {
@@ -407,6 +454,8 @@ export interface AppSettings {
   fileCheckpointing: boolean
   /** Let Claude Code name new sessions automatically. */
   autoTitle: boolean
+  /** Other model providers (see ModelProviderSetting); their models join the model picker. */
+  providers: ModelProviderSetting[]
 
   // ---- General
   notifications: boolean

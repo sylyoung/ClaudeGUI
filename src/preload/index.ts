@@ -19,6 +19,7 @@ import type {
   PermissionDecision,
   PermissionMode,
   QueuedPromptTakeBack,
+  ProviderView,
   RewindPreview,
   RewindResult,
   SessionEvent,
@@ -97,10 +98,14 @@ const api = {
     submitCode: (code: string) => invoke<void>('auth:submitCode', code),
     cancelSignIn: () => invoke<void>('auth:cancelSignIn')
   },
+  providers: {
+    /** Other model providers (Settings, Claude tab) and the models each offers; refresh = ask the shell and the providers again. */
+    list: (refresh?: boolean) => invoke<ProviderView[]>('providers:list', refresh)
+  },
   sessions: {
     list: () => invoke<{ records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] }>('sessions:list'),
     history: (id: string) => invoke<ChatMessage[]>('sessions:history', id),
-    create: (opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }) =>
+    create: (opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }) =>
       invoke<SessionRecord>('sessions:create', opts),
     importCli: (sessionId: string, cwd: string, title?: string) => invoke<SessionRecord>('sessions:importCli', sessionId, cwd, title),
     listCli: (dir?: string) => invoke<CliSessionSummary[]>('sessions:listCli', dir),
@@ -118,7 +123,8 @@ const api = {
     rewind: (id: string, messageId: string, restoreFiles: boolean) => invoke<RewindResult>('sessions:rewind', id, messageId, restoreFiles),
     answerPermission: (id: string, requestId: string, decision: PermissionDecision) =>
       invoke<boolean>('sessions:answerPermission', id, requestId, decision),
-    setModel: (id: string, model: string) => invoke<void>('sessions:setModel', id, model),
+    /** Change the model; `provider` names another model provider ('codex', 'deepseek', ...) or is left out for Anthropic. */
+    setModel: (id: string, model: string, provider?: string) => invoke<void>('sessions:setModel', id, model, provider),
     setPermissionMode: (id: string, mode: PermissionMode) => invoke<void>('sessions:setPermissionMode', id, mode),
     setEffort: (id: string, level: EffortLevel | '') => invoke<void>('sessions:setEffort', id, level),
     rename: (id: string, title: string) => invoke<void>('sessions:rename', id, title),

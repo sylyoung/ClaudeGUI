@@ -73,6 +73,8 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
+import type { ProviderLaunch } from '../providers/ProviderService'
+
 export interface RateLimitEventInfo {
   rateLimitType?: string
   utilization?: number
@@ -82,6 +84,8 @@ export interface RateLimitEventInfo {
 
 export interface RuntimeDeps {
   getEnv(): Promise<Record<string, string>>
+  /** Environment and options for a chat on another model provider (see ProviderService). */
+  launchProvider(providerId: string, model?: string): Promise<ProviderLaunch>
   getExecutable(): string | undefined
   getSettings(): AppSettings
   appVersion: string
@@ -331,7 +335,21 @@ export class SessionRuntime {
     await this.ensureHistory()
     this.setStatus('starting')
     this.live.error = undefined
-    const env = await this.deps.getEnv()
+    // A chat on another provider gets the environment its launcher sets (base URL, key, proxies);
+    // the launcher runs first, as it would in the terminal, so its bridge and checks are in place.
+    const providerId = this.record.provider && this.record.provider !== 'anthropic' ? this.record.provider : undefined
+    let launch: ProviderLaunch | undefined
+    if (providerId) {
+      try {
+        launch = await this.deps.launchProvider(providerId, this.record.model)
+      } catch (err) {
+        this.live.error = `Cannot start this chat on "${providerId}": ${(err as Error).message}`
+        this.setStatus('error')
+        this.scheduleFlush()
+        throw new Error(this.live.error)
+      }
+    }
+    const env = launch ? launch.env : await this.deps.getEnv()
     let resume = false
     try {
       const info = await getSessionInfo(this.record.claudeSessionId, { dir: this.record.cwd })
@@ -342,14 +360,14 @@ export class SessionRuntime {
     const mode = this.record.permissionMode as SdkPermissionMode
     const settings = this.deps.getSettings()
     const allowed = splitList(settings.allowedTools || '')
-    const disallowed = splitList(settings.disallowedTools || '')
+    const disallowed = [...new Set([...splitList(settings.disallowedTools || ''), ...(launch?.disallowedTools ?? [])])]
     const sources = ['user', ...(settings.useProjectSettings ? ['project'] : []), ...(settings.useLocalSettings ? ['local'] : [])]
     const options: Options = {
       cwd: this.record.cwd,
-      model: this.record.model || undefined,
+      model: launch ? launch.model : this.record.model || undefined,
       permissionMode: mode,
       allowDangerouslySkipPermissions: mode === 'bypassPermissions' ? true : undefined,
-      effort: this.record.effort || undefined,
+      effort: this.record.effort || launch?.effort || undefined,
       includePartialMessages: true,
       enableFileCheckpointing: settings.fileCheckpointing !== false,
       forwardSubagentText: true,
@@ -361,6 +379,7 @@ export class SessionRuntime {
       maxThinkingTokens: settings.maxThinkingTokens > 0 ? settings.maxThinkingTokens : undefined,
       allowedTools: allowed.length ? allowed : undefined,
       disallowedTools: disallowed.length ? disallowed : undefined,
+      extraArgs: launch && Object.keys(launch.extraArgs).length ? launch.extraArgs : undefined,
       canUseTool: (toolName, input, opts) => this.handleCanUseTool(toolName, input, opts),
       env: { ...env, CLAUDE_AGENT_SDK_CLIENT_APP: `ClaudeGUI/${this.deps.appVersion}` },
       stderr: (data) => this.deps.log(`[claude ${this.id.slice(0, 8)} stderr] ${data.trimEnd()}`),
@@ -388,7 +407,7 @@ export class SessionRuntime {
     this.processCostSeen = 0
     this.tasks.clear()
     this.live.backgroundTasks = []
-    this.deps.log(`[session ${this.id}] started (${resume ? 'resume' : 'new'}) cwd=${this.record.cwd}`)
+    this.deps.log(`[session ${this.id}] started (${resume ? 'resume' : 'new'}) cwd=${this.record.cwd}${launch ? ` provider=${providerId} model=${launch.model}` : ''}`)
     this.runLoop = this.consume(q)
     q.initializationResult()
       .then((init) => {
@@ -937,12 +956,35 @@ export class SessionRuntime {
 
   // ---------------------------------------------------------------- controls
 
-  async setModel(model: string): Promise<void> {
+  /**
+   * Change the model, and with it possibly the provider ('codex', 'deepseek', ... or undefined for
+   * Anthropic). A provider lives in the process environment, so changing it replaces the process;
+   * the conversation is resumed in the new one. Within a provider the running process just switches.
+   */
+  async setModel(model: string, provider?: string): Promise<void> {
+    const next = provider && provider !== 'anthropic' ? provider : undefined
+    const previous = this.record.provider ?? undefined
+    const providerChanged = previous !== next
     this.record.model = model || undefined
+    this.record.provider = next
     this.live.model = model || undefined
     this.deps.saveRecord(this.record)
-    if (this.q) await this.q.setModel(model || undefined)
+    if (this.q && providerChanged) {
+      this.deps.log(`[session ${this.id}] provider ${previous ?? 'anthropic'} -> ${next ?? 'anthropic'}: restarting`)
+      await this.restart()
+    } else if (this.q) {
+      await this.q.setModel(model || undefined)
+    }
     this.scheduleFlush()
+  }
+
+  /** Replace the process (the conversation is resumed): needed when its environment changes. */
+  private async restart(): Promise<void> {
+    await this.stop(true)
+    // The old read loop must have wound down before a new process starts (see rewind()).
+    if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
+    if (this.q) throw new Error('The old Claude process is still winding down; try again in a moment.')
+    await this.ensureStarted()
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {

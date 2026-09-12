@@ -20,6 +20,7 @@ import type {
   PermissionDecision,
   PermissionMode,
   QueuedPromptTakeBack,
+  ProviderView,
   RewindPreview,
   RewindResult,
   SdkUsage,
@@ -378,7 +379,7 @@ export class HostClient extends EventEmitter {
   history(id: string): Promise<ChatMessage[]> {
     return this.call('history', id)
   }
-  create(opts: { cwd: string; title?: string; model?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): Promise<SessionRecord> {
+  create(opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): Promise<SessionRecord> {
     return this.call('create', opts)
   }
   importCli(sessionId: string, cwd: string, title?: string): Promise<SessionRecord> {
@@ -424,8 +425,12 @@ export class HostClient extends EventEmitter {
   answerPermission(id: string, requestId: string, decision: PermissionDecision): Promise<boolean> {
     return this.call('answerPermission', id, requestId, decision)
   }
-  setModel(id: string, model: string): Promise<void> {
-    return this.call('setModel', id, model)
+  setModel(id: string, model: string, provider?: string): Promise<void> {
+    return this.call('setModel', id, model, provider)
+  }
+  /** The other model providers (Settings) with the models each offers right now. */
+  providers(refresh?: boolean): Promise<ProviderView[]> {
+    return this.call('providers', Boolean(refresh))
   }
   setPermissionMode(id: string, mode: PermissionMode): Promise<void> {
     return this.call('setPermissionMode', id, mode)

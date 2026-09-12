@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.23 — 2026-09-12
+
+### Models of other providers in the model picker
+- **GPT (ChatGPT subscription through the Codex bridge), DeepSeek and Kimi models sit in the same
+  model picker as the Claude models**, in the chat toolbar and in the New session window, grouped by
+  provider. Pick one and the chat runs on it; pick a Claude model again and it comes back. Switching
+  to another provider restarts Claude Code and continues the same conversation there, the way
+  `cc-gpt --continue` does in the terminal.
+- **The lists come from the providers, not from the app**: the GPT list is what your Codex
+  subscription offers right now (the Codex CLI's own model cache) matched against what the bridge
+  accepts, so a new model such as GPT-6 shows up by itself; a model the bridge does not know yet is
+  shown greyed with "bridge update needed". DeepSeek and Kimi are asked for their model lists with
+  the key your launcher uses. Lists are read at every app start and with "Refresh model lists".
+- **Set up from Settings → Claude → Other model providers**: one row per provider with the command
+  from your shell that runs Claude Code on it (`cc-gpt`, `cc-ds`, `cc-kimi` by default). The app
+  runs that command in your login shell with a stand-in `claude`, exactly as the terminal would (the
+  bridge is started, keys come from the Keychain, the compaction limits apply), and reads the
+  environment it sets. Rows can be added, switched off or removed. A provider whose command is not
+  defined or whose login is missing is listed with the reason instead of its models.
+- Chats on these providers keep the app's own permission mode (the terminal launchers default to
+  bypassing permissions; the app does not).
+- Session host change: after the update, quit the app fully (Cmd-Q) and open it again.
+
 ## 1.0.22 — 2026-09-12
 
 ### A rewind keeps the chat running

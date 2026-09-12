@@ -16,6 +16,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   useProjectSettings: true,
   useLocalSettings: true,
   fileCheckpointing: true,
+  providers: [
+    { id: 'codex', name: 'GPT via Codex (ChatGPT subscription)', launcher: 'cc-gpt', modelsUrl: '', enabled: true },
+    { id: 'deepseek', name: 'DeepSeek', launcher: 'cc-ds', modelsUrl: 'https://api.deepseek.com/models', enabled: true },
+    { id: 'kimi', name: 'Kimi', launcher: 'cc-kimi', modelsUrl: 'https://api.moonshot.cn/v1/models', enabled: true }
+  ],
   autoTitle: true,
   // General
   notifications: true,

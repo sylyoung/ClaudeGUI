@@ -20,6 +20,7 @@ import type { AppSettings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/defaults'
 import { SessionsStore, SettingsStore } from '../main/store'
 import { getLoginShellEnv, getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache } from '../main/env'
+import { ProviderService } from './providers/ProviderService'
 import { SessionManager } from './sessions/SessionManager'
 import { setToolResultMaxChars } from './sessions/transcript'
 import { HOST_PROTOCOL, LineParser, writeFrame, type Frame, type HostEvent, type HostFile, type RequestFrame } from './protocol'
@@ -89,8 +90,11 @@ function emit(ev: HostEvent): void {
   writeFrame(client, { k: 'ev', ...ev })
 }
 
+const providers = new ProviderService({ getSettings: () => settings, log })
+
 const manager = new SessionManager(store, {
   getEnv: () => getSpawnEnv(parseExtraEnv(settings.extraEnv)),
+  launchProvider: (id, model) => providers.launch(id, model),
   getExecutable: () => executable,
   getSettings: () => settings,
   appVersion: version,
@@ -151,7 +155,7 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
     case 'answerPermission':
       return manager.answerPermission(a[0], a[1], a[2])
     case 'setModel':
-      return manager.get(a[0]).setModel(a[1])
+      return manager.get(a[0]).setModel(a[1], a[2])
     case 'setPermissionMode':
       return manager.get(a[0]).setPermissionMode(a[1])
     case 'setEffort':
@@ -194,6 +198,8 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.moveSession(a[0], a[1] ?? {})
     case 'relocate':
       return manager.relocate(a[0], a[1])
+    case 'providers':
+      return providers.list(Boolean(a[0]))
     case 'planUsage':
       return manager.planUsageFromAnySession()
     case 'resumeOnLaunch':
@@ -211,6 +217,7 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return null
     case 'reloadEnv': {
       resetLoginShellEnvCache()
+      providers.reset()
       const e = await getLoginShellEnv()
       return Object.keys(e).length
     }
