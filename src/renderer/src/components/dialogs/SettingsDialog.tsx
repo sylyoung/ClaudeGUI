@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Check as CheckIcon, ExternalLink } from 'lucide-react'
-import type { AccentColor, AppSettings, Density, DoubleClickAction, EffortLevel, PermissionMode, ResumeOnLaunch, ThemeMode, ThinkingDisplay } from '@shared/types'
+import type { AccentColor, AppSettings, Density, DoubleClickAction, EffortLevel, OpenFilesWith, PermissionMode, ResumeOnLaunch, ThemeMode, ThinkingDisplay } from '@shared/types'
 import { useStore } from '@/store'
 import { Modal } from '../common/Modal'
 import { ACCENTS, applyTheme, isDarkTheme } from '@/lib/theme'
@@ -272,9 +272,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           {tab === 'files' && (
             <>
               <Section title="Opening files">
-                <Check label="Open non-text files (Word, PDF, spreadsheets…) with their default macOS app" hint="Text and images open in the built-in viewer; everything else goes to the app Finder would use." checked={draft.openBinaryWithSystemApp} onChange={(v) => upd({ openBinaryWithSystemApp: v })} />
-                <Field label="Double-click on a file">
-                  <select className="select" value={draft.doubleClickAction} onChange={(e) => upd({ doubleClickAction: e.target.value as DoubleClickAction })}>
+                <Field label="Clicking a file (in the chat, the file tree or the Git panel) opens it" hint="The built-in viewer stays available from the right-click menu (“Open in viewer”).">
+                  <select className="select" style={{ maxWidth: 420 }} value={draft.openFilesWith} onChange={(e) => upd({ openFilesWith: e.target.value as OpenFilesWith })}>
+                    <option value="system">Its default macOS app, for every file (.md and .txt included)</option>
+                    <option value="viewer-text">Viewer for text and images, default app for the rest</option>
+                    <option value="viewer">The built-in viewer</option>
+                  </select>
+                </Field>
+                <Field label="Double-click on a file in the file tree">
+                  <select className="select" style={{ maxWidth: 420 }} value={draft.doubleClickAction} onChange={(e) => upd({ doubleClickAction: e.target.value as DoubleClickAction })}>
                     <option value="system">Open with the default macOS app</option>
                     <option value="editor">Open in the editor below</option>
                     <option value="viewer">Open in the built-in viewer</option>

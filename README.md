@@ -13,7 +13,7 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.20** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.21** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
@@ -58,9 +58,9 @@ repository (ClaudeGUI → Check for Updates…).
 - **Permissions in the GUI**: Allow / Always allow / Deny (with a message) cards, AskUserQuestion
   forms, plan approval. `⌘⏎` allows the first pending request.
 - **Clickable links**: URLs open in the browser; file paths (absolute, `~`, relative, `file:line`)
-  open in the built-in viewer at that line. Files that are not text or images (Word, PDF,
-  spreadsheets, document bundles…) open with their **default macOS app**. `⌘`-click opens a file in
-  your editor (auto-detected: Sublime `subl`, Cursor, VS Code, Zed). Right-click for default app /
+  open with their **default macOS app** — every kind of file, `.md` and `.txt` included (Settings →
+  Files can send text and images to the built-in viewer instead). `⌘`-click opens a file in your
+  editor (auto-detected: Sublime `subl`, Cursor, VS Code, Zed). Right-click for viewer / default app /
   "Open with…" / editor / Finder / copy path.
 - **File explorer** for the session's working directory (auto-refreshing, with git status badges and
   colours), a tabbed **file viewer** with line numbers, syntax highlighting, image preview, markdown

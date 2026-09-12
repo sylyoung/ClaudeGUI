@@ -8,6 +8,7 @@ import { PopupSelect, type PopupOption } from '../common/PopupSelect'
 import { GroupColorPicker } from '../common/GroupColorPicker'
 import { isDarkTheme } from '@/lib/theme'
 import { isComposing } from '@/lib/keys'
+import { openFileFromClick } from '@/lib/openFiles'
 import { MessageList } from './MessageList'
 import { StateMark } from '../common/StateMark'
 import { Composer } from './Composer'
@@ -66,7 +67,6 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const themeInfo = useStore((s) => s.theme)
   const themeMode = useStore((s) => s.settings?.theme ?? 'system')
   const showPanelTab = useStore((s) => s.showPanelTab)
-  const openBinaryExternally = useStore((s) => s.settings?.openBinaryWithSystemApp ?? true)
   const gitBranch = useStore((s) => s.git[record.id]?.status?.info.branch)
   const gitInfo = useStore((s) => s.git[record.id]?.status?.info)
   const gitConflicts = useStore((s) => {
@@ -139,15 +139,12 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           toggleExpanded(record.id, abs, true)
           setRevealPath(record.id, abs)
           setFilesOpen(true)
-        } else if (probe.kind === 'bundle' || ((probe.kind === 'binary' || probe.kind === 'too-large') && openBinaryExternally)) {
-          const err = await window.api.shell.openPath(abs)
-          if (err) toast(err, 'error')
-        } else openFile(record.id, abs, line)
+        } else await openFileFromClick(record.id, abs, line, probe.kind)
       } catch (err) {
         toast((err as Error).message, 'error')
       }
     },
-    [record.cwd, record.id, toast, openFile, toggleExpanded, setRevealPath, openBinaryExternally, setFilesOpen]
+    [record.cwd, record.id, toast, toggleExpanded, setRevealPath, setFilesOpen]
   )
 
   const showPathMenu = useCallback<ChatCtx['showPathMenu']>(

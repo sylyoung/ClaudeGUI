@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-11 (session 4, v1.0.20)
+Last updated: 2026-09-11 (session 4, v1.0.21)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,28 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.21
+Request: "I want all files to be defaultly opened by the system apps, not like .md files would be
+open in the app."
+- Before: `ChatView.openPath`, `FileTree.activate` and the Git panel's double click sent text and
+  images to the built-in viewer and only binary / too-large / bundle files to `shell.openPath`
+  (setting `openBinaryWithSystemApp`, a checkbox).
+- Fix (renderer only): one helper `src/renderer/src/lib/openFiles.ts` (`openFileFromClick`) used by
+  all three places, driven by the new setting `openFilesWith` (`'system'` default | `'viewer-text'`
+  = the old behaviour | `'viewer'`); the old key is dropped (stored values are ignored, defaults
+  merge in). The file tree ignores the second click of a double click (`ev.detail > 1`) and skips a
+  double-click action that would repeat the single click. The viewer's own auto-hand-off of binary
+  files to their app now follows `openFilesWith !== 'viewer'`.
+- [x] `npm run typecheck` clean.
+- [x] Live check in the dev instance (own data folder, Haiku chat in `sandbox/v1021-check/work`,
+      deleted afterwards). The bridge object cannot be stubbed (`window.api` is not redefinable), so
+      the test file was a text file with an extension no app owns (`notes.zzqx`): the probe calls
+      it text, the old code would have shown it in the viewer, the system opener returns "Failed to
+      open path" without launching anything. Results: chat link click → that toast, no viewer tab;
+      tree row click → same; a click with `detail: 2` plus a `dblclick` → nothing; with the setting
+      on "viewer-text" the tree click opens a viewer tab and no toast; setting reset to "system".
+      Screenshot of Settings → Files: `sandbox/shots/v1021-settings-files.png`.
 
 ### v1.0.20
 Request: "when a prompt like /compact was queued, registered later, the chat would not show that the

@@ -8,6 +8,7 @@ import { ContextMenu, type MenuItem } from '../common/ContextMenu'
 import { DiffView } from '../common/DiffView'
 import { basename, relativeTime, timeAgo } from '@/lib/format'
 import { isComposing } from '@/lib/keys'
+import { openFileFromClick } from '@/lib/openFiles'
 
 const LETTER: Record<GitFileState, string> = {
   modified: 'M', added: 'A', deleted: 'D', renamed: 'R', copied: 'C', typechange: 'T', conflicted: '!', untracked: 'U', ignored: 'i'
@@ -250,7 +251,7 @@ export function GitPanel({ record }: { record: SessionRecord }) {
     const state = staged ? f.index : f.worktree
     const { dir, base } = splitPath(f.path)
     return (
-      <div key={`${staged ? 's' : 'w'}:${f.path}`} className={`git-row st-${state} ${isSelected(f, staged) ? 'selected' : ''}`} onClick={() => select(f, staged)} onDoubleClick={() => !f.isDir && openFile(record.id, f.absPath)} onContextMenu={(e) => fileMenu(e, f, staged)} data-tip={f.origPath ? `${f.origPath} → ${f.path}` : f.path}>
+      <div key={`${staged ? 's' : 'w'}:${f.path}`} className={`git-row st-${state} ${isSelected(f, staged) ? 'selected' : ''}`} onClick={() => select(f, staged)} onDoubleClick={() => !f.isDir && void openFileFromClick(record.id, f.absPath)} onContextMenu={(e) => fileMenu(e, f, staged)} data-tip={f.origPath ? `${f.origPath} → ${f.path}` : f.path}>
         <span className={`g-badge st-${state}`}>{gitLetter(state)}</span>
         <span className="g-path">
           {dir && <span className="g-dir">{dir}</span>}

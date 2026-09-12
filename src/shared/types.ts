@@ -366,6 +366,12 @@ export type Density = 'comfortable' | 'compact'
 export type FileSort = 'name' | 'name-desc' | 'modified' | 'size' | 'type'
 export type ThinkingDisplay = 'collapsed' | 'expanded' | 'hidden'
 export type DoubleClickAction = 'system' | 'editor' | 'viewer'
+/**
+ * Where a plain click on a file goes: 'system' hands every file to the app Finder would use;
+ * 'viewer-text' shows text and images in the built-in viewer and hands the rest to their app;
+ * 'viewer' shows everything the viewer can show in the viewer.
+ */
+export type OpenFilesWith = 'system' | 'viewer-text' | 'viewer'
 export type ResumeOnLaunch = 'none' | 'active' | 'pinned' | 'all'
 
 /** Sidebar layout: sessions grouped by their user-defined group, or a flat pinned / recent list. */
@@ -445,7 +451,8 @@ export interface AppSettings {
   showHiddenFiles: boolean
   /** Names hidden from the file tree (comma separated, e.g. node_modules,.git). */
   excludePatterns: string
-  openBinaryWithSystemApp: boolean
+  /** What a click on a file does (chat links, file tree, Git panel); the viewer stays in the right-click menu. */
+  openFilesWith: OpenFilesWith
   doubleClickAction: DoubleClickAction
   autoRevealEditedFiles: boolean
   maxPreviewKB: number

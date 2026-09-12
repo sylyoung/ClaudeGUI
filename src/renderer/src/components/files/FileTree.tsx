@@ -4,6 +4,7 @@ import type { FileSort, FsEntry, GitFileState, GitFileStatus, GitStatusResult } 
 import { useStore } from '@/store'
 import { editedFiles } from '@/lib/editedFiles'
 import { basename, formatBytes } from '@/lib/format'
+import { openFileFromClick } from '@/lib/openFiles'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
 import { gitLetter } from '../git/GitPanel'
 
@@ -105,7 +106,7 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
   const showHidden = settings?.showHiddenFiles ?? false
   const showSizes = settings?.showFileSizes ?? true
   const excludePatterns = settings?.excludePatterns ?? ''
-  const openBinaryExternally = settings?.openBinaryWithSystemApp ?? true
+  const openMode = settings?.openFilesWith ?? 'system'
   const doubleClick = settings?.doubleClickAction ?? 'system'
   const autoReveal = settings?.autoRevealEditedFiles ?? false
   const gitBadges = (settings?.gitEnabled ?? true) && (settings?.gitShowStatusInTree ?? true)
@@ -188,7 +189,7 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
 
   const openExternally = (p: string) => window.api.shell.openPath(p).then((err) => err && toast(err, 'error'))
 
-  /** Single click: folders expand, viewable files open in the viewer, everything else opens with its app. */
+  /** Single click: folders expand; files open the way Settings → Files says (default: their macOS app). */
   const activate = async (e: FsEntry) => {
     if (e.isDir) {
       if (BUNDLE_EXT.has(extOf(e.name))) return openExternally(e.path)
@@ -196,11 +197,7 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
       return
     }
     try {
-      const probe = await window.api.fs.probe(e.path)
-      if (probe.kind === 'text' || probe.kind === 'image') openFile(sessionId, e.path)
-      else if (probe.kind === 'missing') toast('File no longer exists', 'error')
-      else if (openBinaryExternally) await openExternally(e.path)
-      else openFile(sessionId, e.path)
+      await openFileFromClick(sessionId, e.path)
     } catch (err) {
       toast((err as Error).message, 'error')
     }
@@ -208,6 +205,8 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
 
   const onDouble = (e: FsEntry) => {
     if (e.isDir && !BUNDLE_EXT.has(extOf(e.name))) return
+    // The single click has already handed the file to its app; do not open it a second time.
+    if (doubleClick === 'system' && (openMode === 'system' || e.isDir)) return
     if (doubleClick === 'editor') void window.api.shell.openInEditor(e.path)
     else if (doubleClick === 'viewer') openFile(sessionId, e.path)
     else void openExternally(e.path)
@@ -272,7 +271,12 @@ export function FileTree({ sessionId, root }: { sessionId: string; root: string 
             className={`tree-row ${active === e.path ? 'selected' : ''} ${cls}`}
             style={{ paddingLeft: 6 + depth * 14 }}
             data-path={e.path}
-            onClick={(ev) => (ev.altKey || ev.metaKey ? void window.api.shell.openInEditor(e.path) : void activate(e))}
+            onClick={(ev) => {
+              // The second click of a double click is not another single click.
+              if (ev.detail > 1) return
+              if (ev.altKey || ev.metaKey) void window.api.shell.openInEditor(e.path)
+              else void activate(e)
+            }}
             onDoubleClick={() => onDouble(e)}
             onContextMenu={(ev) => entryMenu(ev, e)}
             data-tip={`${e.path}${g.state ? `\n(git: ${g.state}${g.staged ? ', staged' : ''})` : ''}`}

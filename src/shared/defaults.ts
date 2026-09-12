@@ -52,7 +52,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   editorCommand: '',
   showHiddenFiles: false,
   excludePatterns: 'node_modules, .git, __pycache__, .DS_Store',
-  openBinaryWithSystemApp: true,
+  openFilesWith: 'system',
   doubleClickAction: 'system',
   autoRevealEditedFiles: false,
   maxPreviewKB: 1500,

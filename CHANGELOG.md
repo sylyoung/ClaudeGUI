@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.21 — 2026-09-11
+
+### Every file opens with its default macOS app
+- **Clicking a file hands it to the app Finder would use, whatever kind of file it is.** Until now
+  text files and images (`.md`, `.txt`, `.py`, `.png`…) opened in the built-in viewer and only
+  Word, PDF, spreadsheets and the like went to their macOS app. That split is gone: a path in the
+  chat, a row in the file tree and a changed file in the Git panel all open with the default app.
+  The built-in viewer is still one right-click away ("Open in viewer"), and `⌘`-click still opens
+  the file in your editor.
+- **One setting instead of the old checkbox.** Settings → Files → "Clicking a file opens it" offers
+  the new default (default macOS app for every file), the previous behaviour (text and images in
+  the viewer, other files in their app) and "always in the viewer".
+- **A double click no longer opens a file twice.** The second click of a double click used to count
+  as another single click; and when both the single and the double click are set to the default
+  app, the double click now does nothing extra.
+- Window only: no full quit needed after the update.
+
 ## 1.0.20 — 2026-09-11
 
 ### The chat shows that it is working from the moment Claude Code takes a prompt

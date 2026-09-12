@@ -33,7 +33,7 @@ export function FileViewer({ sessionId }: { sessionId: string }) {
 function FileBody({ tab }: { tab: FileTab }) {
   const [content, setContent] = useState<FileContent | null>(null)
   const [preview, setPreview] = useState(true)
-  const openBinaryExternally = useStore((s) => s.settings?.openBinaryWithSystemApp ?? true)
+  const openBinaryExternally = useStore((s) => (s.settings?.openFilesWith ?? 'system') !== 'viewer')
   const toast = useStore((s) => s.toast)
   const ref = useRef<HTMLDivElement>(null)
   const autoOpened = useRef<string | null>(null)
