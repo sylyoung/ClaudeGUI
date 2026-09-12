@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.22 — 2026-09-12
+
+### A rewind keeps the chat running
+- **Rewinding no longer leaves the chat "not running".** Claude Code can only replay a cut
+  conversation when it starts, so a rewind has to replace the chat's Claude process. Until now the
+  process was stopped and stayed stopped until the next prompt started a new one. Now a new process
+  is started at the fork point straight away: the chat is back to idle within a few seconds, with
+  the prompt in the input box, and Claude no longer remembers what was cut. A chat that was not
+  running before the rewind stays as it was.
+- The rewind window and the confirmation say so ("Claude Code was restarted at that point").
+- Session host change: after the update, quit the app fully (⌘Q) and open it again for this to take
+  effect — the same quit the 1.0.19 and 1.0.20 host fixes are waiting for.
+
 ## 1.0.21 — 2026-09-11
 
 ### Every file opens with its default macOS app

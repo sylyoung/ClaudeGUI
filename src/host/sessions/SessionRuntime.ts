@@ -543,8 +543,11 @@ export class SessionRuntime {
 
   /**
    * Cut the chat back to just before one of your prompts: optionally put the files Claude changed
-   * since then back as they were, stop the process, drop the messages from that prompt onwards and
-   * remember the fork point, so the next message continues the conversation from there.
+   * since then back as they were, drop the messages from that prompt onwards and remember the fork
+   * point. Claude Code can only replay a cut conversation when it starts (`resumeSessionAt` is a
+   * start option, there is no request for it), so the process has to be replaced: it is stopped
+   * and, if it was running, started again at the fork point straight away, so the chat is ready
+   * to go on instead of being left "not running".
    */
   async rewind(messageId: string, restoreFiles: boolean): Promise<RewindResult> {
     const { index, text, forkAt } = this.rewindTarget(messageId)
@@ -560,7 +563,11 @@ export class SessionRuntime {
       filesRestored = r.filesChanged?.length ?? planned?.filesChanged?.length ?? 0
       filesSkipped = r.skippedLinks ?? 0
     }
+    const wasRunning = Boolean(this.q)
     await this.stop(true)
+    // The old read loop must have wound down before a new process starts: its last step marks the
+    // session as stopped, and it would do that to the new process otherwise.
+    if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
     for (const m of this.transcript.messages.slice(index)) this.transcript.removeMessage(m.id)
     this.resumeAt = forkAt
     const lastPrompt = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && !m.synthetic)
@@ -572,7 +579,18 @@ export class SessionRuntime {
     this.deps.log(`[session ${this.id}] rewound to ${messageId} (files: ${restoreFiles ? filesRestored : 'kept'})`)
     this.scheduleFlush()
     this.flush()
-    return { text, filesRestored, filesSkipped }
+    let restarted = false
+    if (wasRunning && !this.q) {
+      try {
+        await this.ensureStarted()
+        restarted = true
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] restart after rewind failed: ${(err as Error).message}`)
+      }
+    } else if (wasRunning) {
+      this.deps.log(`[session ${this.id}] old process still winding down after rewind; not restarted`)
+    }
+    return { text, filesRestored, filesSkipped, restarted }
   }
 
   async interrupt(): Promise<void> {

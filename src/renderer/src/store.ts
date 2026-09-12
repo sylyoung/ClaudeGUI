@@ -423,7 +423,8 @@ export const useStore = create<State>((set, get) => ({
       }))
       const files = restoreFiles ? `, ${r.filesRestored} file${r.filesRestored === 1 ? '' : 's'} put back` : ''
       const skipped = r.filesSkipped ? `, ${r.filesSkipped} skipped (links)` : ''
-      get().toast(`Rewound to your earlier prompt${files}${skipped}. The prompt is back in the input box.`, 'success')
+      const claude = r.restarted ? ' Claude Code was restarted at that point, and the' : ' The'
+      get().toast(`Rewound to your earlier prompt${files}${skipped}.${claude} prompt is back in the input box.`, 'success')
     } catch (err) {
       get().toast(`Rewind failed: ${(err as Error).message}`, 'error')
       throw err

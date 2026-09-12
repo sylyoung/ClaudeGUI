@@ -304,6 +304,8 @@ export interface RewindResult {
   filesRestored: number
   /** Files that were tracked but could not be restored safely. */
   filesSkipped: number
+  /** Whether Claude Code was started again at the fork point (only when it was running before). */
+  restarted: boolean
 }
 
 // ---------------------------------------------------------------------------

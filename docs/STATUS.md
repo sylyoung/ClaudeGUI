@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-11 (session 4, v1.0.21)
+Last updated: 2026-09-12 (session 4, v1.0.22)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,27 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.22
+Request: "after rewind, the chat process is automatically terminated." The user had rewound their
+own development chat twice (host log 13:27Z and 13:48Z, on the 1.0.18 host): each time the chat
+went to "not running" and only the next prompt started the process again.
+- Cause: `SessionRuntime.rewind` calls `stop(true)` and never starts again; the SDK (0.3.263) has
+  no in-process conversation rewind — `resumeSessionAt` is a start option only, `rewind_files` is
+  the only rewind control request — so the process must be replaced, but nothing replaced it.
+- Fix (host): `rewind` remembers whether the process was running, waits for the old read loop to
+  wind down (its `finally` marks the session stopped and would do that to the new process), and
+  after the cut calls `ensureStarted()`, which starts at `resumeAt`; `RewindResult.restarted`
+  reports it. Renderer: the toast and the rewind window's hint say Claude Code is restarted at that
+  point.
+- [x] `npm run typecheck` clean.
+- [x] Live check in the dev instance (fresh dev host, Haiku chat in `sandbox/v1022-check/work`,
+      deleted afterwards): two turns (code word PINEAPPLE, then BANANA), rewind to the second prompt
+      → result `restarted: true`, host log "rewound → resuming at … (rewind) → started (resume)"
+      within 4 ms, chat idle with the process alive after 3 s, messages cut to the first turn; the
+      next prompt ("What is the code word?") answered PINEAPPLE. Rewind through the store action
+      shows the new toast. A stopped chat rewound stays stopped (`restarted: false`).
+- Needs ⌘Q in the user's app: their host is still 1.0.18 (pid 62143, started 2026-09-11 03:09).
 
 ### v1.0.21
 Request: "I want all files to be defaultly opened by the system apps, not like .md files would be

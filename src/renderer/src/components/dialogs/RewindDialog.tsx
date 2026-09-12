@@ -55,7 +55,8 @@ export function RewindDialog({ sessionId, messageId, onClose }: { sessionId: str
             <div className="rewind-quote">{preview.text.slice(0, 400) || '(empty prompt)'}</div>
             <div className="hint">
               Everything after it — Claude's answers and your later prompts — is removed from the chat, and this prompt
-              goes back into the input box so you can change it and send it again.
+              goes back into the input box so you can change it and send it again. Claude Code is restarted at that
+              point, so it no longer remembers what came after, and the chat stays ready.
             </div>
           </div>
           <div className="field">
