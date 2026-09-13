@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.0.27 — 2026-09-13
+
+### Model names written the same way everywhere
+- **One spelling for every model, in the sidebar, the chat header, the message rows and the picker**:
+  `gpt-5.6-sol[1m]` reads "GPT-5.6 Sol (1M)", `kimi-k2.7-code` reads "Kimi K2.7 Code",
+  `deepseek-v4-flash` reads "DeepSeek V4 Flash", `claude-haiku-4-5-20251001` reads "Haiku 4.5".
+  A version number stays attached to the word in front of it (GPT-5.6) while variant words are
+  separated by spaces (Codex Spark, Mini, Fast).
+- The launchers name their own models in mixed styles — Codex supplied "GPT-6-Astra" beside raw
+  "gpt-5.2", DeepSeek and Kimi supplied raw ids — so the app now spells them itself (the choice was
+  the user's: brand-and-version hyphenated, variants spaced). Where a launcher's label says something
+  the id does not, such as DeepSeek's "what cc-ds uses by itself", that note is kept as the row's
+  tooltip.
+- A chat on another provider that runs the launcher's own choice now reads "Default · GPT-5.6 Sol
+  (1M)" instead of "default model ()".
+
+### The context meter is no longer the part that gets cut off
+- **The chat's status row gives way in order so the meter always fits.** The row is a single line that
+  cannot wrap: with the file panel open it needs about 900 px inside an 868 px panel (measured), and
+  the meter at its end was the part that lost its rounded edge and its number — the number being the
+  reason the row exists. The decorations now drop in a fixed order when room runs short (folder size,
+  git remote, changed-file count, last-activity time, last-prompt time, git branch, push button), and
+  nothing is hidden while the row still fits. Only if even a stripped row is too narrow does the meter
+  itself make room, its label ending in an ellipsis.
+- Measured in a dev instance: at 868 px one item drops (the folder size) and the meter keeps
+  "25k / 872k · 3%" on screen; at 578 px five drop and the meter is still whole; at 238 px (a chat
+  column squeezed beside a 900 px sidebar and the file panel) the label ellipsises instead of the
+  panel cutting the pill.
+
+### Measured, not fixed: the two context counts behind the toolbar percentage
+- Right after a compaction the toolbar number can read *higher* than before it (dev chat: 24k → 40k,
+  twice; the chat's own row said "24,274 tokens → 1,829"). Claude Code answered differently each way
+  it was asked, for the same idle chat, seconds apart:
+  - **On a Claude chat** (`claude-opus-5`, 2026-09-13) the two agree once the out-of-window rows are
+    taken out: summary total 21,566 = its rows minus "System tools (deferred)" 25,956; full total
+    32,198 = the same rule with the newest Messages row counted (10,632). Both are internally
+    consistent.
+  - **On a GPT chat through the bridge** the two disagree row by row: System tools 20,897 vs 4,770,
+    System prompt 2,270 vs 1,680, Memory 1,149 vs 768, Messages 2,603 vs 1,996 — and the summary's
+    total (24,153) does not equal its own rows (33,863) either. The bridge counts with Codex's
+    tokenizer while Claude Code estimates, so the same row is measured two ways.
+  - The app shows the CLI's `summary` number (refreshed after each turn) and its `full` number behind
+    the popover's *Recount* button; which of the two is shown is what makes the percentage move.
+    Nothing was changed here: the CLI's own number is also the one its compaction acts on (a
+    compaction boundary reported pre 23,682 tokens while the toolbar read 24,153 in summary mode).
+  - Noted while measuring: the CLI reported `autoCompactThreshold` 839,000 for the 872,000 window,
+    i.e. window minus the 33,000 reserve, although `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=92` was set — the
+    ~802,240 the launcher's help text promises. Worth checking whether the 92 % reaches the CLI.
+
 ## 1.0.26 — 2026-09-13
 
 ### A compaction shows that it is running, instead of a percentage frozen from before it

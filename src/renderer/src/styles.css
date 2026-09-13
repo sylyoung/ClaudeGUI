@@ -888,6 +888,16 @@ button.stat:disabled { opacity: 0.5; cursor: default; }
 .cs-item.cwd { flex: 0 1 auto; min-width: 90px; }
 .cs-item.remote { flex: 0 1 auto; min-width: 60px; }
 .cs-item.cwd .ellipsis { min-width: 0; }
+/* Long paths are shortened rather than left to push the context meter off the row's end. */
+.cs-item.cwd .ellipsis { max-width: 30ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-item.remote .ellipsis { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Set by useRowFit on the decorations that give way so the context meter always fits. */
+.cs-dropped { display: none !important; }
+/* Last resort, when even a row stripped of every decoration is too narrow: the meter makes room
+   itself and its label ends in an ellipsis, rather than the panel cutting the pill off. */
+.chat-status.cs-tight .ctx-bar { flex: 0 1 auto; min-width: 0; }
+.chat-status.cs-tight .ctx-bar .ctx-track { flex: 0 1 72px; min-width: 26px; }
+.chat-status.cs-tight .ctx-bar .ctx-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 button.cs-item:hover { color: var(--accent); }
 .cs-item.gtag { font-family: var(--sans); font-size: 11.5px; }
 .chat-status .ctx-bar { flex-shrink: 0; }

@@ -36,6 +36,42 @@ const FALLBACK_MODELS = [
   { value: 'claude-haiku-4-5', label: 'Haiku 4.5 (claude-haiku-4-5)' }
 ]
 
+/**
+ * The status row is a single line that cannot wrap, and the context meter sits at its end: when the
+ * sidebar, the window or the file panel leaves too little room, the meter's right end was the part
+ * that got cut off — its rounded edge and its number gone, which is exactly the part worth reading
+ * (measured: the row is 909 px wide inside a 868 px panel with the files open). So the decorations
+ * in front of it give way instead, in the order they carry `data-row-drop`, and the reader loses
+ * the least useful thing first. Nothing is hidden while the row still fits.
+ */
+function useRowFit(ref: React.RefObject<HTMLDivElement | null>): void {
+  React.useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const fit = () => {
+      const drops = Array.from(el.querySelectorAll<HTMLElement>('[data-row-drop]')).sort(
+        (a, b) => Number(a.dataset.rowDrop) - Number(b.dataset.rowDrop)
+      )
+      // Dropping a class React does not know about, so a re-render puts the element back and this
+      // runs again right after it — the row is measured against whatever is on screen now.
+      el.classList.remove('cs-tight')
+      for (const d of drops) d.classList.remove('cs-dropped')
+      for (const d of drops) {
+        if (el.scrollWidth <= el.clientWidth) return
+        d.classList.add('cs-dropped')
+      }
+      // Even with every decoration gone the row is too narrow (a chat column squeezed beside a wide
+      // sidebar and the file panel). Only then does the meter itself make room, its label giving way
+      // with an ellipsis — the sweep of a running compaction and the pill's shape stay.
+      if (el.scrollWidth > el.clientWidth) el.classList.add('cs-tight')
+    }
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(el)
+    return () => ro.disconnect()
+  })
+}
+
 /** Size of the working directory (du), refreshed when a turn ends and every five minutes. */
 function useDirInfo(cwd: string, status: string | undefined): DirInfo | null {
   const [info, setInfo] = useState<DirInfo | null>(null)
@@ -80,6 +116,9 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     return st.files.filter((f) => f.worktree !== 'ignored' && (f.index || f.worktree)).length
   })
   const refreshGit = useStore((s) => s.refreshGit)
+  // The row makes room for the context meter by dropping its decorations (see useRowFit).
+  const rowRef = useRef<HTMLDivElement>(null)
+  useRowFit(rowRef)
   const groups = useStore((s) => s.groups)
   const interruptSession = useStore((s) => s.interruptSession)
   const send = useStore((s) => s.send)
@@ -271,8 +310,12 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     ...providerModelOptions(providers)
   ]
   if (!modelOptions.some((m) => m.value === currentModel)) {
-    const name = providerModelLabel(providers, record.provider, record.model)
-    modelOptions.push({ value: currentModel, label: `${name} (${record.model ?? ''})`, short: name })
+    // A chat on another provider with no model of its own runs whatever that launcher picks by
+    // itself; naming that model is more use than "default model ()".
+    const provider = providers.find((p) => p.id === record.provider)
+    const name = record.model ? providerModelLabel(record.model) : provider?.defaultModel ? `Default · ${providerModelLabel(provider.defaultModel)}` : modelLabel(record.model)
+    const label = record.model ? `${name} (${record.model})` : provider?.defaultModel ? `${name} (its own default is ${provider.defaultModel})` : name
+    modelOptions.push({ value: currentModel, label, short: name })
   }
   const modeOptions: PopupOption[] = MODES.map((m) => ({ value: m.value, label: m.label, short: m.value, hint: m.hint }))
   const effortOptions: PopupOption[] = EFFORTS.map((e) => ({ value: e, label: EFFORT_LABELS[e] ?? e, short: EFFORT_SHORT[e] ?? e }))
@@ -455,7 +498,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
             </button>
           )}
         </div>
-        <div className="chat-status">
+        <div className="chat-status" ref={rowRef}>
           <button className="cs-item gtag" style={gColor ? { color: gColor } : undefined} data-tip={group ? `Group "${group.name}" — click to move this session to another group or change the colour` : 'Not in a group — click to put it in one'} onClick={groupMenu}>
             ● {group ? group.name : 'no group'}
           </button>
@@ -464,35 +507,35 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
             <span className="ellipsis">{shortenPath(record.cwd, appInfo?.homeDir)}</span>
           </button>
           {gitBranch && (
-            <button className={`cs-item ${gitConflicts ? 'level-high' : (gitInfo?.ahead || gitInfo?.behind) ? 'level-warn' : ''}`} data-tip={`Git branch ${gitBranch} — click to open the Git panel`} onClick={() => showPanelTab('git')}>
+            <button className={`cs-item ${gitConflicts ? 'level-high' : (gitInfo?.ahead || gitInfo?.behind) ? 'level-warn' : ''}`} data-row-drop="6" data-tip={`Git branch ${gitBranch} — click to open the Git panel`} onClick={() => showPanelTab('git')}>
               <GitBranch size={11} /> {gitBranch}
               {gitInfo && (gitInfo.ahead || gitInfo.behind) ? <span className="faint">{gitInfo.ahead ? ` ↑${gitInfo.ahead}` : ''}{gitInfo.behind ? ` ↓${gitInfo.behind}` : ''}</span> : null}
             </button>
           )}
           {gitChanges > 0 && (
-            <button className="cs-item" data-tip={`${gitChanges} changed file${gitChanges === 1 ? '' : 's'} — click to open the Git panel and write a commit message`} onClick={() => showPanelTab('git')}>
+            <button className="cs-item" data-row-drop="3" data-tip={`${gitChanges} changed file${gitChanges === 1 ? '' : 's'} — click to open the Git panel and write a commit message`} onClick={() => showPanelTab('git')}>
               <FileDiff size={11} /> {gitChanges} to commit
             </button>
           )}
           {(gitInfo?.ahead ?? 0) > 0 && (
-            <button className="cs-item push" disabled={pushing} data-tip={`${gitInfo?.ahead} commit${gitInfo?.ahead === 1 ? '' : 's'} not pushed${gitInfo?.remoteName ? ` to ${gitInfo.remoteName}` : ''} — click to push now`} onClick={() => void pushNow()}>
+            <button className="cs-item push" data-row-drop="7" disabled={pushing} data-tip={`${gitInfo?.ahead} commit${gitInfo?.ahead === 1 ? '' : 's'} not pushed${gitInfo?.remoteName ? ` to ${gitInfo.remoteName}` : ''} — click to push now`} onClick={() => void pushNow()}>
               <Upload size={11} /> {pushing ? 'pushing…' : `push ${gitInfo?.ahead}`}
             </button>
           )}
           {remoteLabel && (
-            <button className="cs-item remote" data-tip={`Git remote ${gitInfo?.remoteName ?? 'origin'}: ${gitInfo?.remoteUrl ?? ''}${gitInfo?.remoteWebUrl ? '\nClick to open it in the browser' : ''}`} onClick={() => gitInfo?.remoteWebUrl && window.api.shell.openExternal(gitInfo.remoteWebUrl)}>
+            <button className="cs-item remote" data-row-drop="2" data-tip={`Git remote ${gitInfo?.remoteName ?? 'origin'}: ${gitInfo?.remoteUrl ?? ''}${gitInfo?.remoteWebUrl ? '\nClick to open it in the browser' : ''}`} onClick={() => gitInfo?.remoteWebUrl && window.api.shell.openExternal(gitInfo.remoteWebUrl)}>
               <Github size={11} /> <span className="ellipsis">{remoteLabel}</span>
             </button>
           )}
           {dirInfo?.exists && dirInfo.bytes !== undefined && (
-            <span className={`cs-item ${dirInfo.bytes > 20 * GB ? 'level-high' : dirInfo.bytes > 5 * GB ? 'level-warn' : ''}`} data-tip={`Size of the working directory (du -sk, refreshed after each turn and every 5 minutes; checked ${formatDateTime(dirInfo.checkedAt)})${dirInfo.bytes > 5 * GB ? '\nAmber above 5 GB, red above 20 GB.' : ''}`}>
+            <span className={`cs-item ${dirInfo.bytes > 20 * GB ? 'level-high' : dirInfo.bytes > 5 * GB ? 'level-warn' : ''}`} data-row-drop="1" data-tip={`Size of the working directory (du -sk, refreshed after each turn and every 5 minutes; checked ${formatDateTime(dirInfo.checkedAt)})${dirInfo.bytes > 5 * GB ? '\nAmber above 5 GB, red above 20 GB.' : ''}`}>
               <HardDrive size={11} /> {formatBytes(dirInfo.bytes)}
             </span>
           )}
-          <span className="cs-item" data-tip={`Your last prompt: ${formatDateTime(lastPrompt)} (${timeAgo(lastPrompt)})\nThis is the time the sidebar orders sessions by.`}>
+          <span className="cs-item" data-row-drop="5" data-tip={`Your last prompt: ${formatDateTime(lastPrompt)} (${timeAgo(lastPrompt)})\nThis is the time the sidebar orders sessions by.`}>
             <MessageSquare size={11} /> {formatDateTime(lastPrompt)} <span className="faint">({timeAgo(lastPrompt)})</span>
           </span>
-          <span className="cs-item" data-tip={`Last activity in this chat (your prompts or Claude's messages): ${formatDateTime(lastAct)}`}>
+          <span className="cs-item" data-row-drop="4" data-tip={`Last activity in this chat (your prompts or Claude's messages): ${formatDateTime(lastAct)}`}>
             <Activity size={11} /> {timeAgo(lastAct)}
           </span>
           <span className="spacer" />

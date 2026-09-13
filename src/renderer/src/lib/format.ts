@@ -69,23 +69,66 @@ export function shortenPath(p: string, home?: string): string {
   return p
 }
 
+/** Names of the Claude models as people write them, matched by prefix so a dated id still finds its name. */
+const CLAUDE_MODEL_NAMES: Record<string, string> = {
+  'claude-fable-5-1': 'Fable 5.1',
+  'claude-fable-5': 'Fable 5',
+  'claude-opus-5': 'Opus 5',
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-opus-4-7': 'Opus 4.7',
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-sonnet-5': 'Sonnet 5',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-haiku-4-5': 'Haiku 4.5'
+}
+
+/** Brand and product words that are written with capitals of their own, not as title case. */
+const MODEL_WORDS: Record<string, string> = {
+  gpt: 'GPT',
+  ai: 'AI',
+  glm: 'GLM',
+  openai: 'OpenAI',
+  deepseek: 'DeepSeek',
+  kimi: 'Kimi',
+  claude: 'Claude',
+  codex: 'Codex',
+  gemini: 'Gemini',
+  qwen: 'Qwen',
+  llama: 'Llama',
+  mistral: 'Mistral',
+  grok: 'Grok'
+}
+
+/**
+ * A model id written the way people write a model name: "gpt-5.6-sol" as "GPT-5.6 Sol",
+ * "kimi-k2.7-code" as "Kimi K2.7 Code", "deepseek-v4-flash" as "DeepSeek V4 Flash". A version
+ * number stays attached to the word in front of it with a hyphen (GPT-5.6), while the variant words
+ * after it are separated by spaces. A date at the end of an id is shown as a date.
+ */
+function prettyModelId(id: string): string {
+  for (const [key, name] of Object.entries(CLAUDE_MODEL_NAMES)) if (id === key || id.startsWith(key + '-')) return name
+  const words: string[] = []
+  for (const token of id.split(/[-_]+/)) {
+    if (!token) continue
+    if (/^\d{8}$/.test(token)) {
+      words.push(`(${token.slice(0, 4)}-${token.slice(4, 6)}-${token.slice(6, 8)})`)
+      continue
+    }
+    const word = MODEL_WORDS[token.toLowerCase()] ?? (/^[a-z]/.test(token) ? token[0].toUpperCase() + token.slice(1) : token)
+    // "5.6" is a version, never a word of its own: it belongs to the word it follows.
+    if (/^\d/.test(token) && words.length) words[words.length - 1] = `${words[words.length - 1]}-${word}`
+    else words.push(word)
+  }
+  return words.join(' ') || id
+}
+
+/** The name of a model for reading, e.g. "GPT-5.6 Sol (1M)"; the id itself stays in the tooltip. */
 export function modelLabel(model: string | undefined): string {
   if (!model) return 'default model'
   if (model === '<synthetic>') return 'Claude Code'
-  const m = model.replace(/\[1m\]$/, ' (1M)')
-  const nice: Record<string, string> = {
-    'claude-fable-5-1': 'Fable 5.1',
-    'claude-fable-5': 'Fable 5',
-    'claude-opus-5': 'Opus 5',
-    'claude-opus-4-8': 'Opus 4.8',
-    'claude-opus-4-7': 'Opus 4.7',
-    'claude-opus-4-6': 'Opus 4.6',
-    'claude-sonnet-5': 'Sonnet 5',
-    'claude-sonnet-4-6': 'Sonnet 4.6',
-    'claude-haiku-4-5': 'Haiku 4.5'
-  }
-  const base = m.replace(/ \(1M\)$/, '')
-  return (nice[base] ?? base) + (m.endsWith('(1M)') ? ' (1M)' : '')
+  const long = /\[1m\]$/.test(model)
+  const pretty = prettyModelId(model.replace(/\[1m\]$/, ''))
+  return long ? `${pretty} (1M)` : pretty
 }
 
 /**

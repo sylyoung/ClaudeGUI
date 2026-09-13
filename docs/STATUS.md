@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 7, v1.0.26)
+Last updated: 2026-09-13 (session 8, v1.0.27)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,28 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.27
+Request: "shouldn there be a progress bar for executing compact?" — the progress part shipped in
+v1.0.26; then, in the same session: "the model names are not capitalized as ideal", and the user asked
+for the context-count mismatch to be looked into as its own round and for the status row to be fixed.
+- Model names: `modelLabel` (src/renderer/src/lib/format.ts) now spells every id — Claude families by
+  prefix match (so dated ids resolve), everything else token by token (brand words from a table,
+  a leading-digit token glued to the word before it, variant words spaced, an 8-digit tail shown as a
+  date). `providerModelOptions` / `providerModelLabel` (src/renderer/src/lib/providers.ts) use it and
+  keep a launcher's parenthetical note as the tooltip; ChatView names a provider-default chat
+  "Default · GPT-5.6 Sol (1M)". Style chosen by the user (AskUserQuestion, 3 previews).
+- Status row: `useRowFit` in ChatView + `[data-row-drop]` marks + `.cs-dropped` / `.cs-tight` in
+  styles.css. Verified in a dev instance at 868 / 578 / 238 px row widths (1 / 5 / all decorations
+  dropped; the meter whole in the first two, ellipsised in the third), and with a real /compact
+  (bar ticked to 1m 9s and returned to "40k / 872k · 5%", pill never cut).
+- Context counts (sandbox/tools/context-usage-dump.mjs, new): on a Claude chat the summary and full
+  answers are each internally consistent (total = rows minus the deferred tool-schema row); on the
+  GPT bridge they disagree row by row and the summary total does not match its own rows. The app
+  follows the CLI, which is also what compaction acts on. Reported to the user; no change made.
+- Also noted: `autoCompactThreshold` 839,000 with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=92` set, i.e. the
+  92 % may not be reaching the CLI (839,000 is the 872,000 window minus the 33,000 reserve).
+- [x] `npm run typecheck` clean. Dev instance and helpers stopped, 0 leftover processes.
 
 ### v1.0.26
 Request: "shouldn there be a progress bar for executing compact?"
