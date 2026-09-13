@@ -114,6 +114,11 @@ a:hover { text-decoration: underline; }
 .drag { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
 
+/* A panel opened from a title bar is a DOM child of that bar, so it inherits the drag region: a
+   click on it would move the window instead of reaching the control (the popover's buttons did
+   nothing). Every floating panel therefore opts out of the drag itself. */
+.popover, .ctx-menu, .modal, .modal-backdrop { -webkit-app-region: no-drag; }
+
 /* ---------- generic ---------- */
 .btn {
   display: inline-flex; align-items: center; gap: 6px;

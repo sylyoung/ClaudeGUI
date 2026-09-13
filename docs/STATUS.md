@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 9, v1.0.29)
+Last updated: 2026-09-13 (session 10, v1.0.30)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -206,6 +206,33 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.30
+Request: "cannot click the icon for usage change across claude/gpt" — the Claude / ChatGPT switch
+shipped in 1.0.29 was visible but inert.
+- Cause: the panel is rendered inside the bar it is anchored to (`.chat-header drag`, `.files-top
+  drag`), so it inherited `-webkit-app-region: drag`. On macOS a mouse-down in a drag area moves the
+  window and never reaches the control. `getComputedStyle(...).webkitAppRegion` on the panel and on
+  every button inside it returned `drag`; it now returns `no-drag`, and the audit that lists
+  drag-region areas containing controls (the same check would have caught this in 1.0.29) comes back
+  empty for the whole window, including the Settings dialog.
+- Fix: `src/renderer/src/styles.css` — `.popover, .ctx-menu, .modal, .modal-backdrop {
+  -webkit-app-region: no-drag; }` next to the existing `.drag` / `.no-drag` rules, so it covers every
+  panel anchored to a title bar rather than one call site. The panel's "Check now" and "Sign in…"
+  were dead in the same way and are fixed by the same rule.
+- The 1.0.29 verification missed this because it clicked through JavaScript (`element.click()`),
+  which does not go through the OS drag-area hit test. A real click cannot be produced from this
+  shell: `CGEventPost` and `osascript`'s System Events click are both refused ("osascript is not
+  allowed assistive access"), so the click path is verified by the drag-region computation, not by a
+  physical mouse.
+- [x] `npm run typecheck` clean, production build clean. Verified in a dev instance (screenshot
+  sandbox/shots/usage-switch-panel.png): every button in the panel is `no-drag`; the switch moves the
+  corner between "5h 0% · Wk 100% · Fable 17%" and "Wk 6%" with `usageSubscription: codex`; Settings
+  → Usage unaffected. Dev instance stopped.
+- Also restored `package.json` from git in this round: extracting a file from the built `app.asar`
+  with `npx asar extract-file` writes it into the current directory, which had replaced the
+  project's own `package.json` (its `scripts` and `devDependencies` were gone). Caught before the
+  release, restored with `git checkout -- package.json`, tree clean.
 
 ### v1.0.29
 Request: "there should also be a switch on the usage of week/5h one to change to codex sub's other

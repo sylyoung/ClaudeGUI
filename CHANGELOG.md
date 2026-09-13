@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.30 — 2026-09-13
+
+### The Claude / ChatGPT switch in the usage panel can be clicked
+
+- The panel opened from the usage meter did not react to the mouse: its buttons — the Claude /
+  ChatGPT switch, "Check now", "Sign in…" — did nothing when clicked. The panel is opened from the
+  chat header, or from the file panel's tab bar, and both are window-drag areas (`.chat-header
+  drag`, `.files-top drag`). The panel is a child of the bar it is anchored to, so it inherited
+  `-webkit-app-region: drag` from it; on macOS a click inside a drag area moves the window instead
+  of reaching the control, so the click never arrived. Every other control living in those bars
+  carries `no-drag` for exactly this reason — the floating panels were the ones missing it, and had
+  been since the usage panel was added, which also made its "Check now" button dead there.
+- Fixed in the stylesheet rather than at each call site: `.popover`, `.ctx-menu` and `.modal` now
+  set `-webkit-app-region: no-drag` themselves, so any panel anchored to a title bar is clickable
+  wherever it is opened from. Dragging the window by the header is unchanged — the panel hangs
+  below the bar and only its own area opts out.
+- [x] `npm run typecheck` clean, production build clean. Verified in a dev instance: before the fix
+  every button in the panel computed to `-webkit-app-region: drag`, after it to `no-drag`; the
+  switch still moves the corner between Claude's "5h · Wk · Fable" pills and ChatGPT's "Wk" pill
+  (`usageSubscription` becomes `codex`), and the Settings → Usage control is unaffected. A physical
+  mouse click could not be exercised from this shell — macOS refused synthetic events ("not allowed
+  assistive access"), and the JavaScript clicks used to test the switch in 1.0.29 bypass the
+  drag-area check, which is exactly why that round's verification of this panel passed while the
+  panel was dead to the mouse.
+
 ## 1.0.29 — 2026-09-13
 
 ### The plan-usage meter reads the ChatGPT subscription as well, with a switch
