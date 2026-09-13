@@ -26,7 +26,8 @@ export function providerModelLabel(providers: ProviderView[], provider: string |
 export function providerModelOptions(providers: ProviderView[]): PopupOption[] {
   const out: PopupOption[] = []
   for (const p of providers) {
-    out.push({ value: `heading:${p.id}`, label: p.name, heading: true, hint: `Runs "${p.launcher}" from your shell` })
+    const via = p.staleEnv ? ` — its launcher refused, so the settings it produced on ${new Date(p.staleEnv.at).toLocaleString()} are used` : ''
+    out.push({ value: `heading:${p.id}`, label: p.name, heading: true, hint: `Runs "${p.launcher}" from your shell${via}` })
     if (!p.available) {
       out.push({ value: `unavailable:${p.id}`, label: `Not available: ${p.reason ?? 'unknown reason'}`, disabled: true })
       continue

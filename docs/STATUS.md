@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-12 (session 4, v1.0.23)
+Last updated: 2026-09-12 (session 5, v1.0.24)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,43 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.24
+Request: "test it to be production ready, it is not. I cannot use GPT models, it triggered error
+with GPT-4.6. Also fix GPT-6 as well." Measured in the user's environment (2026-09-13, ~03:00-04:00
+local): their `cc-gpt` refuses to start — the MonoCloud Docker proxy route at 127.0.0.1:18118 is
+listening but does not route `chatgpt.com/backend-api/codex/models` (HTTP 000, 30 s connect
+timeout), and `cc-gpt` probes exactly that URL before it exports anything — while the bridge the
+same launcher started earlier (pid 27357) keeps answering. Their shell's `claude()` wrapper routes
+Claude through the same proxy, which answers 403 "Request not allowed" for api.anthropic.com, so the
+Claude path is affected too; plain `curl` through any of their local proxies cannot reach
+chatgpt.com (bridge traffic can). The model the user calls "GPT-4.6" could not be matched to any id
+in the Codex cache, the bridge or the Codex CLI history (asked in the release report).
+- Root causes fixed: (1) a provider was unusable whenever its launcher's pre-flight check failed,
+  even with a healthy bridge — the app now keeps each launcher's last working environment in
+  `provider-cache.json` (mode 600) and uses it when the launcher refuses, after probing that the
+  provider answers with it; (2) the picker offered bridge ids the account refuses (gpt-5.2/5.3-codex/
+  5.4/5.4-mini → "not supported when using Codex with a ChatGPT account") — the codex list now comes
+  from the subscription's cache only, those ids are greyed with the reason; (3) a failed provider
+  switch left the chat stopped with the record already pointing at the new provider — it now reverts
+  and restarts the previous model; (4) `mergeSpawnEnv` overlaid `process.env` first, so an app
+  started from inside a Claude Code chat (this dev instance) leaked that chat's ANTHROPIC_* and
+  CLAUDE_* into every chat — the app's own Claude Code variables are now dropped.
+- GPT-6: bridge 0.1.29 rejects `gpt-6-astra`; release v0.1.36 added it ("feat(codex): allow
+  gpt-6-astra"), latest is v0.1.39 (2026-09-10). Verified end to end in the dev instance against a
+  0.1.39 bridge on a test port: `gpt-6-astra[1m]` and `gpt-6-astra-fast[1m]` are listed and a chat
+  answered "I'm gpt-6-astra[1m]; 11 × 13 = 143." The user's pinned `~/.local/bin/
+  claude-code-proxy-cc-gpt-v2` is untouched; the release report asks whether to install 0.1.39.
+- [x] `npm run typecheck` clean.
+- [x] Dev instance (v1.0.24 host): codex listed with the stale-env warning and 19 models; a chat
+      created on `gpt-5.6-luna-fast[1m]` answered through the fallback ("started (new) … provider=
+      codex" after "launcher refused … using the environment from …"); switching to `cc-nope`
+      rejected with the reason and the chat stayed on GPT and answered again; switching back to
+      `claude-haiku-4-5` restarted on Anthropic. Screenshots: `sandbox/shots/v1024-model-picker.png`,
+      `sandbox/shots/v1024-settings-providers.png`.
+- The seeded `~/Library/Application Support/ClaudeGUI/provider-cache.json` holds the environment
+  `cc-gpt` produces (captured with the launcher's own checks stubbed, `sandbox/tools/
+  seed-provider-capture.mjs`) so the user's app can run GPT chats before their route is back.
 
 ### v1.0.23
 Request: "I wanna also use other models other than claude native ones, like ChatGPT ones from my

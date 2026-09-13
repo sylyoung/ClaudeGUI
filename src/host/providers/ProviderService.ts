@@ -16,16 +16,35 @@ export interface ProviderLaunch {
   disallowedTools: string[]
   /** Other CLI flags the launcher passes that the SDK has no option for ("--settings ..."). */
   extraArgs: Record<string, string | null>
+  /** Set when the launcher refused now and the last working environment is used instead. */
+  warning?: string
 }
 
 interface Deps {
   getSettings(): AppSettings
   log(...args: unknown[]): void
+  /** File that keeps the last working launcher environment per launcher (tokens included, mode 600). */
+  stateFile?: string
 }
 
 /** How long a model list and a launcher's environment are reused before being read again. */
 const CACHE_MS = 10 * 60_000
+/** A launcher environment that worked once is kept this long as a fallback. */
+const FALLBACK_MAX_AGE_MS = 7 * 24 * 60 * 60_000
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/** What the state file holds: the last environment each launcher handed to the CLI. */
+interface SavedCapture {
+  at: number
+  env: Record<string, string>
+  argv: string[]
+}
+
+interface CaptureResult {
+  capture: LauncherCapture
+  /** Set when the launcher refused now and this older capture is used instead. */
+  stale?: { at: number; error: string }
+}
 
 /**
  * Model providers other than Anthropic (see ModelProviderSetting). Each one is a launcher command
@@ -37,6 +56,9 @@ export class ProviderService {
   private captures = new Map<string, { at: number; capture: LauncherCapture }>()
   private models = new Map<string, { at: number; models: ProviderModelView[]; error?: string }>()
   private inflight = new Map<string, Promise<ProviderView>>()
+
+  /** The last environment each launcher handed to the CLI, kept across restarts. */
+  private saved: Record<string, SavedCapture> | null = null
 
   constructor(private deps: Deps) {}
 
@@ -67,19 +89,26 @@ export class ProviderService {
 
   private async buildView(p: ModelProviderSetting, refresh: boolean): Promise<ProviderView> {
     const base: ProviderView = { id: p.id, name: p.name, launcher: p.launcher, available: false, models: [], checkedAt: Date.now() }
-    let capture: LauncherCapture
+    let result: CaptureResult
+    let probe: { id: string; label?: string }[] | undefined
     try {
-      capture = await this.capture(p.launcher, refresh)
+      // The provider answers the model request itself, so a launcher that refuses now only costs
+      // the reading of the list from its older environment.
+      result = await this.captureOrFallback(p, refresh, (ids) => {
+        probe = ids
+      })
     } catch (err) {
       return { ...base, reason: (err as Error).message }
     }
+    const capture = result.capture
     const defaultModel = capture.env.ANTHROPIC_MODEL || undefined
-    const listed = await this.modelsFor(p, capture, refresh)
+    const listed = await this.modelsFor(p, capture, refresh, probe)
     const models = [...listed.models]
     if (defaultModel && !models.some((m) => m.value === defaultModel)) {
       models.unshift({ value: defaultModel, label: `${defaultModel} (what ${p.launcher} uses by itself)` })
     }
-    return { ...base, available: true, reason: listed.error, models, defaultModel }
+    const reason = [result.stale && staleWarning(p.launcher, result.stale), listed.error].filter(Boolean).join(' ') || undefined
+    return { ...base, available: true, reason, models, defaultModel, staleEnv: result.stale ? { at: result.stale.at } : undefined }
   }
 
   /** Run the launcher (or reuse a recent run) and check that it really points Claude Code elsewhere. */
@@ -89,24 +118,53 @@ export class ProviderService {
     const capture = await captureLauncher(launcher)
     const name = launcher.split(/\s+/)[0]
     if (!capture.env.ANTHROPIC_BASE_URL) {
-      const err = lastLine(capture.stderr)
+      const err = launcherMessage(capture.stderr, name)
       if (/command not found|not found/i.test(err)) throw new Error(`"${name}" is not defined in your shell (looked for it in the login shell, where ~/.zshrc is read).`)
       throw new Error(err ? `${name} did not start: ${err}` : `${name} ran but did not set ANTHROPIC_BASE_URL, so it would not point Claude Code at another provider.`)
     }
     this.captures.set(launcher, { at: Date.now(), capture })
+    this.remember(launcher, capture)
     return capture
   }
 
+  /**
+   * The launcher's environment, or the one it gave on an earlier day when it refuses to start now.
+   * A launcher starts its bridge and checks its network route every time it runs, so a broken route
+   * (or an expired login) stops the launcher while the bridge it already started keeps answering.
+   * In that case the last environment that worked is used, provided the provider still answers with
+   * it; the caller is told, so the reason stays visible instead of the provider simply failing.
+   */
+  private async captureOrFallback(p: ModelProviderSetting, refresh: boolean, onProbe?: (ids: { id: string; label?: string }[]) => void): Promise<CaptureResult> {
+    try {
+      return { capture: await this.capture(p.launcher, refresh) }
+    } catch (err) {
+      const message = (err as Error).message
+      const saved = this.lastSaved(p.launcher)
+      if (!saved) throw err
+      const url = modelsUrlFor(p, saved.env)
+      let ids: { id: string; label?: string }[]
+      try {
+        ids = await fetchModelIds(url, saved.env)
+      } catch (probeErr) {
+        this.deps.log(`[providers] ${p.id}: launcher refused and its settings from ${new Date(saved.at).toISOString()} do not work either (${(probeErr as Error).message})`)
+        throw err
+      }
+      this.deps.log(`[providers] ${p.id}: launcher refused (${message}); using the environment from ${new Date(saved.at).toISOString()} — ${url} answers with it`)
+      onProbe?.(ids)
+      return { capture: { env: saved.env, argv: saved.argv, stderr: '', exitCode: null }, stale: { at: saved.at, error: message } }
+    }
+  }
+
   /** The provider's own model list, cached; on failure the last list or none, with the error. */
-  private async modelsFor(p: ModelProviderSetting, capture: LauncherCapture, refresh: boolean): Promise<{ models: ProviderModelView[]; error?: string }> {
+  private async modelsFor(p: ModelProviderSetting, capture: LauncherCapture, refresh: boolean, ids?: { id: string; label?: string }[]): Promise<{ models: ProviderModelView[]; error?: string }> {
     const cached = this.models.get(p.id)
     if (cached && !refresh && Date.now() - cached.at < CACHE_MS) return cached
-    const url = p.modelsUrl.trim() || `${capture.env.ANTHROPIC_BASE_URL.replace(/\/+$/, '')}/v1/models`
+    const url = modelsUrlFor(p, capture.env)
     const suffix = /\[1m\]$/.test(capture.env.ANTHROPIC_MODEL ?? '') ? '[1m]' : ''
     let entry: { at: number; models: ProviderModelView[]; error?: string }
     try {
-      const ids = await fetchModelIds(url, capture.env)
-      const models = p.id === 'codex' ? codexModels(ids, suffix, this.deps.log) : ids.map((m) => ({ value: m.id + suffix, label: m.label ?? m.id }))
+      const list = ids ?? (await fetchModelIds(url, capture.env))
+      const models = isCodexList(p, url, list) ? codexModels(list, suffix, this.deps.log) : list.map((m) => ({ value: m.id + suffix, label: m.label ?? m.id }))
       entry = { at: Date.now(), models }
     } catch (err) {
       entry = { at: Date.now(), models: cached?.models ?? [], error: `Model list not read from ${url}: ${(err as Error).message}` }
@@ -116,18 +174,57 @@ export class ProviderService {
     return entry
   }
 
+  /** The last environment that worked for this launcher, if it is not too old. */
+  private lastSaved(launcher: string): SavedCapture | undefined {
+    const state = this.loadState()
+    const entry = state[launcher]
+    if (!entry || !entry.env?.ANTHROPIC_BASE_URL) return undefined
+    if (Date.now() - entry.at > FALLBACK_MAX_AGE_MS) return undefined
+    return entry
+  }
+
+  /** Keep the environment of a launcher run that produced one, for the day the launcher refuses. */
+  private remember(launcher: string, capture: LauncherCapture): void {
+    if (!this.deps.stateFile) return
+    try {
+      const state = this.loadState()
+      state[launcher] = { at: Date.now(), env: capture.env, argv: capture.argv }
+      fs.writeFileSync(this.deps.stateFile, JSON.stringify({ captures: state }, null, 1), { mode: 0o600 })
+      fs.chmodSync(this.deps.stateFile, 0o600)
+    } catch (err) {
+      this.deps.log(`[providers] could not keep ${launcher}'s environment: ${(err as Error).message}`)
+    }
+  }
+
+  private loadState(): Record<string, SavedCapture> {
+    if (this.saved) return this.saved
+    this.saved = {}
+    const file = this.deps.stateFile
+    if (file && fs.existsSync(file)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { captures?: Record<string, SavedCapture> }
+        for (const [launcher, entry] of Object.entries(parsed.captures ?? {})) {
+          if (entry && entry.env && typeof entry.at === 'number') this.saved[launcher] = entry
+        }
+      } catch (err) {
+        this.deps.log(`[providers] ${file} not read: ${(err as Error).message}`)
+      }
+    }
+    return this.saved
+  }
+
   /** Environment and options for a chat on this provider, from a fresh run of its launcher. */
   async launch(providerId: string, model?: string): Promise<ProviderLaunch> {
     const p = this.setting(providerId)
     if (!p) throw new Error(`Provider "${providerId}" is not in Settings (Claude tab, other model providers).`)
     if (!p.enabled) throw new Error(`Provider "${p.name}" is switched off in Settings (Claude tab).`)
     // Always run the launcher: it is what starts the bridge and checks the route, as in the terminal.
-    const capture = await this.capture(p.launcher, true)
+    const { capture, stale } = await this.captureOrFallback(p, true)
     const chosen = model || capture.env.ANTHROPIC_MODEL || ''
     if (!chosen) throw new Error(`${p.launcher} sets no model and the chat has none.`)
     const env = mergeSpawnEnv(capture.env, parseExtraEnv(this.deps.getSettings().extraEnv))
     env.ANTHROPIC_MODEL = chosen
-    const launch: ProviderLaunch = { env, model: chosen, disallowedTools: [], extraArgs: {} }
+    const launch: ProviderLaunch = { env, model: chosen, disallowedTools: [], extraArgs: {}, warning: stale ? staleWarning(p.launcher, stale) : undefined }
     const argv = capture.argv
     for (let i = 0; i < argv.length; i++) {
       const a = argv[i]
@@ -161,9 +258,37 @@ export class ProviderService {
   }
 }
 
-function lastLine(text: string): string {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
-  return lines[lines.length - 1] ?? ''
+/** The launcher's own explanation from its stderr, which is its last line only when it says nothing else. */
+function launcherMessage(stderr: string, name: string): string {
+  const lines = stderr
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !/^(\(eval\)|\/.*:\d+:)/.test(l) && !/^command not found/.test(l))
+  const own = lines.filter((l) => l.startsWith(`${name}:`))
+  const text = (own.length ? own : lines.slice(-2)).join(' ')
+  return text.length > 400 ? `${text.slice(0, 397)}...` : text
+}
+
+/** What to tell the user when a provider runs on the environment of an earlier launcher run. */
+function staleWarning(launcher: string, stale: { at: number; error: string }): string {
+  const when = new Date(stale.at).toLocaleString()
+  return `"${launcher}" refused just now (${stale.error}); this runs on the settings it produced on ${when}, and the provider answered with them.`
+}
+
+/** Where a provider's model list comes from: its own URL, or the endpoint of the launcher's base URL. */
+function modelsUrlFor(p: ModelProviderSetting, env: Record<string, string>): string {
+  return p.modelsUrl.trim() || `${(env.ANTHROPIC_BASE_URL ?? '').replace(/\/+$/, '')}/v1/models`
+}
+
+/**
+ * Whether this provider is the Codex bridge, whose list needs the subscription's own model list to
+ * make sense: it answers with its claude-* aliases (Claude models it can forward) next to the gpt-*
+ * ones, so a local endpoint that mixes both is a bridge, whatever the provider is called.
+ */
+function isCodexList(p: ModelProviderSetting, url: string, ids: { id: string }[]): boolean {
+  if (p.id === 'codex') return true
+  const loopback = /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(url)
+  return loopback && ids.some((m) => /^gpt-/.test(m.id)) && ids.some((m) => /^claude-/.test(m.id))
 }
 
 /** GET a models endpoint with the launcher's token, through the proxy the launcher set (none for loopback). */
@@ -209,7 +334,10 @@ interface CodexCachedModel {
  * GPT models for the Codex bridge: what the subscription currently offers (the Codex CLI's own
  * model cache, `~/.codex/models_cache.json`, refreshed whenever Codex runs) matched against what
  * the bridge accepts. A current model the bridge does not know is listed but cannot be chosen,
- * so a bridge that needs updating is visible rather than silently missing models.
+ * so a bridge that needs updating is visible rather than silently missing models. The bridge also
+ * carries older ids (gpt-5.2, gpt-5.3-codex, gpt-5.4...) that a ChatGPT account is refused with
+ * ("not supported when using Codex with a ChatGPT account"), so only the subscription's own list is
+ * offered; those ids are kept in the list, greyed, so the refusal is visible rather than mysterious.
  */
 function codexModels(bridge: { id: string; label?: string }[], suffix: string, log: (...a: unknown[]) => void): ProviderModelView[] {
   const known = new Set(bridge.map((m) => m.id))
@@ -225,6 +353,12 @@ function codexModels(bridge: { id: string; label?: string }[], suffix: string, l
   } catch (err) {
     log(`[providers] codex model cache not read: ${(err as Error).message}`)
   }
+  if (!current.length) {
+    // No list from the subscription to go by: offer what the bridge knows and let the provider answer.
+    log('[providers] codex: no model cache to compare with; listing the bridge\'s own models')
+    for (const m of bridge) if (/^gpt-/.test(m.id)) out.push({ value: m.id + suffix, label: m.label?.replace(/ \(codex\)$/, '') ?? m.id })
+    return out
+  }
   for (const m of current) {
     const efforts = m.supported_reasoning_levels?.map((l) => l.effort).filter((e): e is EffortLevel => EFFORTS.includes(e as EffortLevel))
     const name = m.display_name ?? m.slug
@@ -239,9 +373,15 @@ function codexModels(bridge: { id: string; label?: string }[], suffix: string, l
       })
     }
   }
+  // Ids the bridge still carries but the subscription no longer offers. They stay visible (greyed)
+  // so the picker does not silently hide a model the user has seen in other tools.
   for (const m of bridge) {
     if (seen.has(m.id) || !/^gpt-/.test(m.id)) continue
-    out.push({ value: m.id + suffix, label: m.label?.replace(/ \(codex\)$/, '') ?? m.id })
+    out.push({
+      value: m.id + suffix,
+      label: m.label?.replace(/ \(codex\)$/, '') ?? m.id,
+      unavailable: 'Your ChatGPT subscription does not offer this model any more, so Codex refuses it; pick one of the models above.'
+    })
   }
   return out
 }

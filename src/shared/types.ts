@@ -169,6 +169,8 @@ export interface ProviderView {
   /** Model the launcher would use by itself. */
   defaultModel?: string
   checkedAt: number
+  /** Set when the launcher refused just now and the environment of an earlier run is used. */
+  staleEnv?: { at: number }
 }
 
 export interface SessionLiveState {

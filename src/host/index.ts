@@ -90,7 +90,13 @@ function emit(ev: HostEvent): void {
   writeFrame(client, { k: 'ev', ...ev })
 }
 
-const providers = new ProviderService({ getSettings: () => settings, log })
+const providers = new ProviderService({
+  getSettings: () => settings,
+  log,
+  // The environment each launcher produced last, so a provider whose launcher refuses to start
+  // today (a down network route, an expired login) can still run through the bridge it started.
+  stateFile: path.join(dataDir, 'provider-cache.json')
+})
 
 const manager = new SessionManager(store, {
   getEnv: () => getSpawnEnv(parseExtraEnv(settings.extraEnv)),

@@ -13,7 +13,7 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.23** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.24** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
@@ -83,6 +83,12 @@ repository (ClaudeGUI → Check for Updates…).
   terminal would, with a stand-in `claude`, to read the environment it sets, asks the provider for
   its current model list, and starts Claude Code with that environment and the model you pick.
   Switching a chat to another provider restarts Claude Code and continues the conversation there.
+  A launcher runs its own checks before it hands over its environment (bridge started, route alive,
+  login valid); when one of them fails the app keeps using the environment that launcher produced in
+  its last successful run, as long as the provider still answers with it, so a bridge that is already
+  running keeps serving chats. The reason a launcher refused stays visible in the picker and in
+  Settings. Only models the account really offers are listed: the GPT list is the subscription's own
+  list, and ids the bridge still carries that Codex refuses for a ChatGPT account are shown greyed.
 - **Renamed or deleted folders**: a session whose working directory disappeared shows a clear banner;
   "Change working directory…" points it at the new location and moves the transcript along, so the
   history is kept.

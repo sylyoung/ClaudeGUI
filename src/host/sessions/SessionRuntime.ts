@@ -343,11 +343,13 @@ export class SessionRuntime {
       try {
         launch = await this.deps.launchProvider(providerId, this.record.model)
       } catch (err) {
+        this.deps.log(`[session ${this.id}] provider ${providerId}: launch failed: ${(err as Error).message}`)
         this.live.error = `Cannot start this chat on "${providerId}": ${(err as Error).message}`
         this.setStatus('error')
         this.scheduleFlush()
         throw new Error(this.live.error)
       }
+      if (launch.warning) this.deps.log(`[session ${this.id}] provider ${providerId}: ${launch.warning}`)
     }
     const env = launch ? launch.env : await this.deps.getEnv()
     let resume = false
@@ -960,18 +962,39 @@ export class SessionRuntime {
    * Change the model, and with it possibly the provider ('codex', 'deepseek', ... or undefined for
    * Anthropic). A provider lives in the process environment, so changing it replaces the process;
    * the conversation is resumed in the new one. Within a provider the running process just switches.
+   * When the new provider cannot start, the chat goes back to what it ran on and stays usable.
    */
   async setModel(model: string, provider?: string): Promise<void> {
     const next = provider && provider !== 'anthropic' ? provider : undefined
-    const previous = this.record.provider ?? undefined
-    const providerChanged = previous !== next
+    const previous = { model: this.record.model, provider: this.record.provider ?? undefined }
+    const providerChanged = previous.provider !== next
+    const wasRunning = Boolean(this.q)
     this.record.model = model || undefined
     this.record.provider = next
     this.live.model = model || undefined
     this.deps.saveRecord(this.record)
     if (this.q && providerChanged) {
-      this.deps.log(`[session ${this.id}] provider ${previous ?? 'anthropic'} -> ${next ?? 'anthropic'}: restarting`)
-      await this.restart()
+      this.deps.log(`[session ${this.id}] provider ${previous.provider ?? 'anthropic'} -> ${next ?? 'anthropic'}: restarting`)
+      try {
+        await this.restart()
+      } catch (err) {
+        // Nothing was lost: the conversation is on disk, so run it again as it did before.
+        this.deps.log(`[session ${this.id}] switching to ${next} failed: ${(err as Error).message}`)
+        this.record.model = previous.model
+        this.record.provider = previous.provider
+        this.live.model = previous.model
+        this.live.error = undefined
+        this.deps.saveRecord(this.record)
+        if (wasRunning) {
+          try {
+            await this.ensureStarted()
+          } catch (again) {
+            this.deps.log(`[session ${this.id}] could not start ${previous.provider ?? 'anthropic'} again: ${(again as Error).message}`)
+          }
+        }
+        this.scheduleFlush()
+        throw new Error(`${(err as Error).message} The chat stayed on ${previous.model || previous.provider || 'its previous model'}.`)
+      }
     } else if (this.q) {
       await this.q.setModel(model || undefined)
     }

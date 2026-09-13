@@ -27,10 +27,24 @@ export function resetLoginShellEnvCache(): void {
 const MARKER = '__CLAUDEGUI_ENV_JSON__'
 const DUMP_CMD = `printf '%s' '${MARKER}'; python3 -c 'import os,json;print(json.dumps(dict(os.environ)))' 2>/dev/null || env; printf '%s' '${MARKER}'`
 
+/**
+ * Environment for the login shell. The app's own, minus the Claude Code variables it may have been
+ * started with (a terminal inside a Claude Code chat, a wrapper script): the shell's own settings
+ * must be the only source, or they would silently leak into every chat the app starts.
+ */
+function shellEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { TERM: 'dumb' }
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v !== 'string' || /^(ANTHROPIC_|CLAUDE_)/.test(k)) continue
+    env[k] = v
+  }
+  return env
+}
+
 function runLoginShell(script: string): Promise<string> {
   const shell = process.env.SHELL && fs.existsSync(process.env.SHELL) ? process.env.SHELL : '/bin/zsh'
   return new Promise((resolve) => {
-    execFile(shell, ['-ilc', script], { timeout: 15000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, TERM: 'dumb' } }, (err, stdout) => {
+    execFile(shell, ['-ilc', script], { timeout: 15000, maxBuffer: 8 * 1024 * 1024, env: shellEnv() }, (err, stdout) => {
       if (err && !stdout) return resolve('')
       resolve(String(stdout || ''))
     })
@@ -116,7 +130,7 @@ export async function captureLauncher(command: string): Promise<LauncherCapture>
     const dump = `printf '%s' '${MARKER}'; python3 -c 'import os,json,sys;print(json.dumps({"env":dict(os.environ),"argv":sys.argv[1:]}))' "$@"; printf '%s' '${MARKER}'`
     fs.writeFileSync(fake, `#!/bin/sh\n${dump}\n`, { mode: 0o755 })
     const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-      execFile(shell, ['-ilc', `export PATH="${dir}:$PATH"; ${command}`], { timeout: 60000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, TERM: 'dumb' } }, (err, stdout, stderr) => {
+      execFile(shell, ['-ilc', `export PATH="${dir}:$PATH"; ${command}`], { timeout: 60000, maxBuffer: 8 * 1024 * 1024, env: shellEnv() }, (err, stdout, stderr) => {
         resolve({ stdout: String(stdout || ''), stderr: String(stderr || ''), code: err ? ((err as { code?: number }).code ?? 1) : 0 })
       })
     })
@@ -154,10 +168,20 @@ export async function getSpawnEnv(extra: Record<string, string | undefined> = {}
   return mergeSpawnEnv(await getLoginShellEnv(), extra)
 }
 
-/** process.env overlaid with a captured shell environment, then extras, minus Electron's own variables. */
+/**
+ * process.env overlaid with a captured shell environment, then extras, minus Electron's own
+ * variables and minus any Claude Code variables the app itself was started with. A chat's model,
+ * endpoint and keys come from the shell the app read (the wrapper or the provider launcher) and
+ * from the Settings extras, never from whatever happened to be exported where the app was opened —
+ * otherwise starting ClaudeGUI from a terminal inside another Claude Code chat would quietly run
+ * its chats on that chat's provider.
+ */
 export function mergeSpawnEnv(captured: Record<string, string>, extra: Record<string, string | undefined> = {}): Record<string, string> {
   const merged: Record<string, string> = {}
-  for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string') merged[k] = v
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v !== 'string' || /^(ANTHROPIC_|CLAUDE_)/.test(k)) continue
+    merged[k] = v
+  }
   for (const [k, v] of Object.entries(captured)) merged[k] = v
   for (const [k, v] of Object.entries(extra)) if (typeof v === 'string') merged[k] = v
   // Electron-specific variables must not leak into the CLI process.

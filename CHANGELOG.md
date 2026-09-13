@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.24 — 2026-09-12
+
+### Other-provider chats when the launcher refuses, and only models the account offers
+- **A launcher that refuses to start no longer takes the provider down with it.** `cc-gpt`, `cc-ds`
+  and `cc-kimi` run their own checks before they hand Claude Code an environment: the bridge is up,
+  the network route answers, the login is valid. When one of those fails they exit without setting
+  anything, so no chat could start on them — although the bridge they started earlier was still
+  running and answering. The app now keeps the environment of each launcher's last successful run
+  (`provider-cache.json`, mode 600, in the app data folder) and uses it when the launcher refuses,
+  after checking that the provider still answers with it. The reason stays visible rather than
+  hidden: the provider is listed with "…refused just now (…); this runs on the settings it produced
+  on …", and the host log records the same.
+- **Only models the account really offers are offered.** A ChatGPT subscription answers "not
+  supported when using Codex with a ChatGPT account" for the older ids the bridge still carries
+  (`gpt-5.2`, `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`); those are now listed greyed with that
+  reason instead of being pickable. The GPT list is the subscription's own list (the Codex CLI's
+  model cache), so a model the bridge accepts and the subscription offers — GPT-6-Astra with bridge
+  0.1.36 or newer — appears by itself and can be picked.
+- **Switching to a provider that cannot start leaves the chat usable**: it goes back to the model it
+  ran on, that process is started again, and the picker says what went wrong.
+- **Chats no longer inherit the Claude Code variables the app itself was started with.** A chat's
+  model, endpoint and keys come from the shell the app reads (your `claude` wrapper or the provider
+  launcher) and from Settings → Environment; starting ClaudeGUI from a terminal inside another
+  Claude Code chat can no longer re-point its chats at that chat's provider.
+- Session host change: after the update, quit the app fully (Cmd-Q) and open it again.
+
 ## 1.0.23 — 2026-09-12
 
 ### Models of other providers in the model picker
