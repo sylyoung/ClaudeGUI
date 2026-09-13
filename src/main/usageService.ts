@@ -1,14 +1,24 @@
 import { spawn } from 'child_process'
-import type { AuthState, SdkUsage, UsageSeverity, UsageSnapshot, UsageWindow } from '@shared/types'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import type { AuthState, SdkUsage, UsageProviderId, UsageSeverity, UsageSnapshot, UsageState, UsageWindow } from '@shared/types'
+import { emptyUsageSnapshot } from '@shared/defaults'
 import { readStoredLogin } from './claudeLogin'
 
 /**
- * Tracks the claude.ai plan rate-limit windows (5-hour session, weekly, per-model, monthly credits).
+ * Tracks the plan rate-limit windows of both subscriptions the app can use.
  *
- * Primary source: the same usage endpoint the CLI's /usage command reads, called with the OAuth
- * token Claude Code stored at login (macOS Keychain or ~/.claude/.credentials.json). Requests go
- * through `curl` so the proxy variables from the user's shell apply. Fallbacks: the structured
+ * Claude: the same usage endpoint the CLI's /usage command reads, called with the OAuth token Claude
+ * Code stored at login (macOS Keychain or ~/.claude/.credentials.json). Fallbacks: the structured
  * usage of an already running session, and the rate-limit events every API response carries.
+ *
+ * ChatGPT: the usage endpoint the Codex CLI itself reads, called with the token Codex keeps in
+ * ~/.codex/auth.json. GPT traffic goes over the same network path as Claude (the user's rule), so
+ * these requests use the captured shell environment and are forced through its proxy when it has one.
+ *
+ * Requests go through `curl` so the proxy variables from the user's shell apply. Both subscriptions
+ * are read on every check, so the switch between them costs nothing.
  */
 
 export interface UsageDeps {
@@ -18,20 +28,31 @@ export interface UsageDeps {
   sessionUsage(): Promise<SdkUsage | null>
   /** Whether Claude Code is signed in, to say truthfully why no plan limits can be read. */
   checkAuth(): Promise<AuthState>
-  emit(snapshot: UsageSnapshot): void
+  emit(state: UsageState): void
   log(...args: unknown[]): void
 }
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 /** Do not hammer the endpoint when many turns finish at once. */
 const MIN_INTERVAL_MS = 20_000
 
 export class UsageService {
-  snapshot: UsageSnapshot = { fetchedAt: 0, source: 'none', windows: [] }
+  private snapshots: Record<UsageProviderId, UsageSnapshot> = { claude: emptyUsageSnapshot(), codex: emptyUsageSnapshot() }
   private timer: NodeJS.Timeout | null = null
-  private inflight: Promise<UsageSnapshot> | null = null
+  private inflight: Promise<UsageState> | null = null
 
   constructor(private deps: UsageDeps) {}
+
+  /** Both subscriptions, for the top-right pills and the details popover. */
+  state(): UsageState {
+    return {
+      providers: [
+        { id: 'claude', label: 'Claude', snapshot: this.snapshots.claude },
+        { id: 'codex', label: 'ChatGPT', snapshot: this.snapshots.codex }
+      ]
+    }
+  }
 
   start(): void {
     void this.refresh('startup')
@@ -47,11 +68,19 @@ export class UsageService {
     this.schedule()
   }
 
+  private emitState(): void {
+    this.deps.emit(this.state())
+  }
+
   private schedule(): void {
     if (this.timer) clearTimeout(this.timer)
     const minutes = Math.max(1, Number(this.deps.getSettings().usageRefreshMinutes) || 5)
     const ms = minutes * 60_000
-    this.snapshot = { ...this.snapshot, nextCheckAt: Date.now() + ms }
+    const nextCheckAt = Date.now() + ms
+    this.snapshots = {
+      claude: { ...this.snapshots.claude, nextCheckAt },
+      codex: { ...this.snapshots.codex, nextCheckAt }
+    }
     this.timer = setTimeout(() => {
       this.timer = null
       void this.refresh('timer')
@@ -61,11 +90,11 @@ export class UsageService {
 
   /** Refresh unless a check happened very recently (called after every finished turn). */
   refreshSoon(reason: string): void {
-    if (Date.now() - this.snapshot.fetchedAt < MIN_INTERVAL_MS) return
+    if (Date.now() - this.snapshots.claude.fetchedAt < MIN_INTERVAL_MS) return
     void this.refresh(reason)
   }
 
-  refresh(reason: string): Promise<UsageSnapshot> {
+  refresh(reason: string): Promise<UsageState> {
     if (this.inflight) return this.inflight
     this.inflight = this.doRefresh(reason).finally(() => {
       this.inflight = null
@@ -73,81 +102,155 @@ export class UsageService {
     return this.inflight
   }
 
-  private async doRefresh(reason: string): Promise<UsageSnapshot> {
-    this.snapshot = { ...this.snapshot, checking: true }
-    this.deps.emit(this.snapshot)
-    const warn = Number(this.deps.getSettings().usageWarnPercent) || 50
-    let next: UsageSnapshot | null = null
-    let error: string | undefined
-    try {
-      const env = await this.deps.getEnv()
-      const login = await readStoredLogin()
-      if (login) {
-        const res = await curlJson(USAGE_URL, [`Authorization: Bearer ${login.accessToken}`, 'anthropic-beta: oauth-2025-04-20', 'Accept: application/json', 'User-Agent: ClaudeGUI'], env)
-        if (res.status === 200 && res.json) {
-          next = { fetchedAt: Date.now(), source: 'endpoint', windows: normalizeEndpoint(res.json as Record<string, unknown>, warn), subscription: login.subscription ?? this.snapshot.subscription }
-        } else if (res.status === 401 || res.status === 403) {
-          // An expired access token is normal between messages: Claude Code renews it when a chat
-          // next talks to Claude. Anything else means the login itself was not accepted.
-          error =
-            login.accessExpiresAt && login.accessExpiresAt < Date.now()
-              ? 'The stored login token has expired and Claude Code has not renewed it yet; it does so with the next message a chat sends.'
-              : `claude.ai did not accept the stored login (HTTP ${res.status}). If chats fail as well, sign in again.`
-        } else error = `usage endpoint returned HTTP ${res.status}`
-      } else {
-        // No stored login can mean signed out (the login expired and Claude Code removed it) or a
-        // different way of signing in; `claude auth status` tells them apart.
-        const auth = await this.deps.checkAuth().catch(() => null)
-        error =
-          auth?.status === 'api-key'
-            ? 'Claude Code signs in with an API key here, so there are no plan limits to show.'
-            : auth?.status === 'signed-in'
-              ? 'Claude Code is signed in, but its login could not be read here, so the plan limits come from the chats instead.'
-              : 'Claude Code is signed out: its login has expired, so chats cannot run and plan limits cannot be read. Sign in again from the notice at the top of the window.'
-      }
-      if (!next) {
-        const viaSession = await this.deps.sessionUsage().catch(() => null)
-        if (viaSession?.rate_limits) {
-          next = { fetchedAt: Date.now(), source: 'session', windows: normalizeSdk(viaSession.rate_limits, warn), subscription: viaSession.subscription_type ?? this.snapshot.subscription }
-          error = undefined
-        }
-      }
-    } catch (err) {
-      error = (err as Error).message
+  private async doRefresh(reason: string): Promise<UsageState> {
+    this.snapshots = {
+      claude: { ...this.snapshots.claude, checking: true },
+      codex: { ...this.snapshots.codex, checking: true }
     }
-    if (error) this.deps.log(`[usage] refresh (${reason}) failed: ${error}`)
-    else this.deps.log(`[usage] refreshed (${reason}) via ${next?.source}: ${next?.windows.map((w) => `${w.label}=${w.percent ?? '?'}%`).join(', ')}`)
-    this.snapshot = next ? { ...next, checking: false, error: undefined } : { ...this.snapshot, checking: false, error }
+    this.emitState()
+    const warn = Number(this.deps.getSettings().usageWarnPercent) || 50
+    const [claude, codex] = await Promise.all([
+      this.readClaude(warn).catch((err) => ({ ...this.snapshots.claude, error: (err as Error).message })),
+      this.readCodex(warn).catch((err) => ({ ...this.snapshots.codex, error: (err as Error).message }))
+    ])
+    this.snapshots = { claude: { ...claude, checking: false }, codex: { ...codex, checking: false } }
+    const describe = (s: UsageSnapshot): string =>
+      s.error ? `error: ${s.error}` : `${s.source}: ${s.windows.map((w) => `${w.label}=${w.percent ?? '?'}%`).join(', ') || 'no windows'}`
+    this.deps.log(`[usage] refreshed (${reason}) — Claude ${describe(this.snapshots.claude)} · ChatGPT ${describe(this.snapshots.codex)}`)
     this.schedule()
-    this.deps.emit(this.snapshot)
-    return this.snapshot
+    this.emitState()
+    return this.state()
   }
 
-  /** Merge a rate_limit_event that a session received with its API response. */
+  // ------------------------------------------------------------- claude.ai
+
+  private async readClaude(warn: number): Promise<UsageSnapshot> {
+    const prev = this.snapshots.claude
+    let next: UsageSnapshot | null = null
+    let error: string | undefined
+    const env = await this.deps.getEnv()
+    const login = await readStoredLogin()
+    if (login) {
+      const res = await curlJson(USAGE_URL, [`Authorization: Bearer ${login.accessToken}`, 'anthropic-beta: oauth-2025-04-20', 'Accept: application/json', 'User-Agent: ClaudeGUI'], env)
+      if (res.status === 200 && res.json) {
+        next = { fetchedAt: Date.now(), source: 'endpoint', windows: normalizeEndpoint(res.json as Record<string, unknown>, warn), subscription: login.subscription ?? prev.subscription }
+      } else if (res.status === 401 || res.status === 403) {
+        // An expired access token is normal between messages: Claude Code renews it when a chat
+        // next talks to Claude. Anything else means the login itself was not accepted.
+        error =
+          login.accessExpiresAt && login.accessExpiresAt < Date.now()
+            ? 'The stored login token has expired and Claude Code has not renewed it yet; it does so with the next message a chat sends.'
+            : `claude.ai did not accept the stored login (HTTP ${res.status}). If chats fail as well, sign in again.`
+      } else error = `usage endpoint returned HTTP ${res.status}`
+    } else {
+      // No stored login can mean signed out (the login expired and Claude Code removed it) or a
+      // different way of signing in; `claude auth status` tells them apart.
+      const auth = await this.deps.checkAuth().catch(() => null)
+      error =
+        auth?.status === 'api-key'
+          ? 'Claude Code signs in with an API key here, so there are no plan limits to show.'
+          : auth?.status === 'signed-in'
+            ? 'Claude Code is signed in, but its login could not be read here, so the plan limits come from the chats instead.'
+            : 'Claude Code is signed out: its login has expired, so chats cannot run and plan limits cannot be read. Sign in again from the notice at the top of the window.'
+    }
+    if (!next) {
+      const viaSession = await this.deps.sessionUsage().catch(() => null)
+      if (viaSession?.rate_limits) {
+        next = { fetchedAt: Date.now(), source: 'session', windows: normalizeSdk(viaSession.rate_limits, warn), subscription: viaSession.subscription_type ?? prev.subscription }
+        error = undefined
+      }
+    }
+    if (error) this.deps.log(`[usage] claude check failed: ${error}`)
+    return next ? { ...next, error: undefined } : { ...prev, error }
+  }
+
+  // --------------------------------------------------------------- chatgpt
+
+  private async readCodex(warn: number): Promise<UsageSnapshot> {
+    const prev = this.snapshots.codex
+    const login = readCodexLogin()
+    if (!login) {
+      return { ...prev, error: 'The Codex CLI has no login stored here (~/.codex/auth.json), so the ChatGPT plan limits cannot be read. Run "codex login" to add one.' }
+    }
+    const env = await this.deps.getEnv()
+    const headers = [
+      `Authorization: Bearer ${login.accessToken}`,
+      'Accept: application/json',
+      'User-Agent: codex_cli_rs/0.1.0',
+      'originator: codex_cli_rs'
+    ]
+    if (login.accountId) headers.push(`chatgpt-account-id: ${login.accountId}`)
+    const res = await curlJson(CODEX_USAGE_URL, headers, env, { forceProxy: true })
+    if (res.status === 200 && res.json) {
+      const json = res.json as Record<string, unknown>
+      return {
+        fetchedAt: Date.now(),
+        source: 'endpoint',
+        windows: normalizeCodex(json, warn),
+        subscription: typeof json.plan_type === 'string' ? json.plan_type : prev.subscription
+      }
+    }
+    if (res.status === 401 || res.status === 403) return { ...prev, error: `ChatGPT did not accept the stored Codex login (HTTP ${res.status}); run "codex login" again.` }
+    if (res.status === 0) return { ...prev, error: "ChatGPT's usage endpoint could not be reached at all. Codex traffic goes through the same proxy as Claude, so check that the proxy is running." }
+    return { ...prev, error: `ChatGPT's usage endpoint returned HTTP ${res.status}.` }
+  }
+
+  /** Merge a rate_limit_event that a Claude session received with its API response. */
   applyRateLimitEvent(info: { rateLimitType?: string; utilization?: number; resetsAt?: number; status?: string }, ts: number): void {
     const key = eventKey(info.rateLimitType)
     if (!key || info.utilization == null) return
     const warn = Number(this.deps.getSettings().usageWarnPercent) || 50
     const percent = info.utilization <= 1 ? Math.round(info.utilization * 100) : Math.round(info.utilization)
-    const windows = this.snapshot.windows.slice()
+    const prev = this.snapshots.claude
+    const windows = prev.windows.slice()
     const idx = windows.findIndex((w) => w.key === key)
     const base: UsageWindow = idx >= 0 ? windows[idx] : { key, label: labelFor(key), group: groupFor(key), percent: null, severity: 'unknown', updatedAt: 0 }
     const severity: UsageSeverity = info.status === 'rejected' ? 'critical' : info.status === 'allowed_warning' ? 'warning' : severityFor(percent, warn)
     const w: UsageWindow = { ...base, percent, severity, resetsAt: info.resetsAt ? info.resetsAt * 1000 : base.resetsAt, updatedAt: ts }
     if (idx >= 0) windows[idx] = w
     else windows.push(w)
-    this.snapshot = { ...this.snapshot, windows: sortWindows(windows), source: this.snapshot.source === 'none' ? 'event' : this.snapshot.source }
-    this.deps.emit(this.snapshot)
+    this.snapshots = { ...this.snapshots, claude: { ...prev, windows: sortWindows(windows), source: prev.source === 'none' ? 'event' : prev.source } }
+    this.emitState()
+  }
+}
+
+// ---------------------------------------------------------------- credentials
+
+/**
+ * The token the Codex CLI signs in with. Read straight from its own file, the same way the CLI
+ * does; the token is never logged and only travels in a curl config on stdin.
+ */
+function readCodexLogin(): { accessToken: string; accountId?: string } | null {
+  const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
+  try {
+    const doc = JSON.parse(fs.readFileSync(path.join(home, 'auth.json'), 'utf8')) as { tokens?: { access_token?: string; account_id?: string } }
+    const accessToken = doc.tokens?.access_token
+    return accessToken ? { accessToken, accountId: doc.tokens?.account_id } : null
+  } catch {
+    return null
   }
 }
 
 // ---------------------------------------------------------------- endpoint
 
-/** GET a JSON document with curl (honours the proxy variables of the captured shell environment). */
-function curlJson(url: string, headers: string[], env: Record<string, string>): Promise<{ status: number; json: unknown }> {
+/**
+ * GET a JSON document with curl (honours the proxy variables of the captured shell environment).
+ *
+ * `forceProxy` is for the ChatGPT endpoints: curl lets NO_PROXY override a proxy, so an environment
+ * carrying `NO_PROXY=*` would send the request out directly, and ChatGPT refuses a direct source.
+ * When the environment does configure a proxy, this pins curl to it.
+ */
+function curlJson(
+  url: string,
+  headers: string[],
+  env: Record<string, string>,
+  opts: { forceProxy?: boolean } = {}
+): Promise<{ status: number; json: unknown }> {
   return new Promise((resolve, reject) => {
+    const hasProxy = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'].some((k) => env[k])
     // The token travels in a config document on stdin so it never appears in the process list.
-    const config = headers.map((h) => `header = ${JSON.stringify(h)}`).join('\n') + `\nurl = ${JSON.stringify(url)}\n`
+    let config = headers.map((h) => `header = ${JSON.stringify(h)}`).join('\n') + `\nurl = ${JSON.stringify(url)}\n`
+    if (opts.forceProxy && hasProxy) config += 'noproxy = ""\n'
     const child = spawn('curl', ['-sS', '--max-time', '25', '-K', '-', '-o', '-', '-w', '\n%{http_code}'], { env, stdio: ['pipe', 'pipe', 'pipe'] })
     let out = ''
     let err = ''
@@ -341,5 +444,87 @@ export function normalizeSdk(rateLimits: Record<string, unknown>, warn: number):
   const out = fixedWindows(rateLimits, warn, now)
   const credits = creditsWindow(rateLimits, warn, now)
   if (credits) out.push(credits)
+  return sortWindows(out)
+}
+
+// ------------------------------------------------------------ chatgpt shape
+
+/** A window as ChatGPT reports it: percentages 0-100 and either an absolute or a relative reset. */
+interface CodexWindow {
+  used_percent?: number | null
+  limit_window_seconds?: number | null
+  reset_after_seconds?: number | null
+  reset_at?: number | null
+}
+
+interface CodexRateLimit {
+  allowed?: boolean
+  limit_reached?: boolean
+  primary_window?: CodexWindow | null
+  secondary_window?: CodexWindow | null
+}
+
+/**
+ * Codex names its windows by length rather than by kind, so the length decides the name: 5 hours is
+ * the session limit, a week is the weekly one. Anything else keeps its length in hours and is shown
+ * only in the details, like the per-model extras ("GPT-5.3-Codex-Spark", "gpt-reserve").
+ */
+const WINDOW_NAMES: [seconds: number, label: string, group: UsageWindow['group']][] = [
+  [5 * 3600, 'Session (5h)', 'session'],
+  [7 * 86400, 'Weekly', 'weekly'],
+  [30 * 86400, 'Monthly', 'monthly']
+]
+
+function windowName(seconds: number | null | undefined): { label: string; group: UsageWindow['group'] } {
+  if (typeof seconds !== 'number' || seconds <= 0) return { label: 'Limit', group: 'other' }
+  const hit = WINDOW_NAMES.find(([len]) => Math.abs(len - seconds) <= 60)
+  if (hit) return { label: hit[1], group: hit[2] }
+  return { label: `Window (${Math.round(seconds / 3600)}h)`, group: 'other' }
+}
+
+function codexWindow(
+  key: string,
+  label: string,
+  group: UsageWindow['group'],
+  w: CodexWindow,
+  rl: CodexRateLimit,
+  warn: number,
+  now: number
+): UsageWindow {
+  const percent = typeof w.used_percent === 'number' ? Math.round(w.used_percent) : null
+  const resetsAt =
+    typeof w.reset_at === 'number' && w.reset_at > 0
+      ? w.reset_at * 1000
+      : typeof w.reset_after_seconds === 'number' && w.reset_after_seconds > 0
+        ? now + w.reset_after_seconds * 1000
+        : undefined
+  const locked = rl.limit_reached === true || rl.allowed === false
+  return { key, label, group, percent, severity: locked ? 'locked' : severityFor(percent, warn), resetsAt, updatedAt: now }
+}
+
+/** Shape of GET https://chatgpt.com/backend-api/wham/usage, the document the Codex CLI reads. */
+export function normalizeCodex(json: Record<string, unknown>, warn: number): UsageWindow[] {
+  const now = Date.now()
+  const out: UsageWindow[] = []
+  const main = json.rate_limit as CodexRateLimit | undefined
+  if (main) {
+    for (const [slot, w] of [['primary', main.primary_window], ['secondary', main.secondary_window]] as const) {
+      if (!w) continue
+      const name = windowName(w.limit_window_seconds)
+      out.push(codexWindow(`codex:${slot}`, name.label, name.group, w, main, warn, now))
+    }
+  }
+  const extras = json.additional_rate_limits as { limit_name?: string; metered_feature?: string; rate_limit?: CodexRateLimit }[] | undefined
+  if (Array.isArray(extras)) {
+    for (const e of extras) {
+      if (!e.rate_limit) continue
+      const name = e.limit_name || e.metered_feature || 'extra limit'
+      for (const [slot, w] of [['primary', e.rate_limit.primary_window], ['secondary', e.rate_limit.secondary_window]] as const) {
+        if (!w) continue
+        const win = windowName(w.limit_window_seconds)
+        out.push(codexWindow(`codex:${name}:${slot}`, `${name} · ${win.label}`, 'other', w, e.rate_limit, warn, now))
+      }
+    }
+  }
   return sortWindows(out)
 }

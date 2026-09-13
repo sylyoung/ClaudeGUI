@@ -15,7 +15,7 @@ import { HostClient, HostProtocolMismatch } from './hostClient'
 import { Updater } from './updater'
 import { loadWindowState, trackWindowState } from './windowState'
 import { PermissionService } from './permissions'
-import type { AppSettings, SessionEvent, StartupNotice, ThemeInfo, UsageSnapshot } from '@shared/types'
+import type { AppSettings, SessionEvent, StartupNotice, ThemeInfo, UsageState } from '@shared/types'
 import type { HostEvent } from '../host/protocol'
 
 const require = createRequire(import.meta.url)
@@ -499,7 +499,7 @@ if (!gotLock) {
       getSettings: () => store.get(),
       sessionUsage: () => (host.connected ? host.planUsage() : Promise.resolve(null)),
       checkAuth: () => auth.current(),
-      emit: (snapshot: UsageSnapshot) => sendAll('usage:update', snapshot),
+      emit: (state: UsageState) => sendAll('usage:update', state),
       log
     })
     updater = new Updater({

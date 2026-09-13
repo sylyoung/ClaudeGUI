@@ -108,7 +108,7 @@ export function registerIpc(ctx: IpcContext): void {
   })
 
   // ---- plan usage
-  handle('usage:get', () => ctx.usage.snapshot)
+  handle('usage:get', () => ctx.usage.state())
   handle('usage:refresh', () => ctx.usage.refresh('manual'))
 
   // ---- Claude Code login

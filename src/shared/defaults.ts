@@ -1,4 +1,21 @@
-import type { AppSettings } from './types'
+import type { AppSettings, UsageProviderId, UsageSnapshot, UsageState } from './types'
+
+/** A snapshot with no numbers yet, so the UI has something well-formed to render. */
+export function emptyUsageSnapshot(): UsageSnapshot {
+  return { fetchedAt: 0, source: 'none', windows: [] }
+}
+
+/** Both subscriptions, empty: the state before the first check has finished. */
+export function emptyUsageState(): UsageState {
+  return {
+    providers: [
+      { id: 'claude', label: 'Claude', snapshot: emptyUsageSnapshot() },
+      { id: 'codex', label: 'ChatGPT', snapshot: emptyUsageSnapshot() }
+    ]
+  }
+}
+
+export const USAGE_PROVIDER_IDS: UsageProviderId[] = ['claude', 'codex']
 
 export const DEFAULT_UPDATE_REPO = 'https://github.com/sylyoung/ClaudeGUI.git'
 
@@ -73,6 +90,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Usage
   usageRefreshMinutes: 5,
   usageWarnPercent: 50,
+  usageSubscription: 'claude',
   showUsageStatus: true,
   showContextInSidebar: true,
   showTaskCountsInSidebar: true,

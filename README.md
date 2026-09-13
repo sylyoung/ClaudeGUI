@@ -13,7 +13,7 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.28** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.29** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
@@ -46,6 +46,11 @@ repository (ClaudeGUI → Check for Updates…).
   last check. Click for reset times and a manual "Check now". The data comes from the same claude.ai
   usage endpoint the CLI's `/usage` uses, refreshed on a timer, after every finished turn, and from
   the rate-limit headers of every API response.
+- **The same corner can show the ChatGPT subscription instead**: click the meter and switch between
+  **Claude** and **ChatGPT** (Settings → Usage has the same control, saved as the default). ChatGPT's
+  numbers come from the usage endpoint the Codex CLI reads, called with the login Codex stores in
+  `~/.codex/auth.json` and routed over the same network path as Claude; both subscriptions are read
+  on every check, so the switch itself costs nothing.
 - **Chat header with visible actions**: open the folder in Terminal, reveal in Finder, open in the
   editor, open the GitHub remote, show / hide the folder panel (remembered per chat), pin, start /
   stop the process. Model, permission mode and effort sit on one line (short label when closed, full
@@ -186,6 +191,7 @@ adds or overrides variables if needed; Settings shows what was captured.
 | App log · session host log | `~/Library/Logs/ClaudeGUI/claudegui.log` · `session-host.log` |
 | Update checkout, dependencies, staging build and log | `~/Library/Caches/ClaudeGUI/update/` |
 | Plan-usage login token (read only) | macOS Keychain item `Claude Code-credentials` or `~/.claude/.credentials.json` |
+| ChatGPT plan-usage token (read only) | `~/.codex/auth.json`, written by the Codex CLI; `CODEX_HOME` moves it |
 
 Deleting a session in the app only removes it from the index unless you confirm deleting the
 transcript as well. `CLAUDEGUI_USER_DATA=<dir>` moves the settings/session index elsewhere and

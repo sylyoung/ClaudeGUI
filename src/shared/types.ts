@@ -528,6 +528,8 @@ export interface AppSettings {
   // ---- Usage
   usageRefreshMinutes: number
   usageWarnPercent: number
+  /** Which subscription the top-right pills show; the Claude/ChatGPT switch writes this. */
+  usageSubscription: UsageProviderId
   showUsageStatus: boolean
   showContextInSidebar: boolean
   showTaskCountsInSidebar: boolean
@@ -582,6 +584,22 @@ export interface UsageSnapshot {
   error?: string
   nextCheckAt?: number
   checking?: boolean
+}
+
+/** A subscription whose plan limits the app can read: the Claude login, or the one Codex signs into. */
+export type UsageProviderId = 'claude' | 'codex'
+
+export interface UsageProviderState {
+  id: UsageProviderId
+  /** Name on the switch ("Claude", "ChatGPT"). */
+  label: string
+  /** That subscription's plan as last read; `error` says why numbers are missing. */
+  snapshot: UsageSnapshot
+}
+
+export interface UsageState {
+  /** One entry per subscription. Both are read on every check, so switching costs nothing. */
+  providers: UsageProviderState[]
 }
 
 // ---------------------------------------------------------------------------

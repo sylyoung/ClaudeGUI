@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 8, v1.0.28)
+Last updated: 2026-09-13 (session 9, v1.0.29)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -33,6 +33,12 @@ survive app restarts.
 - Plan usage limits come from the claude.ai usage endpoint (the one the CLI's `/usage` reads) using
   the OAuth token Claude Code stores in the Keychain; the request goes through `curl` so the proxy
   applies. Rate-limit events from API responses are merged into the same windows.
+- Since 1.0.29 the same meter can show the **ChatGPT** subscription instead: the Codex CLI's usage
+  endpoint (`chatgpt.com/backend-api/wham/usage`) called with the login in `~/.codex/auth.json`,
+  forced through the captured environment's proxy when it has one (`noproxy = ""`, because curl lets
+  `NO_PROXY=*` override `-x`). Both subscriptions are read on every check and the switch between them
+  is a setting (`usageSubscription`); Codex's window lengths name their windows (5 h → "Session
+  (5h)", 7 d → "Weekly") and its per-feature extras stay in the details panel.
 - Updates = git tags of the repository (Settings → About → repository). The updater clones/fetches
   into `~/Library/Caches/ClaudeGUI/update/src`, runs `npm ci` only when the lock file hash changed,
   builds into `…/update/staging` and hands over to `apply-update.sh`, which waits for the app to
@@ -200,6 +206,29 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.29
+Request: "there should also be a switch on the usage of week/5h one to change to codex sub's other
+than the claude sub's", then, after the switch was missing from the build: "I dont see where I can
+swap to show the usage of GPT, in plan usage limit in the app". The user chose a segmented switch in
+the popover (over showing both at once, and over a settings-only toggle) and "main limit only, extras
+in the popover".
+- The earlier attempt at this failed on my own probe: shells here carry `NO_PROXY=*`, and curl lets it
+  override `-x`, so the request went out directly and ChatGPT refused it (HTTP 000). With
+  `--noproxy ''` the same call answers HTTP 200 — measured before building anything.
+- Source: `UsageService.readCodex` reads `~/.codex/auth.json` (`CODEX_HOME` honoured), calls
+  `chatgpt.com/backend-api/wham/usage` with `Authorization`, `chatgpt-account-id` and Codex's own
+  user agent, and normalises `rate_limit.{primary,secondary}_window` plus `additional_rate_limits`
+  by window length (`normalizeCodex`). `UsageSnapshot` is now per provider (`UsageProviderState` /
+  `UsageState`), `usage:get` and `usage:update` carry both, and the renderer picks the one the
+  `usageSubscription` setting names.
+- [x] `npm run typecheck` clean. Verified in a dev instance: `window.api.usage.get()` returned
+  Claude (session 60 %, weekly all 100 %, weekly Fable 17 % — the account's real state) and ChatGPT
+  (weekly 6 %, plus Spark 5 h/weekly and gpt-reserve weekly) from one check; the popover switch and
+  the Settings control both moved the corner between "5h 60 % · Wk 100 % · Fable 17 %" and "Wk 6 %";
+  Settings' Cancel kept the saved value and Save stored it. Screenshots
+  sandbox/shots/usage-claude.png, usage-chatgpt.png, settings-usage.png. Dev instance and helpers
+  stopped, 0 leftover processes; the user's bridge (pid 19642) left running.
 
 ### v1.0.28
 Request: "if a chat just compacted, being idle, but with background monitors/shells/subagents, I

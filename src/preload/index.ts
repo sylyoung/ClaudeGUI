@@ -34,7 +34,7 @@ import type {
   HostStatus,
   DirInfo,
   PermissionInfo,
-  UsageSnapshot
+  UsageState
 } from '@shared/types'
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string }
@@ -87,8 +87,8 @@ const api = {
     set: (patch: Partial<AppSettings>) => invoke<AppSettings>('settings:set', patch)
   },
   usage: {
-    get: () => invoke<UsageSnapshot>('usage:get'),
-    refresh: () => invoke<UsageSnapshot>('usage:refresh')
+    get: () => invoke<UsageState>('usage:get'),
+    refresh: () => invoke<UsageState>('usage:refresh')
   },
   /** Claude Code's login: whether it can authenticate, and signing it in again. */
   auth: {
@@ -213,7 +213,7 @@ const api = {
   events: {
     onSessionEvent: (cb: (e: SessionEvent) => void) => on<SessionEvent>('session:event', cb),
     onFsChanged: (cb: (dir: string) => void) => on<string>('fs:changed', cb),
-    onUsage: (cb: (s: UsageSnapshot) => void) => on<UsageSnapshot>('usage:update', cb),
+    onUsage: (cb: (s: UsageState) => void) => on<UsageState>('usage:update', cb),
     onAuth: (cb: (s: AuthState) => void) => on<AuthState>('auth:update', cb),
     onTheme: (cb: (t: ThemeInfo) => void) => on<ThemeInfo>('theme:changed', cb),
     onSettingsChanged: (cb: (s: AppSettings) => void) => on<AppSettings>('settings:changed', cb),

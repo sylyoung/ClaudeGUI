@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.29 — 2026-09-13
+
+### The plan-usage meter reads the ChatGPT subscription as well, with a switch
+
+- **Click the usage meter and a Claude / ChatGPT switch sits at the top of the panel**; Settings →
+  Usage has a labelled control for the same setting, so the corner always shows the subscription you
+  chose. Both are read on every check, so switching costs no request. The switch's choice is a
+  setting, so it survives a restart.
+- **The corner shows the selected subscription's own windows.** For a ChatGPT login those are the
+  ones ChatGPT reports for Codex: Codex names a window by its length, so the 5-hour window becomes
+  "Session (5h)" and the weekly one becomes "Weekly" — here the main limit *is* the weekly window
+  (measured 6 % used, resetting in 6 d 19 h). The per-feature extras ChatGPT also reports
+  ("GPT-5.3-Codex-Spark" 5-hour and weekly, "gpt-reserve" weekly) appear in the details panel, named,
+  rather than crowding the corner.
+- **Where the numbers come from**: `GET https://chatgpt.com/backend-api/wham/usage` — the endpoint
+  the Codex CLI itself reads — with the token Codex keeps in `~/.codex/auth.json`, sent over the same
+  network path as Claude (the user's rule: GPT like Claude, Kimi and DeepSeek direct). When the
+  captured shell environment configures a proxy, the request is pinned to it with `noproxy = ""`,
+  because curl otherwise lets `NO_PROXY` — which can be `*` on this machine — silently send it out
+  directly, where ChatGPT refuses it. The token travels in a curl config on stdin and is never logged.
+- The plan name ("max", "prolite") moved from the panel header to its footer line, which now reads
+  e.g. "ChatGPT (prolite) · last check: … · next in 4m".
+- [x] `npm run typecheck` clean. Verified in a dev instance: the app's own `usage:get` returns both
+  subscriptions with live numbers (Claude's windows plus ChatGPT's four); the normalizer was run over
+  a live document through `sandbox/tools/codex-usage-normalize-check.ts` and mapped the weekly 6 %
+  and the three extras as intended; the popover switch and the Settings control both switch the
+  corner (Claude's "5h 60 % · Wk 100 % · Fable 17 %" ↔ ChatGPT's "Wk 6 %"); Cancel in Settings leaves
+  the saved choice alone and Save persists it. Screenshots sandbox/shots/usage-{claude,chatgpt}.png
+  and settings-usage.png. Dev instance and helpers stopped.
+- Supersedes the open question of 1.0.28: reading ChatGPT's backend was the only way to show this,
+  and it now answers HTTP 200. The earlier failure ("HTTP 000") was this machine's `NO_PROXY=*`
+  making the probe curl bypass the proxy; the launcher's preflight was hardened for it in the same
+  round (`--noproxy ''`, and a `*` dropped from the environment handed to the bridge).
+
 ## 1.0.28 — 2026-09-13
 
 ### Background work that ended with a chat is written into its input box, unsent

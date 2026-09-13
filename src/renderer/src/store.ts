@@ -19,10 +19,11 @@ import type {
   SidebarView,
   ThemeInfo,
   UpdateState,
-  UsageSnapshot
+  UsageState
 } from '@shared/types'
 import { applyTheme } from './lib/theme'
 import { comparatorFor } from '@shared/util'
+import { emptyUsageState } from '@shared/defaults'
 
 export type DialogKind = null | 'new-session' | 'import-session' | 'settings' | 'shortcuts' | 'sign-in'
 export type SettingsTab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
@@ -76,7 +77,7 @@ interface State {
   appInfo?: AppInfo
   settings?: AppSettings
   theme: ThemeInfo
-  usage: UsageSnapshot
+  usage: UsageState
   /** Whether Claude Code can authenticate (see AuthNotice). */
   auth: AuthState
   update: UpdateState
@@ -158,7 +159,7 @@ interface State {
   /** Settings pushed from the main process (menu changes etc.). */
   receiveSettings: (s: AppSettings) => void
   setTheme: (t: ThemeInfo) => void
-  setUsage: (u: UsageSnapshot) => void
+  setUsage: (u: UsageState) => void
   setAuth: (a: AuthState) => void
   /** Copy a chat into a new one, as Claude Code's /branch does, and open the new chat. */
   forkSession: (id: string, name?: string) => Promise<void>
@@ -253,7 +254,7 @@ function backgroundWorkNote(tasks: BackgroundTaskView[], messages: ChatMessage[]
 export const useStore = create<State>((set, get) => ({
   ready: false,
   theme: { systemDark: localStorage.getItem('theme-dark') !== '0', accent: '#007aff' },
-  usage: { fetchedAt: 0, source: 'none', windows: [] },
+  usage: emptyUsageState(),
   auth: { status: 'unknown', checkedAt: 0 },
   update: { status: 'idle', currentVersion: '', log: [], autoRestart: true },
   providers: [],
