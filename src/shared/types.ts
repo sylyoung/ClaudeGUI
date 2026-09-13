@@ -183,6 +183,11 @@ export interface SessionLiveState {
   claudeVersion?: string
   cwd?: string
   activity?: 'compacting' | 'requesting' | null
+  /**
+   * When the current activity began (epoch ms), so a wait can be timed. Claude Code repeats
+   * "compacting" every 30 seconds while it works, so only a change of activity resets this.
+   */
+  activitySince?: number
   pendingPermissions: PendingPermission[]
   backgroundTasks: BackgroundTaskView[]
   activeTools: ActiveToolView[]

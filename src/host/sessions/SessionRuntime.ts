@@ -456,7 +456,7 @@ export class SessionRuntime {
       this.live.pendingPermissions = []
       this.live.activeTools = []
       this.live.processAlive = false
-      this.live.activity = null
+      this.setActivity(null, Date.now())
       this.setQueued([])
       // Nothing can be waiting or being answered once the process is gone; the chat falls back to
       // reading those prompts from the transcript, where they show as delivered but unanswered.
@@ -1196,7 +1196,7 @@ export class SessionRuntime {
         const shellOnly = this.shellResultExpected && !named.user_message_uuids?.length && !named.user_message_uuid
         this.shellResultExpected = false
         if (shellOnly) {
-          this.live.activity = null
+          this.setActivity(null, ts)
           break
         }
         this.transcript.apply(msg, ts)
@@ -1210,7 +1210,7 @@ export class SessionRuntime {
         const last = this.transcript.messages[this.transcript.messages.length - 1]
         if (last?.kind === 'result') this.live.lastTurn = last.stats
         this.live.activeTools = []
-        this.live.activity = null
+        this.setActivity(null, ts)
         // The prompts that were being answered when this turn ended. The result usually names them
         // (user_message_uuids below), but not always — a "/compact" the CLI refuses is answered
         // without naming anything — so the ones marked as being worked on are kept as well.
@@ -1334,7 +1334,7 @@ export class SessionRuntime {
         const state = s.state as 'idle' | 'running' | 'requires_action'
         if (state === 'idle') {
           this.live.activeTools = []
-          this.live.activity = null
+          this.setActivity(null, ts)
           if (this.live.status !== 'requires_action' || !this.live.pendingPermissions.length) this.setStatus(this.live.pendingPermissions.length ? 'requires_action' : 'idle')
         } else if (state === 'running') {
           if (!this.live.pendingPermissions.length) this.setStatus('running')
@@ -1344,7 +1344,7 @@ export class SessionRuntime {
         break
       }
       case 'status': {
-        this.live.activity = (s.status as 'compacting' | 'requesting' | null) ?? null
+        this.setActivity((s.status as 'compacting' | 'requesting' | null) ?? null, ts)
         // "compacting" or "requesting" is the CLI at work whatever the last result left the status
         // at: a compaction queued behind a turn starts right after that turn's result, which
         // reported nothing queued (queued_turn_count is 0 for prompts sent mid-turn) and set idle.
@@ -1423,6 +1423,20 @@ export class SessionRuntime {
   private setStatus(status: SessionLiveState['status']): void {
     if (this.live.status !== status) {
       this.live.status = status
+      this.stateDirty = true
+    }
+  }
+
+  /**
+   * What Claude Code says it is doing (compacting the context, waiting for the model), with the
+   * time it started. It repeats "compacting" every 30 seconds while it works (measured 2026-09-13:
+   * status messages at 0 s and 30 s, the boundary at 41.8 s), so the start time is only taken when
+   * the activity actually changes — otherwise a wait would look as if it restarted every 30 s.
+   */
+  private setActivity(next: 'compacting' | 'requesting' | null, ts: number): void {
+    if (next !== this.live.activity) {
+      this.live.activitySince = next ? ts : undefined
+      this.live.activity = next
       this.stateDirty = true
     }
   }

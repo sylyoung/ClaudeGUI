@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.26 — 2026-09-13
+
+### A compaction shows that it is running, instead of a percentage frozen from before it
+- **The context bar in the chat toolbar animates while Claude Code compacts the context** and reads
+  "compacting… 1m 12s" in place of the old number; it returns to the measured number when the
+  compaction finishes. Asked for after a `/compact` in a long chat sat for minutes showing nothing.
+- Why there is no real progress bar: measured with `sandbox/tools/compact-stream-probe.mjs`
+  (2026-09-13, the same bundled CLI and SDK call the app drives) — a manual `/compact` reports
+  `status compacting` at 0 s, the same status again at 30 s, and ends at 41.8 s with
+  `compact_boundary` (`trigger=manual`, pre 23,682 → post 1,911 tokens, `duration_ms` 41,807).
+  Between those there are **no tokens, no partial output and no percentage**, so a filling bar
+  would be invented; the bar times the wait and covers it with a moving highlight.
+- The elapsed time is a new `activitySince` on the live state, set by the host when the activity
+  changes — Claude Code repeats "compacting" every 30 s, which must not restart the clock.
+- The Compact button in the context popover is disabled while the chat is already compacting.
+- Noted, not fixed: right after a compaction the toolbar number can read *higher* than before (dev
+  test: 23k → 39k although the chat's own row said "24,274 tokens → 1,829"). The CLI's two context
+  counts disagree — `summary` answered 39,257 and `full` answered 19,650 for the same idle chat,
+  measured 30 s apart — and the app shows whichever it asked for last. Worth a look of its own.
+
 ## 1.0.25 — 2026-09-13
 
 ### An answer you are half-way through typing survives a chat switch

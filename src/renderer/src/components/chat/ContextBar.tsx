@@ -1,9 +1,9 @@
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Cpu, RefreshCw, Shrink } from 'lucide-react'
 import type { SessionLiveState } from '@shared/types'
 import { useStore } from '@/store'
 import { Popover } from '../common/Popover'
-import { formatTokens, relativeTime } from '@/lib/format'
+import { formatDuration, formatTokens, relativeTime } from '@/lib/format'
 import { barScale, CONTEXT_COLOUR_RULE, contextLevel, contextPercent, contextWindowOf } from '@/lib/tasks'
 
 /** Context-window usage bar for the chat toolbar; click for the /context breakdown. */
@@ -18,6 +18,20 @@ export function ContextBar({ sessionId, live }: { sessionId: string; live: Sessi
   const used = live?.contextUsage?.totalTokens ?? live?.contextTokens
   const window = contextWindowOf(live)
   const cu = live?.contextUsage
+  // A compaction reports nothing at all while it runs — measured 2026-09-13: "compacting" at 0 s,
+  // the same word again at 30 s (Claude Code repeating itself), and the boundary 41.8 s in, with
+  // no output in between. So the bar times the wait instead of showing a percentage nobody sends;
+  // the real, smaller measurement arrives with the turn's result and replaces it.
+  const compacting = live?.activity === 'compacting'
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!compacting) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [compacting])
+  const waitedMs = compacting && live?.activitySince ? Math.max(0, now - live.activitySince) : 0
+  const waited = waitedMs >= 1000 ? formatDuration(waitedMs) : ''
+  const before = used != null && window != null ? `${formatTokens(used)} of ${formatTokens(window)} tokens` : 'the context'
   const recount = async () => {
     setBusy(true)
     try {
@@ -29,15 +43,21 @@ export function ContextBar({ sessionId, live }: { sessionId: string; live: Sessi
       setBusy(false)
     }
   }
-  const title = pct == null ? 'Context usage is known once the session has answered once' : `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens (${pct}%)\n${CONTEXT_COLOUR_RULE}`
+  const title = compacting
+    ? `Claude Code is compacting this chat's context — ${before}${waited ? `, ${waited} so far` : ''}.\nIt sends nothing while it works, so there is no percentage to show; the bar returns with the new measurement when the compaction finishes.`
+    : pct == null
+      ? 'Context usage is known once the session has answered once'
+      : `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens (${pct}%)\n${CONTEXT_COLOUR_RULE}`
   return (
     <>
-      <button ref={ref} className={`ctx-bar level-${level} ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)} data-tip={title}>
+      <button ref={ref} className={`ctx-bar level-${level} ${open ? 'open' : ''} ${compacting ? 'is-compacting' : ''}`} onClick={() => setOpen((o) => !o)} data-tip={title}>
         <Cpu size={12} />
         <span className="ctx-track">
-          <span className="ctx-fill" style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
+          {compacting ? <span className="ctx-sweep" /> : <span className="ctx-fill" style={{ width: `${Math.min(100, pct ?? 0)}%` }} />}
         </span>
-        <span className="ctx-text">{pct == null ? 'context –' : `${formatTokens(used)} / ${formatTokens(window)} · ${pct}%`}</span>
+        <span className="ctx-text">
+          {compacting ? `compacting…${waited ? ` ${waited}` : ''}` : pct == null ? 'context –' : `${formatTokens(used)} / ${formatTokens(window)} · ${pct}%`}
+        </span>
       </button>
       {open && (
         <Popover anchor={ref.current} onClose={() => setOpen(false)} width={420} align="left">
@@ -49,7 +69,12 @@ export function ContextBar({ sessionId, live }: { sessionId: string; live: Sessi
               <button className="btn sm" onClick={recount} disabled={busy || !live?.processAlive} data-tip="Re-count every category with the token-count API">
                 <RefreshCw size={12} className={busy ? 'spin' : ''} /> Recount
               </button>
-              <button className="btn sm" onClick={() => void send(sessionId, '/compact')} disabled={!live?.processAlive} data-tip="Summarize the conversation to free context (/compact)">
+              <button
+                className="btn sm"
+                onClick={() => void send(sessionId, '/compact')}
+                disabled={!live?.processAlive || compacting}
+                data-tip={compacting ? 'This chat is being compacted already' : 'Summarize the conversation to free context (/compact)'}
+              >
                 <Shrink size={12} /> Compact
               </button>
             </div>

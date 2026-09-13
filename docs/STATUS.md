@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 6, v1.0.25)
+Last updated: 2026-09-13 (session 7, v1.0.26)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,31 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.26
+Request: "shouldn there be a progress bar for executing compact?"
+- Measured first (sandbox/tools/compact-stream-probe.mjs, 2026-09-13): a manual /compact through
+  the bundled CLI with the app's own SDK call reports `status compacting` at 0.0 s, `compacting`
+  again at 30.0 s (the CLI repeating itself), then `status null result=success` and
+  `compact_boundary trigger=manual pre=23682 post=1911 duration_ms=41807` at 41.8 s. No stream
+  events, no tokens, no percentage in between — a determinate progress bar is not possible.
+- The user chose (AskUserQuestion): animate the context bar, no invented percentage.
+- App: `SessionLiveState.activitySince` (src/shared/types.ts) + `SessionRuntime.setActivity()`
+  (sets the start only when the activity changes) + `ContextBar.tsx` (animated `.ctx-sweep` track,
+  "compacting… <elapsed>", tooltip explaining the silence, Compact button disabled while compacting)
+  + `.ctx-sweep` in styles.css (reuses the existing `sweep-x` keyframes).
+- [x] `npm run typecheck` clean.
+- [x] Dev instance (v1.0.26, session bd00daa6 on the codex provider): a real /compact showed
+      `ctx-bar level-ok is-compacting :: compacting… 2.1s` ticking to `51.1s`, then
+      `ctx-bar level-ok :: 39k / 872k · 5%`; chat row "Context compacted (manual): 24,274 tokens →
+      1,829"; screenshot sandbox/shots/compact-bar-running.png. Dev instance and helpers stopped.
+- Deliberately not changed: the status row overflows by ~40 px with the file panel open, so the
+  bar's tail is clipped in a narrow window (pre-existing; the same happens to the plain percentage
+  today). Shrinking the bar and ellipsising its label fixes the clipping but costs the percentage
+  in narrow windows, so it was left for the user to decide.
+- Open question for the user: the number after a compaction can read higher than before it (39,257
+  vs 22,683 in the dev chat) because the CLI's `summary` and `full` counts disagree (39,257 vs
+  19,650 measured 30 s apart on an idle chat).
 
 ### v1.0.25
 Request: "the context being shown when using a gpt model seems wrong, check my 报奖 chat" (model
