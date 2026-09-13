@@ -334,12 +334,27 @@ export interface QueuedPromptTakeBack {
 }
 
 /** What a rewind to one of your prompts would do (asked before it is carried out). */
+/** One prompt of a chat, from its transcript: what the rewind list shows. */
+export interface RewindTargetView {
+  /** uuid of the prompt's entry in the transcript: what a rewind names. */
+  id: string
+  text: string
+  /** When it was sent. */
+  ts: number
+}
+
 export interface RewindPreview {
   /** The text of that prompt; it goes back into the input box so you can edit and send it again. */
   text: string
   /** False when the conversation cannot be cut back to this point (see reason). */
   canRewind: boolean
   reason?: string
+  /**
+   * True when this prompt is older than the conversation Claude Code still has, so the chat's
+   * transcript itself is cut at that point (as Claude Code's own rewind does) instead of the
+   * session being restarted at the answer before it.
+   */
+  cut?: boolean
   /** Whether the files Claude changed since then can be put back, and how much would change. */
   files: {
     available: boolean
@@ -354,6 +369,10 @@ export interface RewindPreview {
 export interface RewindResult {
   /** The prompt text that was cut away, for the input box. */
   text: string
+  /** True when the chat's transcript was cut rather than the session restarted at a fork point. */
+  cut?: boolean
+  /** Where the removed part of the transcript was kept, when it was cut. */
+  backup?: string
   /** Number of files put back (0 when only the conversation was rewound). */
   filesRestored: number
   /** Files that were tracked but could not be restored safely. */

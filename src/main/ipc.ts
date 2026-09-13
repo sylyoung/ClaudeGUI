@@ -171,6 +171,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle('sessions:stop', (id: string) => host.stop(id))
   handle('sessions:interrupt', (id: string) => host.interrupt(id))
   handle('sessions:cancelQueued', (id: string, messageId: string) => host.cancelQueued(id, messageId))
+  handle('sessions:rewindTargets', (id: string) => host.rewindTargets(id))
   handle('sessions:rewindPreview', (id: string, messageId: string) => host.rewindPreview(id, messageId))
   handle('sessions:rewind', (id: string, messageId: string, restoreFiles: boolean) => host.rewind(id, messageId, restoreFiles))
   handle('sessions:answerPermission', (id: string, requestId: string, decision: PermissionDecision) => host.answerPermission(id, requestId, decision))

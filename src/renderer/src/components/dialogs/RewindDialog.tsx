@@ -54,9 +54,20 @@ export function RewindDialog({ sessionId, messageId, onClose }: { sessionId: str
             <label>Back to this prompt</label>
             <div className="rewind-quote">{preview.text.slice(0, 400) || '(empty prompt)'}</div>
             <div className="hint">
-              Everything after it — Claude's answers and your later prompts — is removed from the chat, and this prompt
-              goes back into the input box so you can change it and send it again. Claude Code is restarted at that
-              point, so it no longer remembers what came after, and the chat stays ready.
+              {preview.cut ? (
+                <>
+                  Everything after it — Claude's answers and your later prompts — is removed from the chat, and this
+                  prompt goes back into the input box so you can change it and send it again. This prompt is older than
+                  the conversation Claude Code still keeps, so the chat's own transcript is cut at that point, the way
+                  Claude Code's rewind does it; the removed part is kept in a file beside the transcript.
+                </>
+              ) : (
+                <>
+                  Everything after it — Claude's answers and your later prompts — is removed from the chat, and this
+                  prompt goes back into the input box so you can change it and send it again. Claude Code is restarted
+                  at that point, so it no longer remembers what came after, and the chat stays ready.
+                </>
+              )}
             </div>
           </div>
           <div className="field">

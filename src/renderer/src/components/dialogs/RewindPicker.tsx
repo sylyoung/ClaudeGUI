@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { History } from 'lucide-react'
-import { useStore } from '@/store'
+import type { RewindTargetView } from '@shared/types'
 import { Modal } from '../common/Modal'
 import { formatTime, timeAgo } from '@/lib/format'
 import { isComposing } from '@/lib/keys'
@@ -10,35 +10,46 @@ import { isComposing } from '@/lib/keys'
  * you have sent in this chat, newest first, and asks which one to go back to. Picking one opens the
  * rewind window, which is where the choice between "the conversation only" and "the conversation and
  * the files" is made — nothing is changed from this list itself.
+ *
+ * The list comes from the chat's transcript rather than from the loaded conversation, because
+ * Claude Code hands back only what came after the last compaction once a transcript is large: the
+ * file is the only place the whole chat's prompts exist, and Claude Code's own rewind lists them.
  */
 export function RewindPicker({ sessionId, onPick, onClose }: { sessionId: string; onPick: (messageId: string) => void; onClose: () => void }) {
-  const messages = useStore((s) => s.messages[sessionId])
-  const queued = useStore((s) => s.live[sessionId]?.queuedIds)
+  const [prompts, setPrompts] = useState<RewindTargetView[] | null>(null)
+  const [error, setError] = useState('')
   const [q, setQ] = useState('')
   const [sel, setSel] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
   const lastKeyAt = useRef(0)
 
-  // Your own prompts, newest first. A prompt Claude Code has not taken yet cannot be rewound to —
-  // there is nothing after it to remove — so the waiting ones are left out.
-  const prompts = useMemo(() => {
-    const waiting = new Set(queued ?? [])
-    const list = (messages ?? [])
-      .filter((m) => m.kind === 'user' && !m.synthetic && m.text.trim() && !waiting.has(m.id))
-      .map((m) => ({ id: m.id, text: (m as { text: string }).text.trim(), ts: m.ts }))
-    list.reverse()
+  useEffect(() => {
+    let alive = true
+    setPrompts(null)
+    setError('')
+    window.api.sessions
+      .rewindTargets(sessionId)
+      .then((list) => alive && setPrompts([...list].reverse())) // newest first
+      .catch((err) => alive && setError((err as Error).message))
+    return () => {
+      alive = false
+    }
+  }, [sessionId])
+
+  const shown = useMemo(() => {
+    const list = prompts ?? []
     const needle = q.trim().toLowerCase()
     return needle ? list.filter((p) => p.text.toLowerCase().includes(needle)) : list
-  }, [messages, queued, q])
+  }, [prompts, q])
 
-  useEffect(() => setSel(0), [q])
+  useEffect(() => setSel(0), [q, prompts])
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-idx="${sel}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [sel])
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (isComposing(e)) return
-    const last = prompts.length - 1
+    const last = shown.length - 1
     lastKeyAt.current = Date.now()
     if (e.key === 'ArrowDown') { e.preventDefault(); setSel((n) => Math.min(last, n + 1)) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((n) => Math.max(0, n - 1)) }
@@ -46,7 +57,7 @@ export function RewindPicker({ sessionId, onPick, onClose }: { sessionId: string
     else if (e.key === 'End') { e.preventDefault(); setSel(Math.max(0, last)) }
     else if (e.key === 'Enter') {
       e.preventDefault()
-      const p = prompts[sel]
+      const p = shown[sel]
       if (p) onPick(p.id)
     }
   }
@@ -57,12 +68,16 @@ export function RewindPicker({ sessionId, onPick, onClose }: { sessionId: string
         <div className="row">
           <input className="input" placeholder="Filter your prompts…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
           <span className="faint" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-            {prompts.length} prompt{prompts.length === 1 ? '' : 's'}
+            {prompts === null ? 'Reading…' : `${shown.length} prompt${shown.length === 1 ? '' : 's'}`}
           </span>
         </div>
         <div className="list grow" ref={listRef}>
-          {prompts.length === 0 && <div className="faint" style={{ padding: 12 }}>{q ? 'No prompt matches.' : 'This chat has no prompt to go back to yet.'}</div>}
-          {prompts.map((p, idx) => (
+          {error && <div className="msg-system error" style={{ margin: 12 }}><div className="body">{error}</div></div>}
+          {!error && prompts === null && <div className="faint" style={{ padding: 12 }}>Reading this chat's prompts from its transcript…</div>}
+          {!error && prompts !== null && shown.length === 0 && (
+            <div className="faint" style={{ padding: 12 }}>{q ? 'No prompt matches.' : 'This chat has no prompt to go back to yet.'}</div>
+          )}
+          {shown.map((p, idx) => (
             <div
               key={p.id}
               data-idx={idx}
@@ -78,7 +93,7 @@ export function RewindPicker({ sessionId, onPick, onClose }: { sessionId: string
           ))}
         </div>
         <div className="faint" style={{ fontSize: 12 }}>
-          <History size={12} style={{ verticalAlign: -2 }} /> ↑ ↓ walk the list, Enter picks the highlighted prompt. Everything after it is removed from the chat and the prompt goes back into the input box; the next window asks whether the files should be put back as well.
+          <History size={12} style={{ verticalAlign: -2 }} /> ↑ ↓ walk the list, Enter picks the highlighted prompt. Everything after it is removed from the chat and the prompt goes back into the input box; the next window asks whether the files should be put back as well. Prompts from before the chat's last compaction are listed too — going back that far cuts the chat's own transcript at that point, the way Claude Code's rewind does.
         </div>
         <div className="actions">
           <button className="btn" onClick={onClose}>Cancel</button>

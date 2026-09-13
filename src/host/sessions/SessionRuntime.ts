@@ -31,6 +31,7 @@ import type {
   PromptDelivery,
   RewindPreview,
   RewindResult,
+  RewindTargetView,
   SessionEvent,
   SessionLiveState,
   SdkUsage,
@@ -38,6 +39,7 @@ import type {
   SlashCommandView
 } from '@shared/types'
 import { TranscriptState, looksSynthetic } from './transcript'
+import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
 import { splitList } from '@shared/util'
 
 /** Unbounded async queue used as the SDK's streaming-input prompt. */
@@ -173,6 +175,8 @@ export class SessionRuntime {
   private pending = new Map<string, { resolve: (r: PermissionResult) => void; request: PendingPermission; suggestions?: PermissionUpdate[] }>()
   private historyLoaded = false
   private historyPromise: Promise<void> | null = null
+  /** The chat's prompts as its transcript file has them; only ever grows, so it is kept between reads. */
+  private promptIndex: PromptIndex | undefined
   private flushTimer: NodeJS.Timeout | null = null
   private stateDirty = false
   private runLoop: Promise<void> | null = null
@@ -278,6 +282,34 @@ export class SessionRuntime {
     }
     this.historyLoaded = true
     this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: this.transcript.messages })
+  }
+
+  /**
+   * Read the chat's transcript file again. Only the lines written since the last read are read, so
+   * opening the rewind list costs one pass the first time and almost nothing after that.
+   */
+  private async refreshPromptIndex(): Promise<PromptIndex> {
+    this.promptIndex = await readPromptIndex(this.transcriptPath(), this.promptIndex)
+    return this.promptIndex
+  }
+
+  /** Where this chat's Claude Code transcript lives. */
+  private transcriptPath(): string {
+    return path.join(projectDirFor(this.record.cwd), `${this.record.claudeSessionId}.jsonl`)
+  }
+
+  /**
+   * Every prompt the chat has ever had, oldest first, read from its transcript. The chat's loaded
+   * history stops at the last compaction (Claude Code hands back only that), so the rewind list
+   * comes from the file itself: Claude Code's own rewind lists the whole session, and so does this.
+   */
+  async rewindTargets(): Promise<RewindTargetView[]> {
+    const index = await this.refreshPromptIndex()
+    const waiting = new Set(this.live.queuedIds ?? [])
+    this.deps.log(`[session ${this.id}] rewind list: ${index.prompts.length} prompts (${index.scanned} transcript lines read)`)
+    return index.prompts
+      .filter((p) => !waiting.has(p.id))
+      .map((p) => ({ id: p.id, text: p.text, ts: p.ts }))
   }
 
   /** Attach persisted subagent transcripts to their Agent tool blocks (most recent 40). */
@@ -522,6 +554,30 @@ export class SessionRuntime {
     return { index: idx, text: target.text, forkAt }
   }
 
+  /**
+   * Where a rewind to this prompt goes back to, and how. A prompt the chat still shows is cut the
+   * way it always was, by restarting Claude Code at the answer before it. A prompt older than that
+   * — before the last compaction, which is all Claude Code hands back when a transcript is large —
+   * is not in the chat any more: there is nothing for Claude Code to resume at, so the transcript
+   * itself is cut, which is what Claude Code's own rewind does to its transcript.
+   */
+  private async rewindPoint(messageId: string): Promise<{ text: string; forkAt: string | null; cutAt: number; cut: boolean; reason?: string }> {
+    if (this.transcript.messages.some((m) => m.id === messageId)) {
+      const { text, forkAt } = this.rewindTarget(messageId)
+      return { text, forkAt, cutAt: 0, cut: false, reason: forkAt ? undefined : this.noForkReason(messageId) }
+    }
+    const index = await this.refreshPromptIndex()
+    const found = index.prompts.find((p) => p.id === messageId)
+    if (!found) throw new Error('That prompt is not in this chat any more.')
+    return {
+      text: found.text,
+      forkAt: found.forkAt,
+      cutAt: found.cutAt,
+      cut: true,
+      reason: found.forkAt ? undefined : 'This is the first prompt of the chat, so there is nothing before it to go back to.'
+    }
+  }
+
   /** Why there is no point to go back to before this prompt. */
   private noForkReason(messageId: string): string {
     const idx = this.transcript.messages.findIndex((m) => m.id === messageId)
@@ -533,11 +589,12 @@ export class SessionRuntime {
 
   /** What a rewind to this prompt would do, without changing anything. */
   async rewindPreview(messageId: string): Promise<RewindPreview> {
-    const { text, forkAt } = this.rewindTarget(messageId)
+    const { text, forkAt, cut, reason } = await this.rewindPoint(messageId)
     const preview: RewindPreview = {
       text,
       canRewind: Boolean(forkAt),
-      reason: forkAt ? undefined : this.noForkReason(messageId),
+      reason,
+      cut,
       files: { available: false, changed: 0, insertions: 0, deletions: 0, paths: [] }
     }
     if (!this.q) {
@@ -571,8 +628,63 @@ export class SessionRuntime {
    * to go on instead of being left "not running".
    */
   async rewind(messageId: string, restoreFiles: boolean): Promise<RewindResult> {
-    const { index, text, forkAt } = this.rewindTarget(messageId)
-    if (!forkAt) throw new Error(this.noForkReason(messageId))
+    const point = await this.rewindPoint(messageId)
+    if (!point.forkAt) throw new Error(point.reason ?? this.noForkReason(messageId))
+    if (point.cut) return this.rewindByCutting(messageId, point, restoreFiles)
+    return this.rewindAtForkPoint(messageId, point.forkAt, point.text, restoreFiles)
+  }
+
+  /** Cut the transcript itself, for a prompt older than the conversation Claude Code still has. */
+  private async rewindByCutting(
+    messageId: string,
+    point: { text: string; cutAt: number },
+    restoreFiles: boolean
+  ): Promise<RewindResult> {
+    let filesRestored = 0
+    let filesSkipped = 0
+    if (restoreFiles) {
+      if (!this.q) throw new Error('The session is not running, so the files cannot be put back.')
+      const planned = await this.q.rewindFiles(messageId, { dryRun: true }).catch(() => null)
+      const r = await this.q.rewindFiles(messageId)
+      if (!r.canRewind) throw new Error(r.error || 'The files could not be put back.')
+      filesRestored = r.filesChanged?.length ?? planned?.filesChanged?.length ?? 0
+      filesSkipped = r.skippedLinks ?? 0
+    }
+    const wasRunning = Boolean(this.q)
+    await this.stop(true)
+    if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
+    const cut = await cutTranscript(this.transcriptPath(), point.cutAt)
+    this.promptIndex = undefined
+    this.deps.log(`[session ${this.id}] transcript cut at ${point.cutAt} for a rewind to ${messageId.slice(0, 8)}: ${cut.removedBytes} bytes kept in ${path.basename(cut.backup)}`)
+    // What the chat shows is now whatever the cut transcript holds: read it as a fresh chat would.
+    this.transcript.reset()
+    this.historyPromise = null
+    this.historyLoaded = false
+    await this.loadHistory()
+    this.resumeAt = null
+    const lastPrompt = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && !m.synthetic)
+    this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
+    this.record.lastActiveAt = Date.now()
+    this.live.lastPreview = point.text.replace(/\s+/g, ' ').slice(0, 140)
+    this.live.unread = 0
+    this.deps.saveRecord(this.record)
+    this.scheduleFlush()
+    this.flush()
+    let restarted = false
+    if (wasRunning && !this.q) {
+      try {
+        await this.ensureStarted()
+        restarted = true
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] restart after rewind failed: ${(err as Error).message}`)
+      }
+    }
+    return { text: point.text, filesRestored, filesSkipped, restarted, cut: true, backup: cut.backup }
+  }
+
+  /** The way it always was: restart Claude Code at the answer before the prompt. */
+  private async rewindAtForkPoint(messageId: string, forkAt: string, text: string, restoreFiles: boolean): Promise<RewindResult> {
+    const index = this.transcript.messages.findIndex((m) => m.id === messageId)
     let filesRestored = 0
     let filesSkipped = 0
     if (restoreFiles) {

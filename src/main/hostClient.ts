@@ -23,6 +23,7 @@ import type {
   ProviderView,
   RewindPreview,
   RewindResult,
+  RewindTargetView,
   SdkUsage,
   SessionGroup,
   SessionLiveState,
@@ -413,6 +414,10 @@ export class HostClient extends EventEmitter {
 
   cancelQueued(id: string, messageId: string): Promise<QueuedPromptTakeBack> {
     return this.call('cancelQueued', id, messageId)
+  }
+
+  rewindTargets(id: string): Promise<RewindTargetView[]> {
+    return this.call('rewindTargets', id)
   }
 
   rewindPreview(id: string, messageId: string): Promise<RewindPreview> {

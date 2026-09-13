@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 10, v1.0.30)
+Last updated: 2026-09-13 (session 11, v1.0.31)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -206,6 +206,42 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.31
+Request: "the rewinding seems to only remember chats in this session, not ideal", then "should
+behave exactly like how claude code CLI does it".
+- Cause (measured, not guessed): `SessionRuntime.loadHistory` hydrates a chat through the SDK's
+  `getSessionMessages`, and Claude Code's transcript loader skips everything before the last
+  `compact_boundary` once the file passes 5 MB (`CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP` gates it).
+  Their chats compact every few prompts, so a fresh hydration keeps almost nothing: their app log
+  (host respawned 2026-09-13 08:34:50Z after the 1.0.30 update) shows the 1.3 GB chat loading 336
+  entries, and that chat has 4 prompts after its last compaction out of ~10,441. The rewind list is
+  built from that history, so it was nearly empty.
+- Second fact, verified against Claude Code itself: a session cannot be restarted before its last
+  compaction. With a 6.85 MB synthetic transcript, `--resume … --resume-session-at <uuid before the
+  boundary>` fails with "No message found with message.uuid of: …"
+  (`sandbox/tools/probe-resume-session-at.py`), because the loader skipped that part. So a longer
+  list alone would offer prompts that cannot be rewound to.
+- Fix (user chose this route): the rewind list is read from the chat's transcript file
+  (`src/host/sessions/promptIndex.ts`, one streaming pass, incremental after that, prompt filter
+  shared with `transcript.ts` via `looksSynthetic`). Rewinding to a prompt older than the loaded
+  history cuts the transcript at the answer before it
+  (`cutTranscript`, with the removed tail kept as `<id>.jsonl.rewound-<stamp>`), reloads the chat's
+  history from the cut file and restarts the session; prompts still in the loaded history keep the
+  old `resumeSessionAt` path unchanged. New RPC `sessions:rewindTargets`; the picker reads from it
+  and shows a reading state; the rewind window says when it will cut.
+- [x] verified in a dev instance (details in CHANGELOG 1.0.31). The dev instance's own model calls
+  started failing with `API Error: 403 Request not allowed` part-way through (the same call from a
+  shell worked), so the conversation after the cut was verified by resuming the cut session with
+  Claude Code itself, which answered with the kept code word only.
+- [x] probes left behind for the next round: `probe-session-messages.mjs` (the 5 MB skip),
+  `probe-resume-session-at.py` (Claude Code refuses a pre-compaction fork point),
+  `probe-fork-before-compaction.mjs` (cutting a conversation works), `probe-prompt-index.ts` and
+  `probe-index-incremental.ts` (the reader against Claude Code's own list),
+  `augment-transcript.py` (give a scratch chat a compaction and size).
+- Note: a probe of mine appended a line to the user's own 1.3 GB chat transcript and truncated it
+  back within milliseconds; the tail chain was intact afterwards and nothing looked missing, but it
+  should not have been written to at all — scratch copies from now on.
 
 ### v1.0.30
 Request: "cannot click the icon for usage change across claude/gpt" — the Claude / ChatGPT switch

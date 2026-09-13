@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0.31 — 2026-09-13
+
+### Rewinding reaches every prompt of the chat, the way Claude Code's own rewind does
+
+- The rewind list (double tap on Escape) only held the prompts since the chat's last compaction.
+  When Claude Code loads a transcript larger than 5 MB it hands back only the part after the last
+  compaction, and a chat that compacts often has little left after it: the biggest chat here loaded
+  336 of its 503,000 transcript entries, which left its list 4 prompts out of the 10,441 sent over
+  the chat's life. After the app (and with it the session host) restarted, rewinding looked like it
+  remembered nothing but this session.
+- The list is now read from the chat's transcript file itself, which holds every prompt. One
+  streaming pass over the file — 2.1 s for the 1.3 GB chat, and only the lines written since the
+  last read on every pass after that — keeps the prompts the chat's own history would keep: tool
+  results, the CLI's notices and compaction summaries stay out.
+- A prompt older than the conversation Claude Code still has cannot be rewound by restarting the
+  session at the answer before it: Claude Code refuses a resume before its last compaction
+  ("No message found with message.uuid of: …", verified against Claude Code 2.0.x), because that
+  part is exactly what it skipped when it loaded. For those prompts the chat's transcript is cut at
+  that answer instead — the same thing Claude Code's own rewind does to its transcript — and the
+  removed part is kept beside the transcript as `<session id>.jsonl.rewound-<time>`, a name Claude
+  Code ignores. Prompts after the last compaction are rewound the way they always were, by
+  restarting at the fork point.
+- [x] `npm run typecheck` clean, production build clean. Verified in a dev instance with a scratch
+  chat: after its transcript was given a compaction and pushed past 5 MB, a restart left the loaded
+  history with 0 prompts while the rewind list showed both prompts of the chat; rewinding to the
+  earlier one cut the transcript from 6,069,490 to 64,924 bytes, kept the removed part in
+  `<id>.jsonl.rewound-…`, cut the chat to the kept prompt, restarted the session (verified with the
+  process alive), and Claude Code resumed the cut conversation seeing only the kept prompt
+  ("PINEAPPLE", not the code word sent after it). The rewind list of the cut chat afterwards showed
+  the remaining prompts. Screenshots: `sandbox/shots/rewind-picker-whole-chat.png`.
+- Known limit: a rewind made by an earlier version left its abandoned branch in the transcript
+  file, and those prompts appear in the list too. They are gone from the file once the chat is
+  rewound with this version, and rewinding to one of them lands on that state of the chat.
+- Cost: reading the transcript is CPU work in the session host (2.1 s for 1.3 GB, ~200 MB of
+  transient memory), so it happens when the rewind list is opened, not at load.
+
 ## 1.0.30 — 2026-09-13
 
 ### The Claude / ChatGPT switch in the usage panel can be clicked

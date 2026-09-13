@@ -15,6 +15,7 @@ import type {
   PermissionMode,
   RewindPreview,
   RewindResult,
+  RewindTargetView,
   SessionEvent,
   SessionLiveState,
   SdkUsage,
@@ -430,6 +431,11 @@ export class SessionManager {
 
   cancelQueued(id: string, messageId: string): Promise<{ cancelled: boolean; text: string; images?: ImageAttachment[] }> {
     return this.get(id).cancelQueued(messageId)
+  }
+
+  /** Every prompt of a chat, read from its transcript, for the rewind list. */
+  rewindTargets(id: string): Promise<RewindTargetView[]> {
+    return this.get(id).rewindTargets()
   }
 
   rewindPreview(id: string, messageId: string): Promise<RewindPreview> {

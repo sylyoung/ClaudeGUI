@@ -21,6 +21,7 @@ import type {
   QueuedPromptTakeBack,
   ProviderView,
   RewindPreview,
+  RewindTargetView,
   RewindResult,
   SessionEvent,
   SessionLiveState,
@@ -119,6 +120,8 @@ const api = {
     stop: (id: string) => invoke<void>('sessions:stop', id),
     interrupt: (id: string) => invoke<void>('sessions:interrupt', id),
     cancelQueued: (id: string, messageId: string) => invoke<QueuedPromptTakeBack>('sessions:cancelQueued', id, messageId),
+    /** Every prompt of the chat, from its transcript — the rewind list. */
+    rewindTargets: (id: string) => invoke<RewindTargetView[]>('sessions:rewindTargets', id),
     rewindPreview: (id: string, messageId: string) => invoke<RewindPreview>('sessions:rewindPreview', id, messageId),
     rewind: (id: string, messageId: string, restoreFiles: boolean) => invoke<RewindResult>('sessions:rewind', id, messageId, restoreFiles),
     answerPermission: (id: string, requestId: string, decision: PermissionDecision) =>
