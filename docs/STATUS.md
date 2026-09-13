@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 8, v1.0.27)
+Last updated: 2026-09-13 (session 8, v1.0.28)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,29 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.28
+Request: "if a chat just compacted, being idle, but with background monitors/shells/subagents, I
+terminate that chat, and restart it with a different model, I want that model to pickup those
+monitors and such", then, when shown that they cannot be resumed: "automatically put such to the
+chatbox, but not inputted, let me decide whether to input".
+- Measured first: a chat's background shell (pid 86624) is a child of that chat's CLI process (84446);
+  `sessions.stop` killed both, the shell's log stopped growing, and the restarted chat reported
+  `backgroundTasks: []`. Nothing can be reattached, so the work can only be started again.
+- App: `backgroundWorkNote` + `pendingDrafts` in store.ts (written when a process that had running
+  tasks is replaced or ends, keyed by the dead process so a stop does not also fire on the start that
+  follows; skipped while the app quits), `clearPendingDraft`, and the Composer places the note when its
+  box is empty. `/model` inside a provider never restarts, so nothing is noted there.
+- [x] `npm run typecheck` clean. Verified in a dev instance on the codex provider: the note appeared
+  in the box with the full command ("background shell: Append timestamps to third probe log
+  continuously" + the `while true; do …` line), and with "my own half-written prompt" typed first the
+  box kept the typed text while the note waited in `pendingDrafts` and appeared once cleared.
+  Screenshot sandbox/shots/lost-work-draft.png. Dev instance and helpers stopped, 0 leftover processes.
+- Open, unchanged: Codex/ChatGPT subscription usage is not readable from anything on disk (the bridge
+  serves only /v1/models; Codex's own rollout files and thread DB hold a weekly `used_percent` but
+  their newest entry is from 2026-09-09, i.e. the last Codex CLI run, not bridge usage), so the
+  week/5h meter cannot show it without calling ChatGPT's backend with the token in ~/.codex/auth.json.
+  Asked the user before doing that.
 
 ### v1.0.27
 Request: "shouldn there be a progress bar for executing compact?" — the progress part shipped in

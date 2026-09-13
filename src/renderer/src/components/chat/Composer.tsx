@@ -114,6 +114,19 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     else localStorage.removeItem(`draft:${sessionId}`)
   }, [text, sessionId])
 
+  /**
+   * A note the app wrote for this chat (background work that died with its process) is placed in the
+   * input box, not sent: the user reads it and decides. It is never put over words they have written
+   * themselves — it waits in the store until the box is empty.
+   */
+  const pendingDraft = useStore((s) => s.pendingDrafts[sessionId])
+  const clearPendingDraft = useStore((s) => s.clearPendingDraft)
+  useEffect(() => {
+    if (!pendingDraft || text.trim()) return
+    setText(pendingDraft)
+    clearPendingDraft(sessionId)
+  }, [pendingDraft, text, sessionId, clearPendingDraft])
+
   // auto-grow
   useEffect(() => {
     const el = ref.current

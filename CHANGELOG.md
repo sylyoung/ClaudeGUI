@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.28 — 2026-09-13
+
+### Background work that ended with a chat is written into its input box, unsent
+- **When a chat's process is replaced or stopped while background shells, monitors or subagents were
+  running, the app writes a note about them into that chat's input box** — what was running, with the
+  command each one started with, and the fact that it cannot be resumed. It is never sent by itself:
+  read it, edit it, send it or delete it.
+- Why a note is the only option, measured 2026-09-13 in a dev instance: a background shell is a child
+  of that chat's Claude Code process (pid 86624, parent the chat's CLI process). Stopping the chat
+  killed the CLI and the shell with it — its log file stopped at the line it had reached — and starting
+  the chat again reported no background tasks at all. A new process cannot reattach to the old one's
+  children: their output pipes closed with it. Starting the work again is the only way back, which is
+  why the decision is left to the user.
+- A model switch **inside** a provider does not restart anything (the running process just switches
+  model), so nothing is lost or noted there; it is a provider switch (Claude / GPT / DeepSeek / Kimi)
+  or an explicit stop that ends the process.
+- The note never goes over words already typed: if the input box has text, the note waits in the store
+  until the box is empty, then appears. Verified in a dev instance both ways (typed text untouched
+  while the note waited; the note placed once the box was cleared), and nothing is written when the
+  app itself is quitting.
+
 ## 1.0.27 — 2026-09-13
 
 ### Model names written the same way everywhere
