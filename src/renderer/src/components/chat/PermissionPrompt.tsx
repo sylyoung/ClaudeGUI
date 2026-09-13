@@ -43,8 +43,15 @@ export function isDestructiveRequest(request: PendingPermission): boolean {
   return false
 }
 
-export function PermissionPrompt({ request, onAnswer }: { request: PendingPermission; onAnswer: (d: PermissionDecision) => void }) {
-  if (request.toolName === 'AskUserQuestion') return <QuestionPrompt request={request} onAnswer={onAnswer} />
+/**
+ * Answers ticked and typed on a question card, kept per request. A card is unmounted when its chat
+ * is not the one on screen, so without this a half-filled answer was lost by switching chats: the
+ * card came back blank and the picks had to be made again. Entries are dropped once the card is
+ * answered or dismissed.
+ */
+const cardAnswers = new Map<string, { selected: Record<number, string[]>; other: Record<number, string> }>()
+
+export function PermissionPrompt({ request, onAnswer }: { request: PendingPermission; onAnswer: (d: PermissionDecision) => void }) {  if (request.toolName === 'AskUserQuestion') return <QuestionPrompt request={request} onAnswer={onAnswer} />
   return <ToolPermission request={request} onAnswer={onAnswer} />
 }
 
@@ -135,8 +142,20 @@ function ToolPermission({ request, onAnswer }: { request: PendingPermission; onA
 
 function QuestionPrompt({ request, onAnswer }: { request: PendingPermission; onAnswer: (d: PermissionDecision) => void }) {
   const questions = (request.input.questions as Question[] | undefined) ?? []
-  const [selected, setSelected] = useState<Record<number, Set<string>>>({})
-  const [other, setOther] = useState<Record<number, string>>({})
+  const kept = cardAnswers.get(request.requestId)
+  const [selected, setSelected] = useState<Record<number, Set<string>>>(() => {
+    const init: Record<number, Set<string>> = {}
+    for (const [qi, labels] of Object.entries(kept?.selected ?? {})) init[Number(qi)] = new Set(labels)
+    return init
+  })
+  const [other, setOther] = useState<Record<number, string>>(() => kept?.other ?? {})
+
+  /** Keep what is on the card, so a chat switch (which unmounts it) does not lose it. */
+  const remember = (nextSelected: Record<number, Set<string>>, nextOther: Record<number, string>) => {
+    const saved: Record<number, string[]> = {}
+    for (const [qi, labels] of Object.entries(nextSelected)) saved[Number(qi)] = [...labels]
+    cardAnswers.set(request.requestId, { selected: saved, other: nextOther })
+  }
 
   const toggle = (qi: number, label: string, multi: boolean) => {
     setSelected((s) => {
@@ -148,11 +167,17 @@ function QuestionPrompt({ request, onAnswer }: { request: PendingPermission; onA
         cur.clear()
         cur.add(label)
       }
-      return { ...s, [qi]: cur }
+      const next = { ...s, [qi]: cur }
+      remember(next, other)
+      return next
     })
   }
 
   const complete = questions.every((q, qi) => (selected[qi]?.size ?? 0) > 0 || (other[qi] ?? '').trim())
+  const answer = (d: PermissionDecision) => {
+    cardAnswers.delete(request.requestId)
+    onAnswer(d)
+  }
   const submit = () => {
     const answers: Record<string, string> = {}
     questions.forEach((q, qi) => {
@@ -161,7 +186,7 @@ function QuestionPrompt({ request, onAnswer }: { request: PendingPermission; onA
       if (extra) picks.push(extra)
       answers[q.question] = picks.join(', ')
     })
-    onAnswer({ behavior: 'allow', updatedInput: { ...request.input, answers } })
+    answer({ behavior: 'allow', updatedInput: { ...request.input, answers } })
   }
 
   return (
@@ -190,7 +215,11 @@ function QuestionPrompt({ request, onAnswer }: { request: PendingPermission; onA
             className="input"
             placeholder="Other (type your own answer)…"
             value={other[qi] ?? ''}
-            onChange={(e) => setOther((s) => ({ ...s, [qi]: e.target.value }))}
+            onChange={(e) => {
+              const next = { ...other, [qi]: e.target.value }
+              setOther(next)
+              remember(selected, next)
+            }}
           />
         </div>
       ))}
@@ -198,7 +227,7 @@ function QuestionPrompt({ request, onAnswer }: { request: PendingPermission; onA
         <button className="btn primary" disabled={!complete} onClick={submit}>
           Submit answer
         </button>
-        <button className="btn ghost" onClick={() => onAnswer({ behavior: 'deny', message: 'The user dismissed the question without answering.' })}>
+        <button className="btn ghost" onClick={() => answer({ behavior: 'deny', message: 'The user dismissed the question without answering.' })}>
           Dismiss
         </button>
       </div>

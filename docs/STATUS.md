@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-12 (session 5, v1.0.24)
+Last updated: 2026-09-13 (session 6, v1.0.25)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -200,6 +200,38 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.25
+Request: "the context being shown when using a gpt model seems wrong, check my 报奖 chat" (model
+`gpt-5.6-sol[1m]`, provider codex), then "if I type/select something, switch chat, switch back, then
+the typed and selected are all gone" — answered as *options in a question card*.
+- Measured where the window comes from (2026-09-13, sandbox/tools/context-window-probe.mjs, same
+  bundled CLI and SDK call the app uses): with the `cc-gpt` environment Claude Code answers
+  `maxTokens=272000 rawMaxTokens=272000` for `gpt-5.6-sol[1m]`; with the launcher's
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` removed it answers **1000000** (the `[1m]` marker in the model
+  name), and without the marker 200000. So the number shown was the launcher's, not the app's guess.
+  Codex's own list (`~/.codex/models_cache.json`) gives gpt-5.6-sol/luna/terra and gpt-6-astra
+  `context_window: 272000`, `max_context_window: 872000`.
+- Ceiling measured through the real bridge (sandbox/tools/bridge-context-limit-probe.mjs, model
+  gpt-5.6-sol, prompt counted by the bridge's own token counter): 212,214 tokens → HTTP 200;
+  530,546 tokens → HTTP 200 ("ok"). Nothing on the bridge's side caps prompts below the model's max.
+- Launcher change (user's `~/.zshrc`, chosen by the user): `cc-gpt` now defaults
+  `CC_GPT_AUTO_COMPACT_WINDOW` to 872000 at 92 %; backup
+  `sandbox/backups/zshrc-before-window-872k-*`; `cc-gpt-safe` untouched. The app's own
+  `provider-cache.json` was re-seeded (`sandbox/tools/seed-provider-capture.mjs`) because the
+  launcher still refuses on its route probe, so the app would otherwise keep using the old 272,000
+  capture; backup `sandbox/backups/provider-cache-before-window-872k-*`.
+- App: `PermissionPrompt.tsx` keeps a question card's ticks and typed answers in a per-request map
+  (`cardAnswers`), dropped on answer/dismiss.
+- [x] `npm run typecheck` clean.
+- [x] Dev instance (v1.0.25): a codex chat now reports `window 872000`, `36,676 / 872,000 · 4 %`;
+      a synthetic AskUserQuestion card kept `◉ Beta` and the typed "my own words" after switching to
+      another chat and back, with the DOM element re-created (so the state came from the map, not
+      from React state). Dev instance and helpers stopped, 0 leftover processes.
+- Noted while looking at 报奖: its Claude Code transcript is 811 MB — 218,741 entries of which
+  197,000 are re-appended copies of the same history (534 compaction records for 35 real
+  compactions). Claude Code's own compaction rewrites preserved segments, so the file keeps
+  multiplying; today's /compact there took 192 s. Left as is; worth a separate look.
 
 ### v1.0.24
 Request: "test it to be production ready, it is not. I cannot use GPT models, it triggered error

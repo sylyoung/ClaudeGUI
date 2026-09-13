@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.25 — 2026-09-13
+
+### An answer you are half-way through typing survives a chat switch
+- **Ticked options and a typed "Other" answer on a question card are kept per request.** The card is
+  part of one chat's transcript, so switching to another chat and back rebuilt it blank: the ticks
+  and the text you had written were gone and had to be made again. Both are now remembered for the
+  request and dropped once the card is answered or dismissed.
+- The context window shown for a GPT chat is whatever the launcher declares: `cc-gpt` exported
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=272000`, so a chat on GPT-5.6-Sol was measured against 272,000
+  although the model's own list gives it 272,000 standard and **872,000 maximum**, and Codex accepted
+  a 530,546-token prompt through the bridge (measured 2026-09-13). `cc-gpt` now declares the model's
+  full 872,000-token window at 92 % (~802,240 tokens before compaction); `cc-gpt-safe` stays
+  conservative at 220,000. Chats already open keep the window they started with until they are
+  restarted.
+
 ## 1.0.24 — 2026-09-12
 
 ### Other-provider chats when the launcher refuses, and only models the account offers
