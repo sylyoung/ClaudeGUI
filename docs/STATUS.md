@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 12, v1.0.32)
+Last updated: 2026-09-13 (session 13, v1.0.33)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -210,6 +210,32 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.33
+Request: "check my 报奖 chat, why cannot I open any of the file links?"
+- Cause (measured): that chat is a GPT chat, and a GPT model writes every file as a markdown link
+  (`[Helfrich proposal](/Users/…/Helfrich-project-proposal.docx)` — read out of its transcript with
+  `sandbox/tools/tail-transcript-text.py`). Only *plain* paths in the text are turned into file
+  links, so a markdown link kept its own address and a click handed `/Users/…` to
+  `shell.openExternal`; Electron's `openExternal` opens URLs, not paths — measured in this project's
+  Electron 44, a path rejects with `Invalid URL` while `file:///…` opens — and the renderer never
+  caught the rejection. So the click silently did nothing, in any chat, on any GPT chat constantly.
+- Fix: `Markdown.tsx` treats an address with no URL scheme (and not a `#…` anchor) as a file, the way
+  a path in the text is treated — chat folder, the file settings, right-click menu. Failed
+  `openExternal` calls now raise a toast. In a Markdown preview outside a chat an absolute path opens
+  with the default app and a relative one stays plain text.
+- [x] verified in a dev instance with a real GPT turn returning an absolute and a relative link: both
+  render as `span.file-link`, no `a[href^="/"]` left in the chat, and a click on each opens the right
+  file in the viewer with no error toast; right-click menu complete. Markdown preview of a file with
+  all three kinds: absolute → file link, relative → plain text, `https://example.com` → `<a href>`
+  (DOM-measured; the preview's absolute link was not clicked, as that opens the file with the default
+  app). Details in CHANGELOG 1.0.33, which also records the probe's side effect (one browser tab and
+  one file opened on the user's Mac).
+- Not changed: links inside a Markdown *preview* cannot resolve relative addresses (nothing to
+  resolve against — the viewer passes no folder), and `LinkifiedText` (plain-text paths in user
+  messages and tool output) already worked.
+- Still open from v1.0.32: the plain `claude` wrapper and the app's Claude chats take 127.0.0.1:18118,
+  which is down; the Claude usage check fails for that reason.
 
 ### v1.0.32
 Request: "the check now button as in the app is still wrong, cannot get the actual usage", then

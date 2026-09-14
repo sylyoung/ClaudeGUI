@@ -4,8 +4,16 @@ import remarkGfm from 'remark-gfm'
 import { CodeBlock } from '../common/CodeBlock'
 import { useChatCtx } from './ChatContext'
 import { findPaths, isProbablyPath, splitLine } from '@/lib/paths'
+import { useStore } from '@/store'
 
 const FILE_PROTO = 'claudegui-file://'
+
+/**
+ * A URL scheme, as in `https:`, `mailto:` or `file:`. Anything without one is a path: models write
+ * `[the proposal](/Users/me/proposal.docx)` and `[the notes](notes/plan.md)` constantly, and those
+ * are links to files, not addresses to hand to a browser.
+ */
+const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
 
 /**
  * react-markdown drops the address of any link whose protocol it does not know, which silently
@@ -51,17 +59,33 @@ function remarkFilePaths() {
 
 export function Markdown({ text }: { text: string }) {
   const ctx = useChatCtx()
+  const toast = useStore((s) => s.toast)
   const components = useMemo<Components>(
     () => ({
       a: ({ href, children }) => {
         const h = href ?? ''
-        if (h.startsWith(FILE_PROTO)) {
-          const raw = decodeURIComponent(h.slice(FILE_PROTO.length))
-          const { path, line } = splitLine(raw)
+        // The links this file makes itself carry our own protocol; a markdown link that names a
+        // file carries none. `#…` is a link inside the document, not a file.
+        const written = h.startsWith(FILE_PROTO)
+          ? decodeURIComponent(h.slice(FILE_PROTO.length))
+          : h && !SCHEME.test(h) && !h.startsWith('#')
+            ? h
+            : null
+        if (written !== null) {
+          const { path, line } = splitLine(written)
+          // With no chat around it — a Markdown file open in the viewer — only an absolute path can
+          // be opened, so a relative one is left as plain text rather than as a link that cannot work.
+          if (!ctx && !path.startsWith('/')) return <span data-tip={written}>{children}</span>
           return (
             <span
               className="file-link"
-              onClick={(e) => ctx?.openPath(path, line, { inEditor: e.metaKey || e.altKey })}
+              onClick={(e) => {
+                // `shell.openExternal` refuses anything without a scheme ("Invalid URL"), so a path
+                // handed to it opened nothing at all, silently. Paths go the way a path in the text
+                // goes: resolved against the chat's folder, then opened by the file settings.
+                if (ctx) ctx.openPath(path, line, { inEditor: e.metaKey || e.altKey })
+                else void window.api.shell.openPath(path).then((err) => err && toast(err, 'error'))
+              }}
               onContextMenu={(e) => {
                 e.preventDefault()
                 ctx?.showPathMenu(path, line, e.clientX, e.clientY)
@@ -77,7 +101,11 @@ export function Markdown({ text }: { text: string }) {
             href={h}
             onClick={(e) => {
               e.preventDefault()
-              if (h) window.api.shell.openExternal(h)
+              if (h) {
+                void window.api.shell
+                  .openExternal(h)
+                  .catch((err) => toast(`Could not open ${h}: ${(err as Error).message}`, 'error'))
+              }
             }}
             data-tip={h}
           >
@@ -119,7 +147,7 @@ export function Markdown({ text }: { text: string }) {
       ),
       input: ({ checked, ...rest }) => <input type="checkbox" checked={Boolean(checked)} readOnly {...(rest as object)} />
     }),
-    [ctx]
+    [ctx, toast]
   )
   return (
     <div className="md">

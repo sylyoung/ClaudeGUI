@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.0.33 — 2026-09-13
+
+### A markdown link to a file opens the file
+
+- Request: "check my 报奖 chat, why cannot I open any of the file links?"
+- Cause, measured: a link written as markdown — `[Helfrich proposal](/Users/…/Helfrich-project-proposal.docx)`,
+  which is how a GPT model lists files, and 报奖 is a GPT chat — was not recognised as a file at all.
+  Only paths written as plain text become file links (those carry the app's own `claudegui-file://`
+  address, made in `Markdown.tsx`); a markdown link kept the address the model wrote, so a click
+  handed `/Users/…` to `shell.openExternal`. Electron opens URLs, not paths: measured with this
+  project's Electron 44, `shell.openExternal('/Users/…/优秀博士论文评奖对比.xlsx')` rejects with
+  `Invalid URL`, while the same file as `file:///…` opens. The renderer never caught that rejection,
+  so the click did nothing at all — no window, no message, in any chat. GPT chats show it everywhere
+  because they write every path this way; Claude chats hide it by writing bare paths.
+- Fix (`src/renderer/src/components/chat/Markdown.tsx`): a link whose address has no URL scheme and
+  is not an in-document `#…` anchor is a file and behaves like a path in the text — resolved against
+  the chat's folder, opened by Settings → Files → "Clicking a file opens it", with the same
+  right-click menu. Web links are unchanged. A `shell.openExternal` that fails now says so in a
+  toast instead of vanishing. Outside a chat (a Markdown file open in the viewer) an absolute path is
+  opened with the default app, and a relative one — which has nothing to resolve against there — is
+  left as plain text rather than as a link that cannot work.
+- [x] `npm run typecheck` clean, production build clean. Verified in a dev instance with a real GPT
+  turn (codex chat, bridge on 8118) that returned both forms: the absolute link and the relative
+  `tmp/link-target-2.md` rendered as `span.file-link` with no `a[href^="/"]` anywhere in the chat,
+  and a click on each opened the right file (its text on screen in the viewer, no error toast); the
+  right-click menu offered all six entries (viewer, editor, default app, open with…, reveal, copy
+  path). In a Markdown preview of a file containing all three kinds, the DOM showed absolute → file
+  link, relative → plain text, `https://example.com` → `<a href>`; the preview's absolute link was
+  not clicked, because that path opens the file with the default app and no test needs to launch one.
+- Measurement side effect worth knowing: the Electron probe that established the cause was run with
+  two control targets, so one browser tab to `example.com` and one file (an `.xlsx` in the user's
+  报奖 folder) opened in their default apps, at about 2026-09-13 23:25 local.
+- Test material left behind: `sandbox/tmp/link-target.md`, `sandbox/tmp/link-target-2.md`,
+  `sandbox/tmp/preview-links.md`, and the driver scripts `sandbox/tmp/{inspect-link2,click-link,inspect-and-click,open-preview,chat-link-recheck}.js`.
+
 ## 1.0.32 — 2026-09-13
 
 ### The ChatGPT plan limits are read over the GPT route, not the Claude one
