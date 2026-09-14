@@ -33,6 +33,16 @@ const CACHE_MS = 10 * 60_000
 const FALLBACK_MAX_AGE_MS = 7 * 24 * 60 * 60_000
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
+/** Model ids that DeepSeek retired while existing ClaudeGUI sessions could still remember them. */
+const RETIRED_MODEL_ALIASES: Record<string, Record<string, string>> = {
+  deepseek: { 'deepseek-v4-flash': 'deepseek-flash' }
+}
+
+function currentModelId(providerId: string, model: string | undefined): string {
+  if (!model) return ''
+  return RETIRED_MODEL_ALIASES[providerId]?.[model] ?? model
+}
+
 /** What the state file holds: the last environment each launcher handed to the CLI. */
 interface SavedCapture {
   at: number
@@ -101,7 +111,7 @@ export class ProviderService {
       return { ...base, reason: (err as Error).message }
     }
     const capture = result.capture
-    const defaultModel = capture.env.ANTHROPIC_MODEL || undefined
+    const defaultModel = currentModelId(p.id, capture.env.ANTHROPIC_MODEL) || undefined
     const listed = await this.modelsFor(p, capture, refresh, probe)
     const models = [...listed.models]
     if (defaultModel && !models.some((m) => m.value === defaultModel)) {
@@ -220,8 +230,10 @@ export class ProviderService {
     if (!p.enabled) throw new Error(`Provider "${p.name}" is switched off in Settings (Claude tab).`)
     // Always run the launcher: it is what starts the bridge and checks the route, as in the terminal.
     const { capture, stale } = await this.captureOrFallback(p, true)
-    const chosen = model || capture.env.ANTHROPIC_MODEL || ''
+    const requested = model || capture.env.ANTHROPIC_MODEL || ''
+    const chosen = currentModelId(p.id, requested)
     if (!chosen) throw new Error(`${p.launcher} sets no model and the chat has none.`)
+    if (chosen !== requested) this.deps.log(`[providers] ${p.id}: remapped retired model ${requested} -> ${chosen}`)
     const env = mergeSpawnEnv(capture.env, parseExtraEnv(this.deps.getSettings().extraEnv))
     env.ANTHROPIC_MODEL = chosen
     const launch: ProviderLaunch = { env, model: chosen, disallowedTools: [], extraArgs: {}, warning: stale ? staleWarning(p.launcher, stale) : undefined }

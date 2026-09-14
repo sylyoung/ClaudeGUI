@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 13, v1.0.33)
+Last updated: 2026-09-14 (session 14, v1.0.34)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -210,6 +210,39 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.34
+Request: "I was experiencing a lot of errors with deepseek in claudegui … I used another model to
+apply some fix … check if this is real, make sure everything is good." Two claims to verify, one
+real bug behind them.
+- **DeepSeek model id — verified as *not* the cause.** `api.deepseek.com/models` lists only
+  `deepseek-flash` and `deepseek-v4-pro`, but `deepseek-v4-flash` still answers: a live POST to
+  `api.deepseek.com/anthropic/v1/messages` returned HTTP 200 and a valid Message both streaming and
+  non-streaming, and this session's own CLI was started on that id. The `API returned an empty or
+  malformed response (HTTP 200)` text is Claude Code's own diagnostic (it is in the bundled CLI, not
+  in `src/`), reporting a body that was not an Anthropic Message; nothing reproduces it now, and the
+  `server: nginx` it recorded is not DeepSeek's front end (`openresty`, or `elb` through the tunnel).
+  The remap (`RETIRED_MODEL_ALIASES` in `ProviderService`, plus the write-back in
+  `SessionRuntime.start`) is kept: harmless, and it stops the app asking for an id the provider has
+  stopped listing.
+- **In-app update — a real bug, but misdiagnosed.** The update log
+  (`~/Library/Caches/ClaudeGUI/update/update.log`) shows `git clone https://github.com/sylyoung/ClaudeGUI.git`
+  failing with `SSL_ERROR_SYSCALL` at 21:17Z and 21:27Z. The tools' environment carries no proxy at
+  all (Finder-launched app → minimal env; no startup file exports one; the login-shell capture
+  returns `{}`), and direct `github.com` is unreachable from this machine while `127.0.0.1:8118`
+  (the macOS system proxy) reaches it in 1.7 s. The earlier 18118→8118 swap needed 18118 to be
+  configured, so it could never fire. Fixed in `src/main/systemProxy.ts` + `updater.ts`: choose the
+  environment proxy if it can carry a connection to GitHub, else the macOS system proxy, else direct;
+  drop a `*` from `NO_PROXY`; and prove reachability with a CONNECT **plus TLS handshake**, because
+  the dead 18118 container answers the CONNECT and then carries nothing.
+- [x] `npm run typecheck` clean, production build clean. `sandbox/tools/check-update-route.sh` runs
+  the updater's own two functions on three environments (no proxy / macOS proxy / dead container) and
+  performs a real `git ls-remote` through each choice, with the shell's `NO_PROXY=*` present: all
+  three now choose 8118 and list v1.0.30…v1.0.33; two of them failed before the fix.
+- Note: `~/.zshrc` was edited by the other model at 17:30 today (three lines in `cc-ds` switched to
+  the published `deepseek-flash`); no backup of it from before that edit exists. The user's app is
+  still **v1.0.30** (started 17:16 today) and carries none of v1.0.31–34 — and it cannot fetch v1.0.34
+  by itself, because the updater it is running is the broken one. One manual install is needed.
 
 ### v1.0.33
 Request: "check my 报奖 chat, why cannot I open any of the file links?"

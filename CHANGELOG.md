@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.0.34 — 2026-09-14
+
+### The in-app update can reach GitHub again, and a retired DeepSeek model id is remapped
+
+- Request: "I was experiencing a lot of errors with deepseek in claudegui, `API Error: API returned an
+  empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request …`.
+  I used another model to apply some fix … check if this is real, make sure everything is good."
+- The DeepSeek half, measured — the model id was not the cause. `https://api.deepseek.com/models`
+  publishes exactly `deepseek-flash` and `deepseek-v4-pro`; `deepseek-v4-flash` is no longer listed,
+  but the API still answers it properly: a live POST to `api.deepseek.com/anthropic/v1/messages` with
+  `deepseek-v4-flash` returned HTTP 200 and a valid Message, streaming (SSE, `message_start`) and
+  non-streaming alike, and the CLI running this very session was started with `--model
+  deepseek-v4-flash`. The text the user saw is Claude Code's own report of a 200 whose body was not an
+  Anthropic Message — that wording is in the bundled CLI, not in the app's source — so the app
+  produced neither the error nor its cause, and no probe reproduces it now: DeepSeek answered
+  everything, `server: openresty`, valid Messages. (`server: nginx` in the user's message is not
+  DeepSeek's front end, which is what their error text suspected: something else answered then.)
+- The remap is kept anyway: `RETIRED_MODEL_ALIASES` in `ProviderService` moves a chat that remembers
+  `deepseek-v4-flash` onto the published `deepseek-flash`, and `SessionRuntime.start` writes the
+  current id back into the session record so the chat's model pill follows. Both ids work today, and
+  the CLI logs `unrecognized_model` for both (measured by running the CLI with each), so this changes
+  no behaviour — it just stops the app from asking for an id its provider no longer lists.
+- The update half, measured — the in-app update really was broken, but not because of 18118. The
+  update log shows `git clone https://github.com/sylyoung/ClaudeGUI.git` failing with
+  `LibreSSL SSL_connect: SSL_ERROR_SYSCALL` at 21:17Z and again at 21:27Z, and the environment those
+  tools are given carries **no proxy at all**: the app is started by Finder, so it inherits the
+  minimal LaunchServices environment, no shell startup file exports a proxy, and the login-shell
+  capture the app builds its tool environment from returns `{}` for every proxy variable. Direct
+  `https://github.com/` is unreachable from this machine (HTTP 000 after 20 s) while the same request
+  through `127.0.0.1:8118` — the macOS system proxy — answers in 1.7 s, and a `git ls-remote` of the
+  update repository through it lists the tags. The 18118→8118 swap added earlier could not fire,
+  because it required 18118 to be configured in an environment that configures nothing.
+- Fix: `src/main/systemProxy.ts` (new) plus `src/main/updater.ts`. The update tools now choose a route
+  instead of inheriting one — the environment's proxy when it can actually carry a connection to
+  GitHub, otherwise the macOS system proxy from `scutil --proxy`, otherwise direct — and a `*` entry
+  in `NO_PROXY` (which switches every proxy variable off, and is what a launcher-set shell carries
+  here) is dropped whenever a proxy is used. "Can carry a connection" means a CONNECT tunnel **plus a
+  completed TLS handshake**, not just a listening port: the stale Docker container at 18118 answers
+  `200 Connection established` and then carries nothing, which is exactly what made it look healthy
+  to the port check it replaced. The route applies to update child processes only; chats keep the
+  route their launcher sets.
+- [x] `npm run typecheck` clean, production build clean. `sandbox/tools/check-update-route.sh` calls
+  the same two functions the updater calls — on three environments: no proxy at all (what the app has
+  today), the macOS system proxy, and the dead container — and then performs the operation that
+  failed, a real `git ls-remote` through the chosen route, with the launching shell's `NO_PROXY=*`
+  deliberately left in the mix. All three now choose 8118 and list tags v1.0.30…v1.0.33; before the
+  fix the first and third went direct and failed with `Failed to connect to github.com port 443`.
+- Environment note from the same round: `~/.zshrc` had already been edited at 17:30 today by the
+  other model — `cc-ds` now sets the published `deepseek-flash` instead of building
+  `deepseek-v4-flash`, in three places (help text, `ds_model`, `ds_subagent_model`); nothing else in
+  the file changed. That file is the user's own and there is no backup of it from before that edit
+  (the newest one under `sandbox/backups/` is 2026-09-13 22:47).
+
 ## 1.0.33 — 2026-09-13
 
 ### A markdown link to a file opens the file

@@ -382,6 +382,12 @@ export class SessionRuntime {
         throw new Error(this.live.error)
       }
       if (launch.warning) this.deps.log(`[session ${this.id}] provider ${providerId}: ${launch.warning}`)
+      if (launch.model !== this.record.model) {
+        this.deps.log(`[session ${this.id}] provider ${providerId}: using current model ${launch.model}`)
+        this.record.model = launch.model
+        this.live.model = launch.model
+        this.deps.saveRecord(this.record)
+      }
     }
     const env = launch ? launch.env : await this.deps.getEnv()
     let resume = false

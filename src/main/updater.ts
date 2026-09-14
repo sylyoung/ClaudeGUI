@@ -18,6 +18,7 @@ import type { AppSettings, StartupNotice, UpdateState, UpdateStatus } from '@sha
 import { DEFAULT_UPDATE_REPO } from '@shared/defaults'
 import { compareVersions, parseVersion } from '@shared/util'
 import { findOnPath } from './shellService'
+import { applyUpdateRoute, chooseUpdateRoute } from './systemProxy'
 
 export interface UpdaterDeps {
   appVersion: string
@@ -167,6 +168,15 @@ export class Updater {
 
   private async toolEnv(): Promise<Record<string, string>> {
     const env = { ...(await this.deps.getEnv()) }
+    // The tools an update runs (git, npm) take their route from the environment, while the app's own
+    // requests go through Chromium, which reads the macOS proxy settings without being told. When the
+    // direct route to GitHub is blocked, an update only works if those tools are given the proxy the
+    // system already declares — otherwise they fail where every browser on the machine succeeds.
+    const route = await chooseUpdateRoute(env)
+    applyUpdateRoute(env, route)
+    this.deps.log(route.proxy
+      ? `[update] update tools use ${route.proxy} (${route.reason})`
+      : `[update] update tools go direct (${route.reason})`)
     const https = env.HTTPS_PROXY || env.https_proxy
     const http = env.HTTP_PROXY || env.http_proxy
     if (https || http) {

@@ -101,7 +101,7 @@ const MODEL_WORDS: Record<string, string> = {
 
 /**
  * A model id written the way people write a model name: "gpt-5.6-sol" as "GPT-5.6 Sol",
- * "kimi-k2.7-code" as "Kimi K2.7 Code", "deepseek-v4-flash" as "DeepSeek V4 Flash". A version
+ * "kimi-k2.7-code" as "Kimi K2.7 Code", "deepseek-flash" as "DeepSeek Flash". A version
  * number stays attached to the word in front of it with a hyphen (GPT-5.6), while the variant words
  * after it are separated by spaces. A date at the end of an id is shown as a date.
  */
