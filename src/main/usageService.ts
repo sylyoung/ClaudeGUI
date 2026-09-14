@@ -5,6 +5,7 @@ import path from 'path'
 import type { AuthState, SdkUsage, UsageProviderId, UsageSeverity, UsageSnapshot, UsageState, UsageWindow } from '@shared/types'
 import { emptyUsageSnapshot } from '@shared/defaults'
 import { readStoredLogin } from './claudeLogin'
+import { proxyOf } from './gptRoute'
 
 /**
  * Tracks the plan rate-limit windows of both subscriptions the app can use.
@@ -14,15 +15,23 @@ import { readStoredLogin } from './claudeLogin'
  * usage of an already running session, and the rate-limit events every API response carries.
  *
  * ChatGPT: the usage endpoint the Codex CLI itself reads, called with the token Codex keeps in
- * ~/.codex/auth.json. GPT traffic goes over the same network path as Claude (the user's rule), so
- * these requests use the captured shell environment and are forced through its proxy when it has one.
+ * ~/.codex/auth.json. GPT traffic leaves through the bridge's upstream proxy, not through the
+ * shell's own one — those are different proxies (the desktop app versus the Docker container) and
+ * they fail separately — so this request is given the Codex launcher's environment (see gptRoute).
  *
- * Requests go through `curl` so the proxy variables from the user's shell apply. Both subscriptions
- * are read on every check, so the switch between them costs nothing.
+ * Requests go through `curl` so the proxy variables of the environment they are given apply. Both
+ * subscriptions are read on every check, so the switch between them costs nothing.
  */
 
 export interface UsageDeps {
   getEnv(): Promise<Record<string, string>>
+  /** The route the GPT chats take (the Codex launcher's environment), or null while unknown. */
+  gptRoute(): Record<string, string> | null
+  /**
+   * Run the Codex launcher once to learn the current GPT route; null when it refuses to start.
+   * Only for an explicit check: it runs the user's own launcher, which starts its bridge.
+   */
+  refreshGptRoute(): Promise<Record<string, string> | null>
   getSettings(): { usageRefreshMinutes: number; usageWarnPercent: number }
   /** Plan limits through an already-running Claude session, or null when none is alive. */
   sessionUsage(): Promise<SdkUsage | null>
@@ -111,7 +120,7 @@ export class UsageService {
     const warn = Number(this.deps.getSettings().usageWarnPercent) || 50
     const [claude, codex] = await Promise.all([
       this.readClaude(warn).catch((err) => ({ ...this.snapshots.claude, error: (err as Error).message })),
-      this.readCodex(warn).catch((err) => ({ ...this.snapshots.codex, error: (err as Error).message }))
+      this.readCodex(warn, { refreshRoute: reason === 'manual' }).catch((err) => ({ ...this.snapshots.codex, error: (err as Error).message }))
     ])
     this.snapshots = { claude: { ...claude, checking: false }, codex: { ...codex, checking: false } }
     const describe = (s: UsageSnapshot): string =>
@@ -166,13 +175,12 @@ export class UsageService {
 
   // --------------------------------------------------------------- chatgpt
 
-  private async readCodex(warn: number): Promise<UsageSnapshot> {
+  private async readCodex(warn: number, opts: { refreshRoute: boolean }): Promise<UsageSnapshot> {
     const prev = this.snapshots.codex
     const login = readCodexLogin()
     if (!login) {
       return { ...prev, error: 'The Codex CLI has no login stored here (~/.codex/auth.json), so the ChatGPT plan limits cannot be read. Run "codex login" to add one.' }
     }
-    const env = await this.deps.getEnv()
     const headers = [
       `Authorization: Bearer ${login.accessToken}`,
       'Accept: application/json',
@@ -180,7 +188,20 @@ export class UsageService {
       'originator: codex_cli_rs'
     ]
     if (login.accountId) headers.push(`chatgpt-account-id: ${login.accountId}`)
-    const res = await curlJson(CODEX_USAGE_URL, headers, env, { forceProxy: true })
+    // The GPT route (the launcher's proxy) over the shell's environment, which belongs to the Claude
+    // path. The launcher may have moved to another proxy since the host last ran it, so an explicit
+    // check that fails at the network level runs it once and tries again with what it sets.
+    const shell = await this.deps.getEnv()
+    let via = this.deps.gptRoute()
+    let env = via ? { ...shell, ...via } : shell
+    let res = await curlJson(CODEX_USAGE_URL, headers, env, { forceProxy: true })
+    if (res.status === 0 && opts.refreshRoute) {
+      via = await this.deps.refreshGptRoute()
+      if (via) {
+        env = { ...shell, ...via }
+        res = await curlJson(CODEX_USAGE_URL, headers, env, { forceProxy: true })
+      }
+    }
     if (res.status === 200 && res.json) {
       const json = res.json as Record<string, unknown>
       return {
@@ -191,7 +212,15 @@ export class UsageService {
       }
     }
     if (res.status === 401 || res.status === 403) return { ...prev, error: `ChatGPT did not accept the stored Codex login (HTTP ${res.status}); run "codex login" again.` }
-    if (res.status === 0) return { ...prev, error: "ChatGPT's usage endpoint could not be reached at all. Codex traffic goes through the same proxy as Claude, so check that the proxy is running." }
+    if (res.status === 0) {
+      const proxy = proxyOf(env)
+      return {
+        ...prev,
+        error: proxy
+          ? `The ChatGPT usage endpoint could not be reached through ${proxy}, the route the GPT chats take. Check that this proxy is running.`
+          : 'The ChatGPT usage endpoint could not be reached, and the GPT chats here take no proxy: the request went out directly, which ChatGPT refuses from this network.'
+      }
+    }
     return { ...prev, error: `ChatGPT's usage endpoint returned HTTP ${res.status}.` }
   }
 

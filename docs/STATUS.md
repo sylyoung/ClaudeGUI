@@ -1,6 +1,6 @@
 # ClaudeGUI — build status
 
-Last updated: 2026-09-13 (session 11, v1.0.31)
+Last updated: 2026-09-13 (session 12, v1.0.32)
 
 ## Goal
 A local macOS desktop app (Electron + React + TypeScript) that manages many long-running
@@ -34,9 +34,13 @@ survive app restarts.
   the OAuth token Claude Code stores in the Keychain; the request goes through `curl` so the proxy
   applies. Rate-limit events from API responses are merged into the same windows.
 - Since 1.0.29 the same meter can show the **ChatGPT** subscription instead: the Codex CLI's usage
-  endpoint (`chatgpt.com/backend-api/wham/usage`) called with the login in `~/.codex/auth.json`,
-  forced through the captured environment's proxy when it has one (`noproxy = ""`, because curl lets
-  `NO_PROXY=*` override `-x`). Both subscriptions are read on every check and the switch between them
+  endpoint (`chatgpt.com/backend-api/wham/usage`) called with the login in `~/.codex/auth.json`.
+  Since 1.0.32 that request takes the **GPT route** — the environment of the Codex launcher
+  (`cc-gpt`), which carries the proxy its bridge sends traffic through, read from the session host's
+  provider-cache.json and refreshed by running the launcher when an explicit check fails at the
+  network level (`src/main/gptRoute.ts`) — not the shell's own environment, which belongs to the
+  Claude path and is a different proxy that fails separately. `noproxy = ""` is set either way,
+  because curl lets `NO_PROXY=*` override `-x`. Both subscriptions are read on every check and the switch between them
   is a setting (`usageSubscription`); Codex's window lengths name their windows (5 h → "Session
   (5h)", 7 d → "Weekly") and its per-feature extras stay in the details panel.
 - Updates = git tags of the repository (Settings → About → repository). The updater clones/fetches
@@ -206,6 +210,27 @@ survive app restarts.
   branches after the crash. Current host 62143: 122–129 MB over two minutes with 32 chats.
 - User decisions: find the cause before fixing, fix in 1.0.19; after a host crash the app restarts
   the chats that were running.
+
+### v1.0.32
+Request: "the check now button as in the app is still wrong, cannot get the actual usage", then
+"for gpt I mean".
+- Cause (measured): the ChatGPT usage request took the proxy from the captured shell environment,
+  i.e. the `claude` wrapper's 127.0.0.1:18118 (the Docker MonoCloud container, whose node had gone
+  away — `dial tcp 116.238.244.28:587: i/o timeout` in its log), while the GPT chats leave through
+  127.0.0.1:8118 (the MonoCloud desktop app), which `cc-gpt` gives the bridge. Through 18118 the
+  usage endpoint answered HTTP 000, through 8118 HTTP 200 with the real windows.
+- Fix: `src/main/gptRoute.ts` reads the Codex launcher's environment from the host's
+  provider-cache.json (the route the GPT chats take) and the usage check uses it, with the shell
+  environment as fallback; an explicit "Check now" that fails at the network level runs the launcher
+  once and retries (`cc-gpt` may start the bridge, as it does in a terminal), which also heals a
+  route changed since the host last ran it. Automatic checks never run the launcher.
+- [x] verified in a dev instance (both the healthy saved route and one rewritten to the dead 18118;
+  details in CHANGELOG 1.0.32). Probe left behind: `sandbox/tools/probe-codex-usage-endpoint.py`
+  (reads the usage endpoint through a proxy named on the command line; token never printed).
+- Open, for the user: their plain `claude` wrapper and the app's Claude chats still take 18118,
+  which is down — the Claude usage check fails with "usage endpoint returned HTTP 0" for that
+  reason. Pointing the wrapper at 8118 is their call (their `~/.zshrc`), as is fixing the Docker
+  container's node.
 
 ### v1.0.31
 Request: "the rewinding seems to only remember chats in this session, not ideal", then "should

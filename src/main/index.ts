@@ -10,6 +10,7 @@ import { getLoginShellEnv, getSpawnEnv, parseExtraEnv } from './env'
 import { detectEditorCommand } from './shellService'
 import { startDebugServer } from './debugServer'
 import { UsageService } from './usageService'
+import { GptRoute } from './gptRoute'
 import { AuthService } from './authService'
 import { HostClient, HostProtocolMismatch } from './hostClient'
 import { Updater } from './updater'
@@ -494,8 +495,15 @@ if (!gotLock) {
       onSignedIn: () => void usage.refresh('signed in'),
       log
     })
+    const gptRoute = new GptRoute({
+      stateFile: path.join(userData, 'provider-cache.json'),
+      launcher: () => (store.get().providers ?? []).find((p) => p.id === 'codex')?.launcher ?? null,
+      log
+    })
     usage = new UsageService({
       getEnv: () => getSpawnEnv(parseExtraEnv(store.get().extraEnv)),
+      gptRoute: () => gptRoute.remembered(),
+      refreshGptRoute: () => gptRoute.refresh(),
       getSettings: () => store.get(),
       sessionUsage: () => (host.connected ? host.planUsage() : Promise.resolve(null)),
       checkAuth: () => auth.current(),

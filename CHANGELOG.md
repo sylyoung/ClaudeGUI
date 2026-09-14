@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.32 — 2026-09-13
+
+### The ChatGPT plan limits are read over the GPT route, not the Claude one
+
+- Request: "the check now button as in the app is still wrong, cannot get the actual usage — for gpt
+  I mean". The panel showed "ChatGPT's usage endpoint could not be reached at all. Codex traffic
+  goes through the same proxy as Claude, so check that the proxy is running."
+- Cause, measured: the check took its proxy from the captured shell environment, that is from the
+  `claude` wrapper, which exports the Docker MonoCloud container (127.0.0.1:18118). The GPT chats
+  leave through the MonoCloud desktop app (127.0.0.1:8118) instead — the bridge's upstream, which
+  `cc-gpt` sets — so the two paths are different proxies that fail separately. The container's node
+  had gone away (its log: `dial tcp 116.238.244.28:587: i/o timeout`), so every check failed with
+  HTTP 0 while the GPT chats themselves were fine: the same request was 000 through 18118 and 200
+  through 8118.
+- Fix: the request uses the Codex launcher's environment — the route the GPT chats take — read by
+  `src/main/gptRoute.ts` from the environment the session host saved the last time it ran `cc-gpt`
+  (provider-cache.json), with the shell environment as the fallback when there is none. An explicit
+  "Check now" that fails at the network level runs the launcher once and tries again with what it
+  sets, so a route changed after that saved run (or a proxy that died) heals itself instead of
+  leaving the panel stuck; automatic checks never run the launcher. The failure message names the
+  proxy it tried and no longer blames the Claude path.
+- [x] `npm run typecheck` clean, production build clean. Verified in a dev instance: with the saved
+  route healthy, "Check now" returned ChatGPT `endpoint`, plan `prolite`, Weekly=55%,
+  GPT-5.3-Codex-Spark Session (5h)=25% and Weekly=11%, gpt-reserve Weekly=0%, no error. With the
+  saved route rewritten to the dead 18118, the same click logged `[usage] chatgpt: cc-gpt now routes
+  through http://127.0.0.1:8118` and returned the windows (Weekly=56%).
+- Not part of this change: the Claude side still checks over the shell's own proxy, which is the
+  Docker container and is down (`usage endpoint returned HTTP 0` in the log). The plain `claude`
+  wrapper and the app's Claude chats take that same route, so they are affected too.
+
 ## 1.0.31 — 2026-09-13
 
 ### Rewinding reaches every prompt of the chat, the way Claude Code's own rewind does
