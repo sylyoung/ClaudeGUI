@@ -1,5 +1,5 @@
 import React, { memo } from 'react'
-import { AlertTriangle, Brain, History, Info, Lightbulb, Undo2 } from 'lucide-react'
+import { AlertTriangle, Brain, History, Info, Lightbulb, Sparkles, Undo2 } from 'lucide-react'
 import type { AssistantChatMessage, ChatMessage } from '@shared/types'
 import { Markdown } from './Markdown'
 import { ToolCallCard } from './ToolCallCard'
@@ -164,6 +164,22 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0, state
       return <AssistantMessage message={message} depth={depth} />
     case 'system': {
       const icon = message.level === 'warning' || message.level === 'error' ? <AlertTriangle size={14} /> : message.level === 'suggestion' ? <Lightbulb size={14} /> : <Info size={14} />
+      // The recap Claude Code writes when you come back to a chat after being away. It is meant to
+      // be read, unlike the notes the other system rows carry about the machinery, so it gets a
+      // card of its own rather than a line in the queue of notices.
+      if (message.subtype === 'away_summary') {
+        return (
+          <div className="msg-recap">
+            <div className="recap-head">
+              <Sparkles size={12} />
+              Recap
+            </div>
+            <div className="recap-body">
+              <LinkifiedText text={message.text} />
+            </div>
+          </div>
+        )
+      }
       // Compacting the context keeps a summary of the conversation so far; it is what Claude
       // remembers from here on, so it can be opened from the row that reports the compaction
       // instead of standing in the chat as a message of its own.

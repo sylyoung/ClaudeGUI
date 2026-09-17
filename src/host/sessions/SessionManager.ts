@@ -29,6 +29,18 @@ import type { ProviderLaunch } from '../providers/ProviderService'
 
 export type NotifyKind = 'turn' | 'permission' | 'error'
 
+/** How long a chat has been left alone before Claude Code recaps it — the CLI's own delay. */
+const RECAP_AFTER_MS = 180_000
+/**
+ * …and how long after a turn the recap is still worth asking for. Claude Code stops at nine tenths
+ * of the life of the prompt cache the turn filled, because past it the recap costs a second copy of
+ * the whole conversation instead of a cache read. The app cannot see how long that cache was given,
+ * so it assumes the shortest one and keeps well inside it.
+ */
+const RECAP_CACHE_MS = 270_000
+/** How often the away check runs. The window it is looking for is 90 seconds wide. */
+const RECAP_POLL_MS = 15_000
+
 export interface ManagerHost {
   getEnv(): Promise<Record<string, string>>
   launchProvider(providerId: string, model?: string): Promise<ProviderLaunch>
@@ -47,6 +59,8 @@ export interface ManagerHost {
 export class SessionManager {
   private runtimes = new Map<string, SessionRuntime>()
   activeSessionId: string | undefined
+  /** Runs while the user is away from the window, looking for chats worth recapping. */
+  private recapTimer: NodeJS.Timeout | null = null
 
   constructor(
     private store: SessionsStore,
@@ -494,6 +508,38 @@ export class SessionManager {
     if (this.activeSessionId === id) this.setActive(undefined)
     this.host.broadcast({ type: 'record-removed', id })
     this.refreshBadge()
+  }
+
+  /**
+   * The window was left or come back to. Claude Code writes its recap when the terminal it is in
+   * loses focus and the session is then left alone for a while; this window's focus stands in for
+   * that terminal's, which is the one thing a chat driven from here cannot tell Claude Code itself.
+   */
+  setWindowFocused(focused: boolean): void {
+    if (focused) {
+      if (this.recapTimer) clearInterval(this.recapTimer)
+      this.recapTimer = null
+      return
+    }
+    if (this.recapTimer) return
+    this.recapTimer = setInterval(() => this.recapAwayChats(), RECAP_POLL_MS)
+    this.recapTimer.unref?.()
+  }
+
+  /**
+   * Recaps the chats that were working when the user stepped away. A chat qualifies for a short
+   * window only — long enough after its last turn that the user really has been away, and early
+   * enough that Claude Code still answers out of that turn's prompt cache — so a chat left quiet
+   * for the afternoon costs nothing, and a chat that has just finished something gets the sentence
+   * that says so.
+   */
+  private recapAwayChats(): void {
+    const now = Date.now()
+    for (const rt of this.runtimes.values()) {
+      if (now - rt.lastTurnEnd < RECAP_AFTER_MS) continue
+      if (!rt.recapWanted(now, RECAP_CACHE_MS)) continue
+      void rt.writeRecap().catch(() => undefined)
+    }
   }
 
   setActive(id: string | undefined): void {

@@ -138,6 +138,80 @@ export class TranscriptState {
     this.addTop({ kind: 'system', id: this.nextId('sys'), ts: now(), subtype: 'claudegui', level, text })
   }
 
+  /**
+   * The recap Claude Code writes when you come back to a chat after being away. It goes directly
+   * above the prompt that ended the absence — where Claude Code writes it in the conversation —
+   * because under that prompt it would read as part of the answer to it.
+   */
+  addRecap(id: string, text: string, ts: number): void {
+    const msg: SystemChatMessage = { kind: 'system', id, ts, subtype: 'away_summary', level: 'notice', text: recapText(text) }
+    const at = this.pendingPromptStart()
+    if (at < 0) this.addTop(msg)
+    else this.insertTop(msg, at)
+  }
+
+  /**
+   * Recaps read back from the transcript, put where they happened: each goes after the last message
+   * written before it. A recap older than the oldest loaded message belongs to the part of the
+   * conversation a compaction replaced, which the chat no longer holds.
+   */
+  insertRecaps(recaps: Array<{ id: string; text: string; ts: number }>): void {
+    const first = this.messages[0]
+    for (const r of recaps) {
+      if (!r.text || this.topById.has(r.id)) continue
+      if (first && r.ts <= first.ts) continue
+      let at = 0
+      for (let i = this.messages.length - 1; i >= 0; i--) {
+        if (this.messages[i].ts <= r.ts) {
+          at = i + 1
+          break
+        }
+      }
+      this.insertTop({ kind: 'system', id: r.id, ts: r.ts, subtype: 'away_summary', level: 'notice', text: recapText(r.text) }, at)
+    }
+  }
+
+  /**
+   * Whether a recap of this chat would have anything to say, by Claude Code's own counts: the chat
+   * needs `minPrompts` messages the user wrote themselves, and `minSince` of them after the last
+   * recap, so coming back twice in a row does not produce the same sentence twice. A chat that ends
+   * on a recap already has one waiting to be read.
+   */
+  recapWouldSaySomething(minPrompts: number, minSince: number): boolean {
+    const last = this.messages[this.messages.length - 1]
+    if (last?.kind === 'system' && last.subtype === 'away_summary') return false
+    let prompts = 0
+    let lastRecap = -1
+    for (let i = 0; i < this.messages.length; i++) {
+      const m = this.messages[i]
+      if (m.kind === 'user' && !m.synthetic) prompts += 1
+      else if (m.kind === 'system' && m.subtype === 'away_summary') lastRecap = i
+    }
+    if (prompts < minPrompts) return false
+    if (lastRecap < 0) return true
+    let since = 0
+    for (let i = lastRecap + 1; i < this.messages.length; i++) {
+      const m = this.messages[i]
+      if (m.kind === 'user' && !m.synthetic) since += 1
+    }
+    return since >= minSince
+  }
+
+  /** Where the run of prompts still waiting for an answer begins, or -1 when the chat ends otherwise. */
+  private pendingPromptStart(): number {
+    const last = this.messages[this.messages.length - 1]
+    if (!last || last.kind !== 'user' || last.synthetic) return -1
+    let i = this.messages.length - 1
+    while (i > 0 && this.messages[i - 1].kind === 'user') i -= 1
+    return i
+  }
+
+  private insertTop(msg: ChatMessage, index: number): void {
+    this.messages.splice(index, 0, msg)
+    this.topById.set(msg.id, msg)
+    this.touch(msg)
+  }
+
   removeMessage(id: string): void {
     const idx = this.messages.findIndex((m) => m.id === id)
     if (idx < 0) return
@@ -632,6 +706,11 @@ export class TranscriptState {
         add('notice', `Permission denied for ${s.tool_name}${s.decision_reason ? ': ' + s.decision_reason : ''}`)
         break
       }
+      case 'away_summary':
+        // Claude Code's note about what happened while you were away. It is written for the chat,
+        // not about the machinery, so it takes the room of a message rather than a notice line.
+        this.addRecap(id, String(s.content ?? ''), ts)
+        break
       case 'model_refusal_fallback':
         add('warning', String(s.content ?? `Model refusal: retried on ${s.fallback_model}`))
         break
@@ -750,6 +829,12 @@ export function flattenToolResultContent(content: unknown): { text: string; imag
 
 /** Opening words of the summary Claude keeps when the context is compacted. */
 const COMPACT_SUMMARY_START = /^This session is being continued from a previous conversation/
+
+/** The CLI appends "(disable recaps in /config)" to the first recaps of a session; this app has no
+ * /config to point at, so that note comes off. */
+function recapText(content: string): string {
+  return content.replace(/\s*\(disable recaps in \/config\)\s*$/, '').trim()
+}
 
 /** Text of a user-role message that the CLI generated itself (task notifications, command echoes…). */
 export function looksSynthetic(text: string): boolean {

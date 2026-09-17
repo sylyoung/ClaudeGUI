@@ -221,6 +221,7 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return null
     case 'setFocus':
       focused = Boolean(a[0])
+      manager.setWindowFocused(focused)
       if (focused) manager.setActive(manager.activeSessionId)
       return null
     case 'reloadEnv': {
@@ -269,6 +270,7 @@ function handleConnection(sock: net.Socket): void {
         cancelExit()
         applySettings(f.settings, undefined)
         focused = Boolean(f.focused)
+        manager.setWindowFocused(focused)
         log(`client connected (app ${f.appVersion}, protocol ${f.protocol}); ${manager.aliveCount()} live session(s)`)
         writeFrame(sock, { k: 'welcome', protocol: HOST_PROTOCOL, pid: process.pid, version, startedAt, aliveSessions: manager.aliveCount(), sdkVersion: sdkVersion() })
         return
@@ -285,6 +287,9 @@ function handleConnection(sock: net.Socket): void {
     if (client === sock) {
       client = null
       focused = false
+      // With the app closed the user is away from every chat, so the chats that go on working can
+      // still have a recap waiting when it is opened again.
+      manager.setWindowFocused(false)
       const alive = manager.aliveCount()
       log(`client disconnected; ${alive} live session(s)`)
       scheduleExitIfIdle()

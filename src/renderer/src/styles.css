@@ -312,6 +312,11 @@ a:hover { text-decoration: underline; }
 .msg-system.error { color: var(--red); border-color: rgba(248, 81, 73, 0.3); }
 .msg-system.info { background: transparent; border-style: dashed; }
 .msg-system .body { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+/* The recap Claude Code writes when you come back to a chat: a card, because it is written to be
+   read, not a note about the machinery like the other system rows. */
+.msg-recap { padding: 10px 12px; border: 1px solid rgba(var(--accent-rgb), 0.3); border-radius: var(--radius); background: var(--accent-soft); }
+.msg-recap .recap-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--accent); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.msg-recap .recap-body { font-size: 12.5px; line-height: 1.55; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 details.msg-system.foldable { display: block; }
 details.msg-system.foldable > summary { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; list-style: none; }
 details.msg-system.foldable > summary::-webkit-details-marker { display: none; }

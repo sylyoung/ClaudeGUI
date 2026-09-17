@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.0.35 — 2026-09-17
+
+### The chats get Claude Code's own recap, and the chat filter stays while you open results
+
+- Request: "I realize that there is no recap in the chats. I need this", then, when the first plan was
+  to have the app write its own summary: "no. why cant you just use claude code CLI's in-use recap
+  function?", and finally "check really carefully if the recap function is really not capable to be
+  implemented in the app without extra cost."
+- The recap is Claude Code's, not a copy of it. In the CLI the recap and the side-question panel
+  (`/btw`) are the same call — one turn, no tools, the previous turn's parameters reused so the
+  answer comes out of the prompt cache, no new cache entry written, and nothing added to the
+  conversation. The recap generator itself is unreachable from here: it lives in the terminal's
+  interface and only fires when the terminal reports itself blurred, a state a chat driven through
+  the SDK never reaches (measured: four prompts and four minutes idle, with
+  `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=1`, produced nothing; `/recap` over the SDK produced nothing; a
+  dev instance driving a real chat produced nothing). The same call is reachable, though, as a
+  control request the SDK exposes as `askSideQuestion`, and that is what the app now sends, using
+  Claude Code's recap instruction word for word.
+- What it costs, measured: 2.4–2.5 s on a live chat, 5.1 s on a chat just reopened with no turn sent
+  yet, and in every case the chat's transcript file came back byte-identical — the recap is not a
+  message in the conversation, so the next thing typed is answered as if it had never been asked
+  for. A recap is a generated sentence, so it is one model call; what it is not is a second process,
+  a re-sent conversation or a new cache entry.
+- When it happens: Claude Code's own rules, with this window's focus standing in for the terminal's.
+  Three minutes after a chat's last turn, if the window has been left, if the chat is idle with
+  nothing queued and no permission waiting, and if the chat has at least three messages the user
+  wrote themselves and two since the last recap. It stops at four and a half minutes after the turn,
+  because past the life of that turn's prompt cache the same question would mean paying for a second
+  copy of the whole conversation — which is the point at which Claude Code gives up too. So a chat
+  left quiet for the afternoon costs nothing, and a chat that has just finished something gets the
+  sentence that says so.
+- Recaps already in a chat's history are read back as well: `getSessionMessages` drops the type and
+  text of Claude Code's system messages, so they are parsed out of the transcript file in the same
+  pass that reads the timestamps, and placed where they happened (checked against a real chat: 140
+  history entries, 25 recaps in the file, 3 belonging to the loaded part, each landing between the
+  right neighbours).
+- They are shown as a card with a small accent "RECAP" heading, like Claude Code's own.
+- Request: "another thing is that when I use the search bar as finding a chat and click it, it returns
+  back to the before-search view, but I am locked to the chat I selected."
+- Picking a search result no longer clears the filter, so the list still shows what was searched for
+  and the next result is one click away. Escape or the ✕ clears it, which the field's tooltip now
+  says.
+
 ## 1.0.34 — 2026-09-14
 
 ### The in-app update can reach GitHub again, and a retired DeepSeek model id is remapped

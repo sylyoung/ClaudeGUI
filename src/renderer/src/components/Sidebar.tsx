@@ -158,7 +158,6 @@ export function Sidebar() {
     anchorRef.current = id
     if (cur.length) setSelectedIds([])
     void selectSession(id)
-    if (search) setSearch('')
   }
   const selectAll = () => setSelectedIds(flat.map((r) => r.id))
   const clearSelection = () => setSelectedIds([])
@@ -560,7 +559,7 @@ export function Sidebar() {
         </button>
       </div>
       <div className="sidebar-search">
-        <input ref={searchRef} placeholder="Search sessions (⌘K)" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && !isComposing(e) && setSearch('')} data-tip="Filter by title, folder or last message. Picking a result clears the search." />
+        <input ref={searchRef} placeholder="Search sessions (⌘K)" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && !isComposing(e) && setSearch('')} data-tip="Filter by title, folder or last message. The filter stays while you open results; Escape or ✕ clears it." />
         {search && (
           <button className="clear no-drag" onClick={() => setSearch('')} data-tip="Clear search">
             <X size={12} />

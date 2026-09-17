@@ -110,6 +110,31 @@ function isCompactCommand(text: string): boolean {
   return /^\s*(?:<command-name>\s*)?\/compact\b/.test(text)
 }
 
+/**
+ * Claude Code's own recap instruction, copied word for word out of the CLI's away-summary code, so
+ * a recap here reads exactly like the one the terminal writes.
+ */
+const RECAP_PROMPT =
+  'The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences, no markdown. ' +
+  'Lead with the overall goal and current task, then the one next action. Skip root-cause narrative, ' +
+  'fix internals, secondary to-dos, and em-dash tangents.'
+
+/** Messages the user wrote themselves before a recap is worth writing at all (Claude Code's count). */
+const RECAP_MIN_PROMPTS = 3
+/** …and after the last recap, so returning twice does not produce the same sentence twice. */
+const RECAP_MIN_SINCE = 2
+
+/**
+ * Claude Code asks for its recap through the same call it uses for a side question (`/btw`): one
+ * turn, no tools, the parameters of the last turn reused so the answer comes out of the prompt
+ * cache, and nothing written into the conversation. Over the SDK that call is a control request,
+ * which this method sends — it is on the object `query()` returns but not in the SDK's published
+ * types, so the shape it has in the SDK's own code is named here.
+ */
+interface SideQuestionQuery {
+  askSideQuestion?: (question: string) => Promise<{ response: string | null; synthetic?: boolean } | null>
+}
+
 const FLUSH_MS = 45
 /** How long a chat may stay quiet before a prompt still marked as being answered is let go. */
 const DELIVERY_QUIET_MS = 10_000
@@ -204,6 +229,10 @@ export class SessionRuntime {
   private shellAppendIds = new Set<string>()
   /** Claude Code took shell output while no prompt was being answered: the empty result that follows is its. */
   private shellResultExpected = false
+  /** When the last turn of this process ended, which is when Claude Code's prompt cache was filled. */
+  private lastTurnEndedAt = 0
+  /** A recap is being asked for; a second request would pay for the same sentence twice. */
+  private recapInFlight = false
 
   constructor(
     public record: SessionRecord,
@@ -257,7 +286,7 @@ export class SessionRuntime {
       const wasEmpty = liveSnapshot.length === 0
       if (wasEmpty) {
         const mainFile = path.join(projectDirFor(this.record.cwd), `${this.record.claudeSessionId}.jsonl`)
-        const stamps = await readTimestamps(mainFile)
+        const { stamps, recaps } = await readTranscriptIndex(mainFile)
         let ts = this.record.createdAt || Date.now()
         for (const e of entries) {
           const real = stamps.get((e as { uuid: string }).uuid)
@@ -265,6 +294,7 @@ export class SessionRuntime {
           this.transcript.applyHistoryEntry(e as never, ts)
           ts += 1
         }
+        this.transcript.insertRecaps(recaps)
         await this.loadSubagentHistory(ts)
         this.transcript.takeChanges()
       }
@@ -332,7 +362,7 @@ export class SessionRuntime {
         const agentId = f.replace(/^agent-/, '').replace(/\.meta\.json$/, '')
         if (!meta.toolUseId || !this.transcript.hasTool(meta.toolUseId) || this.transcript.toolChildCount(meta.toolUseId) > 0) continue
         const msgs = await getSubagentMessages(this.record.claudeSessionId, agentId, { dir: this.record.cwd })
-        const stamps = await readTimestamps(path.join(subDir, f.replace(/\.meta\.json$/, '.jsonl')))
+        const { stamps } = await readTranscriptIndex(path.join(subDir, f.replace(/\.meta\.json$/, '.jsonl')))
         let ts = baseTs
         for (const m of msgs) {
           const real = stamps.get((m as { uuid: string }).uuid)
@@ -343,6 +373,67 @@ export class SessionRuntime {
       } catch (err) {
         this.deps.log(`[session ${this.id}] subagent history ${f}: ${(err as Error).message}`)
       }
+    }
+  }
+
+  // ------------------------------------------------------------------- recap
+
+  /** When this chat's last turn ended, or 0 if it has not answered anything in this process. */
+  get lastTurnEnd(): number {
+    return this.lastTurnEndedAt
+  }
+
+  /**
+   * Whether asking Claude Code to recap this chat right now would be cheap and would say something.
+   *
+   * Cheap is the reason for `cacheWindowMs`: the recap is answered out of the prompt cache the last
+   * turn left behind, so it is only worth asking while that cache is still there. Past it the same
+   * question means sending the whole conversation again at full price, which is what Claude Code
+   * itself refuses to do ("cache stale"). The rest are Claude Code's own conditions: a chat that is
+   * not working on anything, with enough of the user's messages to be worth summarising.
+   */
+  recapWanted(now: number, cacheWindowMs: number): boolean {
+    if (!this.q || this.recapInFlight) return false
+    if (this.live.status !== 'idle') return false
+    if (this.live.queuedCount > 0 || this.live.pendingPermissions.length > 0) return false
+    if (this.live.backgroundTasks.some((t) => t.status === 'running')) return false
+    if (!this.lastTurnEndedAt || now - this.lastTurnEndedAt > cacheWindowMs) return false
+    return this.transcript.recapWouldSaySomething(RECAP_MIN_PROMPTS, RECAP_MIN_SINCE)
+  }
+
+  /**
+   * Asks Claude Code for the recap it writes in the terminal when you come back to a chat, and puts
+   * it in the chat. The request is the CLI's own: its wording, its one turn without tools, its
+   * prompt cache — and, like in the terminal, it leaves no trace in the conversation, so the next
+   * thing the user types is answered as if the recap had never been asked for.
+   */
+  async writeRecap(): Promise<boolean> {
+    const q = this.q as (Query & SideQuestionQuery) | null
+    if (!q || this.recapInFlight) return false
+    if (typeof q.askSideQuestion !== 'function') {
+      this.deps.log(`[session ${this.id}] recap: this Claude Code build cannot answer side questions`)
+      return false
+    }
+    this.recapInFlight = true
+    const started = Date.now()
+    try {
+      const answer = await q.askSideQuestion(RECAP_PROMPT)
+      if (this.q !== q) return false
+      const text = answer?.response?.trim()
+      // A synthetic answer is Claude Code explaining that it could not answer, not a recap.
+      if (!text || answer?.synthetic) {
+        this.deps.log(`[session ${this.id}] recap: nothing came back`)
+        return false
+      }
+      this.transcript.addRecap(randomUUID(), text, Date.now())
+      this.scheduleFlush()
+      this.deps.log(`[session ${this.id}] recap written after ${((Date.now() - started) / 1000).toFixed(1)}s`)
+      return true
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] recap failed: ${(err as Error).message}`)
+      return false
+    } finally {
+      this.recapInFlight = false
     }
   }
 
@@ -1318,6 +1409,9 @@ export class SessionRuntime {
           break
         }
         this.transcript.apply(msg, ts)
+        // Claude Code's prompt cache holds this turn's conversation from here; a recap asked for
+        // while it lasts is answered out of it instead of being paid for again.
+        this.lastTurnEndedAt = Date.now()
         {
           const processCost = msg.total_cost_usd ?? 0
           const delta = Math.max(0, processCost - this.processCostSeen)
@@ -1605,28 +1699,58 @@ export class SessionRuntime {
   }
 }
 
-/** Build a uuid -> epoch-ms map from a transcript JSONL without parsing every line fully. */
-async function readTimestamps(file: string): Promise<Map<string, number>> {
-  const map = new Map<string, number>()
+/** A recap the CLI wrote into the transcript: its note about what happened while the user was away. */
+export interface TranscriptRecap {
+  /** uuid of the transcript entry, which is what the chat row is keyed by. */
+  id: string
+  text: string
+  ts: number
+}
+
+export interface TranscriptIndex {
+  /** uuid → the entry's own timestamp. */
+  stamps: Map<string, number>
+  /** The recaps in the file, oldest first. */
+  recaps: TranscriptRecap[]
+}
+
+/**
+ * The timestamp of each entry of a transcript, and the recaps in it, in one pass over the file.
+ * Claude Code hands a chat's history back without the entries' own timestamps and without the
+ * recaps at all (a recap arrives as a system message whose file entry carries the text, which the
+ * history reader does not pass on), so both are read from the transcript itself.
+ */
+export async function readTranscriptIndex(file: string): Promise<TranscriptIndex> {
+  const stamps = new Map<string, number>()
+  const recaps: TranscriptRecap[] = []
   let size = 0
   try {
     size = fs.statSync(file).size
   } catch {
-    return map
+    return { stamps, recaps }
   }
-  if (size > 200 * 1024 * 1024) return map
+  if (size > 200 * 1024 * 1024) return { stamps, recaps }
   const rl = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
   const re = /"uuid":"([0-9a-f-]{36})"[^\n]*?"timestamp":"([^"]+)"|"timestamp":"([^"]+)"[^\n]*?"uuid":"([0-9a-f-]{36})"/
   for await (const line of rl) {
+    if (line.includes('"subtype":"away_summary"')) {
+      try {
+        const entry = JSON.parse(line) as { uuid?: string; content?: string; timestamp?: string }
+        const t = Date.parse(entry.timestamp ?? '')
+        if (entry.uuid && entry.content?.trim() && !Number.isNaN(t)) recaps.push({ id: entry.uuid, text: entry.content, ts: t })
+      } catch {
+        // Transcripts are appended line by line, so the last line can be half written.
+      }
+    }
     if (!line.includes('"timestamp"')) continue
     const m = re.exec(line)
     if (!m) continue
     const uuid = m[1] ?? m[4]
     const iso = m[2] ?? m[3]
     const t = Date.parse(iso)
-    if (uuid && !Number.isNaN(t)) map.set(uuid, t)
+    if (uuid && !Number.isNaN(t)) stamps.set(uuid, t)
   }
-  return map
+  return { stamps, recaps }
 }
 
 /** Sidebar-friendly wording for non-success result subtypes ("error_during_execution" → "interrupted"…). */
