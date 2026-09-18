@@ -47,3 +47,25 @@ export function groupColorFor(group: { color?: string } | null | undefined, dark
   const entry = paletteEntry(group.color)
   return entry ? (dark ? entry.dark : entry.light) : group.color
 }
+
+/**
+ * The colour each company's model names are written in. The user asked for the model name to use
+ * the same palette as the chat names, so these are entries of GROUP_PALETTE above — the macOS
+ * system colours — and not colours taken from each company's own branding: the sidebar then has
+ * one set of colours, in which a chat's group and the company it runs on are the same kind of mark.
+ * The nearest palette colour to each company is used (Claude orange, OpenAI mint, DeepSeek blue,
+ * Kimi purple), and anything else is graphite.
+ */
+export const MODEL_COMPANY_COLOR: Record<string, string> = {
+  claude: 'orange',
+  gpt: 'mint',
+  deepseek: 'blue',
+  kimi: 'purple',
+  other: 'graphite'
+}
+
+/** A palette colour by its key, in the current theme. */
+export function paletteColorFor(key: string, dark: boolean): string | undefined {
+  const entry = GROUP_PALETTE.find((p) => p.key === key)
+  return entry ? (dark ? entry.dark : entry.light) : undefined
+}

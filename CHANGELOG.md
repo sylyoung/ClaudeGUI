@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.38 — 2026-09-18
+
+### The model names use the app's own colours
+
+- Request: "the colors of the models I do not like. use same color palette like the chat names".
+- The colours a model name can be written in are now the same macOS system palette a chat name is
+  written in when it belongs to a group — the twelve colours offered for groups — instead of the
+  colours each company signs its own name with. One colour per company still: Claude orange, GPT
+  mint, DeepSeek blue, Kimi purple, anything else graphite. The best model of each company stays in
+  bold (Fable, Astra, DeepSeek V4 Pro, Kimi K3).
+- The palette now exists in one place, `src/shared/colors.ts`, and the model colours are read from
+  it when the theme is applied, so a chat name and a model name can never drift into two different
+  sets of colours.
+
 ## 1.0.37 — 2026-09-18
 
 ### The sidebar tells you what a chat is about, and which model it runs on

@@ -976,19 +976,20 @@ button.cs-item:hover { color: var(--accent); }
 .cs-item.level-high { color: var(--ctx-high); font-weight: 600; }
 .cs-item.push:disabled { opacity: 0.6; }
 
-/* ---- model family tints (Fable violet, Opus blue, Sonnet teal, Haiku green) ---- */
-/* The model picker in the chat header keeps its colour; the model name in a session row stays
-   plain, so the only colour on that row means the group and the state. */
-/* One colour per company, close to the colour each of them signs its own name with: Anthropic's
-   coral for Claude, OpenAI's green for GPT, DeepSeek's blue, purple for Kimi. Used for the model
-   name beside a chat in the sidebar and for the model this chat runs on in its header. */
-:root { --model-claude: #e08a6b; --model-gpt: #3ecfa8; --model-deepseek: #7f96ff; --model-kimi: #bc8cff; }
-[data-theme='light'] { --model-claude: #c0562f; --model-gpt: #0f8f70; --model-deepseek: #3d59e0; --model-kimi: #7c4dff; }
+/* ---- one colour per model company ---- */
+/* The colours are the macOS system palette the chat names use for their group (GROUP_PALETTE in
+   src/shared/colors.ts), so a row carries one family of colours and not two: Claude orange,
+   OpenAI mint, DeepSeek blue, Kimi purple, anything else graphite. applyTheme() writes these
+   variables from that palette on every theme change; the values here are the same colours, kept as
+   a fallback for the first paint. Used for the model name beside a chat in the sidebar and for the
+   model a chat runs on in its header. */
+:root { --model-claude: #ff9f0a; --model-gpt: #63e6e2; --model-deepseek: #0a84ff; --model-kimi: #bf5af2; --model-other: #98989d; }
+[data-theme='light'] { --model-claude: #ff9500; --model-gpt: #00c7be; --model-deepseek: #007aff; --model-kimi: #af52de; --model-other: #8e8e93; }
 .mc-claude .ps-value, .session-item .model.mc-claude { color: var(--model-claude); }
 .mc-gpt .ps-value, .session-item .model.mc-gpt { color: var(--model-gpt); }
 .mc-deepseek .ps-value, .session-item .model.mc-deepseek { color: var(--model-deepseek); }
 .mc-kimi .ps-value, .session-item .model.mc-kimi { color: var(--model-kimi); }
-.mc-other .ps-value, .session-item .model.mc-other { color: var(--text-dim); }
+.mc-other .ps-value, .session-item .model.mc-other { color: var(--model-other); }
 .flagship .ps-value { font-weight: 700; }
 .edited-mark { width: 6px; height: 6px; border-radius: 3px; background: var(--accent); flex-shrink: 0; margin-left: 2px; }
 
