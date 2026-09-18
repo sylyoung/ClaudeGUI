@@ -6,7 +6,8 @@ import { lastPromptOf } from '@shared/util'
 import { sidebarSections, useStore, type SidebarSection } from '@/store'
 import { ContextMenu, type MenuItem } from './common/ContextMenu'
 import { GroupColorPicker } from './common/GroupColorPicker'
-import { basename, formatDateTime, isFlagshipModel, modelCompany, plainLine, sessionModelId, sessionModelName, shortenPath, timeAgo } from '@/lib/format'
+import { ModelIcon } from './common/ModelIcon'
+import { basename, formatDateTime, isFlagshipModel, plainLine, sessionModelId, sessionModelName, shortenPath, timeAgo } from '@/lib/format'
 import { CONTEXT_COLOUR_RULE, contextLevel, contextPercent } from '@/lib/tasks'
 import { StateMark } from './common/StateMark'
 import { visualState } from '@/lib/sessionState'
@@ -486,9 +487,13 @@ export function Sidebar() {
               >
                 {r.title}
               </span>
-              {/* The model stands beside the chat's name, in its company's colour and in bold when it
-                  is that company's best model, which leaves the second line to the chat itself. */}
-              <span className={`model mc-${modelCompany(modelId)} ${isFlagshipModel(modelId) ? 'flagship' : ''}`}>{modelName}</span>
+              {/* The model stands beside the chat's name: the logo of the company it comes from, then
+                  its name in the ordinary text colour, in bold when it is that company's best model.
+                  The second line is left to the chat itself. */}
+              <span className={`model ${isFlagshipModel(modelId) ? 'flagship' : ''}`}>
+                <ModelIcon model={modelId} />
+                {modelName}
+              </span>
             </>
           )}
         </span>

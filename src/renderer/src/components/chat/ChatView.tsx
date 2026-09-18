@@ -19,7 +19,8 @@ import { ContextMenu, type MenuItem } from '../common/ContextMenu'
 import { RewindDialog } from '../dialogs/RewindDialog'
 import { RewindPicker } from '../dialogs/RewindPicker'
 import { UsageStatus } from '../status/UsageStatus'
-import { formatBytes, formatDateTime, isFlagshipModel, modelCompany, modelLabel, shortenPath, timeAgo } from '@/lib/format'
+import { ModelIcon } from '../common/ModelIcon'
+import { formatBytes, formatDateTime, isFlagshipModel, modelLabel, shortenPath, timeAgo } from '@/lib/format'
 import { visualState } from '@/lib/sessionState'
 import { sessionMenuItems } from '@/lib/sessionMenu'
 
@@ -483,7 +484,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           </div>
         )}
         <div className="chat-config">
-          <PopupSelect className={`mc-${modelCompany(live?.model || record.model || record.lastModel)} ${isFlagshipModel(live?.model || record.model || record.lastModel) ? 'flagship' : ''}`} label="model" value={currentModel} options={modelOptions} tip="Model for this chat's next turns: a Claude model, or one from another provider (GPT via Codex, DeepSeek, Kimi...). Switching to another provider restarts Claude Code and continues the conversation there." onChange={(v) => { const c = decodeModelChoice(v); window.api.sessions.setModel(record.id, c.model, c.provider).catch(fail) }} minWidth={340} />
+          <PopupSelect className={isFlagshipModel(live?.model || record.model || record.lastModel) ? 'flagship' : ''} icon={<ModelIcon model={live?.model || record.model || record.lastModel} />} label="model" value={currentModel} options={modelOptions} tip="Model for this chat's next turns: a Claude model, or one from another provider (GPT via Codex, DeepSeek, Kimi...). Switching to another provider restarts Claude Code and continues the conversation there." onChange={(v) => { const c = decodeModelChoice(v); window.api.sessions.setModel(record.id, c.model, c.provider).catch(fail) }} minWidth={340} />
           <PopupSelect label="permissions" value={live?.permissionMode ?? record.permissionMode} options={modeOptions} tip="Permission mode: what Claude may do without asking. The list explains every mode." onChange={(v) => window.api.sessions.setPermissionMode(record.id, v as PermissionMode).catch(fail)} minWidth={380} />
           <PopupSelect label="effort" value={record.effort ?? ''} options={effortOptions} tip="Effort level: how much reasoning the model spends per turn (higher = slower, more thorough)" onChange={(v) => window.api.sessions.setEffort(record.id, v as EffortLevel | '').catch(fail)} minWidth={280} />
           <span className="spacer" />

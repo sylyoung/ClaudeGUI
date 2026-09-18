@@ -213,7 +213,7 @@ a:hover { text-decoration: underline; }
 .session-item .title-line { grid-column: 2; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .session-item .title-line .inline-edit { flex: 1; min-width: 0; }
 .session-item .name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.session-item .model { flex: 0 0 auto; font-size: 11px; font-weight: 500; white-space: nowrap; }
+.session-item .model { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; white-space: nowrap; }
 .session-item .model.flagship { font-weight: 700; }
 .session-item .meta { grid-column: 2; font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .session-item .meta b { color: var(--amber); font-weight: 600; }
@@ -976,20 +976,16 @@ button.cs-item:hover { color: var(--accent); }
 .cs-item.level-high { color: var(--ctx-high); font-weight: 600; }
 .cs-item.push:disabled { opacity: 0.6; }
 
-/* ---- one colour per model company ---- */
-/* The colours are the macOS system palette the chat names use for their group (GROUP_PALETTE in
-   src/shared/colors.ts), so a row carries one family of colours and not two: Claude orange,
-   OpenAI mint, DeepSeek blue, Kimi purple, anything else graphite. applyTheme() writes these
-   variables from that palette on every theme change; the values here are the same colours, kept as
-   a fallback for the first paint. Used for the model name beside a chat in the sidebar and for the
-   model a chat runs on in its header. */
-:root { --model-claude: #ff9f0a; --model-gpt: #63e6e2; --model-deepseek: #0a84ff; --model-kimi: #bf5af2; --model-other: #98989d; }
-[data-theme='light'] { --model-claude: #ff9500; --model-gpt: #00c7be; --model-deepseek: #007aff; --model-kimi: #af52de; --model-other: #8e8e93; }
-.mc-claude .ps-value, .session-item .model.mc-claude { color: var(--model-claude); }
-.mc-gpt .ps-value, .session-item .model.mc-gpt { color: var(--model-gpt); }
-.mc-deepseek .ps-value, .session-item .model.mc-deepseek { color: var(--model-deepseek); }
-.mc-kimi .ps-value, .session-item .model.mc-kimi { color: var(--model-kimi); }
-.mc-other .ps-value, .session-item .model.mc-other { color: var(--model-other); }
+/* ---- the company a model comes from ---- */
+/* The model is told apart by the logo of the company it comes from, not by the colour of its name:
+   the user rejected both the brand colours and the palette colours for the name itself, because on a
+   sidebar row colour already means the group. The name is therefore written in the ordinary text
+   colour and the mark stands before it, in the sidebar row and on the chat's model picker. The two
+   monochrome marks (OpenAI, Kimi) are drawn in currentColor and so take the colour of that text.
+   The best model of each company stays in bold. See src/renderer/src/assets/models/README.md. */
+.model-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; line-height: 0; }
+.model-icon svg { display: block; width: 1em; height: 1em; }
+.popup-select .model-icon { font-size: 13px; margin-right: 1px; }
 .flagship .ps-value { font-weight: 700; }
 .edited-mark { width: 6px; height: 6px; border-radius: 3px; background: var(--accent); flex-shrink: 0; margin-left: 2px; }
 

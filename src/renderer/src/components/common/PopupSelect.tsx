@@ -18,7 +18,7 @@ export interface PopupOption {
  * Compact drop-down: the closed control shows a short label so several of them fit on one line,
  * the open list shows the full text of every option (with its explanation as a tooltip).
  */
-export function PopupSelect({ label, value, options, onChange, tip, className, minWidth = 220 }: { label?: string; value: string; options: PopupOption[]; onChange: (value: string) => void; tip?: string; className?: string; minWidth?: number }) {
+export function PopupSelect({ label, value, options, onChange, tip, className, icon, minWidth = 220 }: { label?: string; value: string; options: PopupOption[]; onChange: (value: string) => void; tip?: string; className?: string; /** A mark drawn on the closed control before the value, such as the logo of the company a model comes from. */ icon?: React.ReactNode; minWidth?: number }) {
   const [open, setOpen] = useState(false)
   const btn = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
@@ -48,6 +48,7 @@ export function PopupSelect({ label, value, options, onChange, tip, className, m
     <>
       <button ref={btn} className={`popup-select no-drag ${open ? 'open' : ''} ${className ?? ''}`} onClick={() => setOpen((o) => !o)} data-tip={fullTip}>
         {label && <span className="ps-label">{label}</span>}
+        {icon}
         <span className="ps-value">{current?.short ?? current?.label ?? value}</span>
         <ChevronDown size={12} className="ps-arrow" />
       </button>

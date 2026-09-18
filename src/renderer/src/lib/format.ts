@@ -148,10 +148,9 @@ export function modelLabel(model: string | undefined): string {
 export type ModelCompany = 'claude' | 'gpt' | 'deepseek' | 'kimi' | 'other'
 
 /**
- * The company whose model this is. Each company has one colour, taken from the same macOS palette
- * the chat names use for their group (MODEL_COMPANY_COLOR in @shared/colors): Claude orange, GPT
- * mint, DeepSeek blue, Kimi purple. So the provider a chat runs on can be seen without reading the
- * name.
+ * The company whose model this is. It chooses the logo drawn before the model's name (ModelIcon,
+ * and the files in src/renderer/src/assets/models), which is how the provider a chat runs on can be
+ * seen without reading the name.
  */
 export function modelCompany(model: string | undefined): ModelCompany {
   const m = (model ?? '').toLowerCase()

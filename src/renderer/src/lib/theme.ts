@@ -1,4 +1,3 @@
-import { MODEL_COMPANY_COLOR, paletteColorFor } from '@shared/colors'
 import type { AccentColor, AppSettings, ThemeInfo, ThemeMode } from '@shared/types'
 import hljsDark from 'highlight.js/styles/github-dark-dimmed.css?inline'
 import hljsLight from 'highlight.js/styles/github.css?inline'
@@ -54,12 +53,6 @@ export function applyTheme(s: AppearanceSettings, info: ThemeInfo): boolean {
   root.style.setProperty('--accent', accent)
   root.style.setProperty('--accent-rgb', rgb.join(', '))
   root.style.setProperty('--accent-text', luminance(rgb) > 0.5 ? '#1d1d1f' : '#ffffff')
-  // Model names are painted from the same macOS palette the chat names take their group colour
-  // from, so the palette is defined once, in @shared/colors, and read from here.
-  for (const [company, key] of Object.entries(MODEL_COMPANY_COLOR)) {
-    const c = paletteColorFor(key, dark)
-    if (c) root.style.setProperty(`--model-${company}`, c)
-  }
   root.style.setProperty('--font-size', `${s.fontSize || 14}px`)
   root.style.setProperty('--code-size', `${s.codeFontSize || 12.5}px`)
   root.style.setProperty('--chat-max-width', `${s.chatMaxWidth || 980}px`)

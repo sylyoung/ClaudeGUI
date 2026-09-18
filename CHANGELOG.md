@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.39 — 2026-09-18
+
+### The model is shown by its company's logo, not by a colour
+
+- Request: "actually all bad. what are other ways to make the names differentiable easily, but not
+  through color?", answered with "download the model icons images, put it before model name (after
+  chat name), then the model name is all in general text color, no distinct color, and make the top
+  model in bold".
+- The logo of the company a chat's model comes from now stands between the chat's name and the
+  model's name, in the sidebar row and on the model picker in the chat header: the Anthropic
+  starburst, the OpenAI knot, the DeepSeek whale and the Kimi K. The model name itself is written in
+  the ordinary text colour, so the only colour left on a row is the one that means something — the
+  group, carried by the chat's name.
+- The best model of each company is still the only one in bold: Fable, Astra, DeepSeek V4 Pro,
+  Kimi K3.
+- The logos are real files kept in the app (`src/renderer/src/assets/models`, with a README naming
+  where each came from). The two marks their companies draw in one colour, OpenAI's and Kimi's, take
+  the colour of the text beside them, so they stay legible in both the light and the dark theme.
+- Everything the previous version added for colouring model names — the company-to-colour table, the
+  CSS variables written when the theme changes — has been removed rather than left unused.
+
 ## 1.0.38 — 2026-09-18
 
 ### The model names use the app's own colours
