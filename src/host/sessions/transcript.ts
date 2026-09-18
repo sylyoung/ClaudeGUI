@@ -172,6 +172,16 @@ export class TranscriptState {
   }
 
   /**
+   * The recap the chat ends on, if it ends on one. A recap describes where the chat stands, so it
+   * only stands for the chat while nothing has happened since; once an answer or a prompt follows
+   * it, that is the newer news.
+   */
+  latestRecap(): string | undefined {
+    const last = this.messages[this.messages.length - 1]
+    return last?.kind === 'system' && last.subtype === 'away_summary' ? last.text : undefined
+  }
+
+  /**
    * Whether a recap of this chat would have anything to say, by Claude Code's own counts: the chat
    * needs `minPrompts` messages the user wrote themselves, and `minSince` of them after the last
    * recap, so coming back twice in a row does not produce the same sentence twice. A chat that ends
@@ -832,7 +842,7 @@ const COMPACT_SUMMARY_START = /^This session is being continued from a previous 
 
 /** The CLI appends "(disable recaps in /config)" to the first recaps of a session; this app has no
  * /config to point at, so that note comes off. */
-function recapText(content: string): string {
+export function recapText(content: string): string {
   return content.replace(/\s*\(disable recaps in \/config\)\s*$/, '').trim()
 }
 

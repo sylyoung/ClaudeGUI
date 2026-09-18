@@ -1,6 +1,17 @@
 import type { SessionGroup, SessionLiveState, SessionRecord } from '@shared/types'
 import type { MenuItem } from '@/components/common/ContextMenu'
+import { shortenPath } from '@/lib/format'
 import { useStore } from '@/store'
+
+/**
+ * A folder path short enough for a menu row. The end of a path is the part that says which folder
+ * it is, so a long one keeps its last two names and loses its head.
+ */
+function menuPath(p: string, home: string | undefined): string {
+  const short = shortenPath(p, home)
+  if (short.length <= 44) return short
+  return '…/' + short.split('/').slice(-2).join('/')
+}
 
 export interface SessionMenuOpts {
   groups: SessionGroup[]
@@ -23,6 +34,19 @@ export function sessionMenuItems(r: SessionRecord, l: SessionLiveState | undefin
   ]
   if (o.onNewGroup) groupItems.push({ label: 'New group…', onClick: o.onNewGroup })
   const items: MenuItem[] = []
+  // The folder is no longer written on the chat's row in the sidebar — for most chats it is the
+  // chat's own name — so this is where it can be read, and copied.
+  items.push(
+    {
+      label: `Folder: ${menuPath(r.cwd, useStore.getState().appInfo?.homeDir)}`,
+      tip: `${r.cwd}\nThe folder this chat works in. Click to copy the path.`,
+      onClick: async () => {
+        await window.api.shell.copy(r.cwd)
+        o.toast('Folder path copied', 'success')
+      }
+    },
+    { label: '', onClick: () => undefined, separator: true }
+  )
   if (o.onRename) items.push({ label: 'Rename…', onClick: o.onRename })
   items.push({ label: 'Fork chat', tip: "Copy this conversation into a new chat in the same folder, as Claude Code's /branch does. The original chat is not changed.", onClick: () => void useStore.getState().forkSession(r.id) })
   items.push(

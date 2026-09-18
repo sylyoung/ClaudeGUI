@@ -123,6 +123,20 @@ function prettyModelId(id: string): string {
 }
 
 /** The name of a model for reading, e.g. "GPT-5.6 Sol (1M)"; the id itself stays in the tooltip. */
+/**
+ * A line of chat text with the markdown taken off it. In a one-line summary the pairs of asterisks
+ * and the backticks are noise, so only those markers go — never a character inside a word, because
+ * an underscore or a star in a file name is part of the name.
+ */
+export function plainLine(text: string): string {
+  return text
+    .replace(/\*\*/g, '')
+    .replace(/`+/g, '')
+    .replace(/^\s*#{1,6}\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function modelLabel(model: string | undefined): string {
   if (!model) return 'default model'
   if (model === '<synthetic>') return 'Claude Code'
@@ -131,17 +145,41 @@ export function modelLabel(model: string | undefined): string {
   return long ? `${pretty} (1M)` : pretty
 }
 
+export type ModelCompany = 'claude' | 'gpt' | 'deepseek' | 'kimi' | 'other'
+
 /**
- * Model family of an id, used to tint the model name (Fable violet, Opus blue, Sonnet teal,
- * Haiku green) so the model of a chat is recognizable without reading it.
+ * The company whose model this is. A model name is written in that company's own colour — Claude
+ * in Anthropic's coral, GPT in OpenAI's green, DeepSeek in its blue, Kimi in purple — so the
+ * provider a chat runs on can be seen without reading the name.
  */
-export function modelFamily(model: string | undefined): 'fable' | 'opus' | 'sonnet' | 'haiku' | 'other' {
+export function modelCompany(model: string | undefined): ModelCompany {
   const m = (model ?? '').toLowerCase()
-  if (m.includes('fable')) return 'fable'
-  if (m.includes('opus')) return 'opus'
-  if (m.includes('sonnet')) return 'sonnet'
-  if (m.includes('haiku')) return 'haiku'
+  if (!m) return 'other'
+  if (m.includes('claude') || /fable|opus|sonnet|haiku/.test(m)) return 'claude'
+  if (m.includes('deepseek')) return 'deepseek'
+  if (m.includes('kimi') || m.includes('moonshot')) return 'kimi'
+  if (m.includes('gpt') || m.includes('codex') || m.includes('astra') || /^o[1-9]/.test(m)) return 'gpt'
   return 'other'
+}
+
+/**
+ * The one model each company calls its best, which is written in bold: Claude Fable, OpenAI Astra,
+ * DeepSeek V4 Pro, Kimi K3. Every other model of the same company is written in normal weight.
+ */
+export function isFlagshipModel(model: string | undefined): boolean {
+  const m = (model ?? '').toLowerCase()
+  switch (modelCompany(m)) {
+    case 'claude':
+      return m.includes('fable')
+    case 'gpt':
+      return m.includes('astra')
+    case 'deepseek':
+      return /v4[\s-]?pro/.test(m)
+    case 'kimi':
+      return /k[\s-]?3/.test(m)
+    default:
+      return false
+  }
 }
 
 /** "just now", "2m ago", "3h ago", "2d ago". */
@@ -188,6 +226,11 @@ export function formatPercent(p: number | null | undefined): string {
  * session, else the model its last process reported, else the default from Settings → Claude.
  */
 export function sessionModelName(record: { model?: string; lastModel?: string }, live: { model?: string } | undefined, defaultModel: string | undefined): string {
-  const id = live?.model || record.model || record.lastModel || defaultModel || ''
+  const id = sessionModelId(record, live, defaultModel)
   return id ? modelLabel(id) : 'default'
+}
+
+/** The model id behind that name, which is what the colour and the bold weight are decided from. */
+export function sessionModelId(record: { model?: string; lastModel?: string }, live: { model?: string } | undefined, defaultModel: string | undefined): string {
+  return live?.model || record.model || record.lastModel || defaultModel || ''
 }

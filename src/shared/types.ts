@@ -200,6 +200,12 @@ export interface SessionLiveState {
   unread: number
   lastActivityAt: number
   lastPreview?: string
+  /**
+   * The recap Claude Code wrote the last time the chat was left alone, while it is still the newest
+   * thing in the chat. The sidebar shows it in place of the last reply, because it is the sentence
+   * written to be read on coming back.
+   */
+  lastRecap?: string
   error?: string
   /** The working directory does not exist (renamed or deleted); the process cannot start. */
   cwdMissing?: boolean

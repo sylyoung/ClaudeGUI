@@ -36,9 +36,10 @@ import type {
   SessionLiveState,
   SdkUsage,
   SessionRecord,
-  SlashCommandView
+  SlashCommandView,
+  TextBlockView
 } from '@shared/types'
-import { TranscriptState, looksSynthetic } from './transcript'
+import { TranscriptState, looksSynthetic, recapText } from './transcript'
 import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
 import { splitList } from '@shared/util'
 
@@ -299,6 +300,11 @@ export class SessionRuntime {
         this.transcript.takeChanges()
       }
       this.deps.log(`[session ${this.id}] history loaded: ${entries.length} entries`)
+      // What the sidebar shows of the chat: the recap if the chat ends on one, and otherwise the
+      // last thing Claude said. Both come from the conversation itself, so a chat that has not run
+      // in this process yet — every chat after the session host is restarted — is not a blank line.
+      this.live.lastRecap = this.transcript.latestRecap()
+      if (!this.live.lastPreview) this.live.lastPreview = this.lastReplyText()
       if (!this.record.lastPromptAt) {
         const t = lastPromptTime(this.transcript.messages)
         if (t) {
@@ -376,6 +382,40 @@ export class SessionRuntime {
     }
   }
 
+  /**
+   * Fills the one line the sidebar shows of a chat — Claude Code's recap of it, or the last thing
+   * Claude said — from the end of its transcript, without loading its history. A chat that has not
+   * run since the session host started has nothing in its live state otherwise, so after a restart
+   * the whole sidebar would say only "not running" until each chat is opened.
+   */
+  async fillSnapshot(): Promise<boolean> {
+    if (this.live.lastRecap || this.live.lastPreview || this.historyLoaded) return false
+    const file = path.join(projectDirFor(this.record.cwd), `${this.record.claudeSessionId}.jsonl`)
+    const snap = await lastSnapshotFromFile(file).catch(() => ({}) as TranscriptSnapshot)
+    if (!snap.recap && !snap.reply) return false
+    if (this.live.lastRecap || this.live.lastPreview) return false // filled meanwhile by a real turn
+    this.live.lastRecap = snap.recap
+    if (snap.reply) this.live.lastPreview = snap.reply
+    this.scheduleFlush()
+    return true
+  }
+
+  /** The last thing Claude said in this chat, as one line. */
+  private lastReplyText(): string | undefined {
+    for (let i = this.transcript.messages.length - 1; i >= 0; i--) {
+      const m = this.transcript.messages[i]
+      if (m.kind !== 'assistant') continue
+      const text = m.blocks
+        .filter((b): b is TextBlockView => b.type === 'text')
+        .map((b) => b.text)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (text) return text.slice(0, 140)
+    }
+    return undefined
+  }
+
   // ------------------------------------------------------------------- recap
 
   /** When this chat's last turn ended, or 0 if it has not answered anything in this process. */
@@ -426,6 +466,7 @@ export class SessionRuntime {
         return false
       }
       this.transcript.addRecap(randomUUID(), text, Date.now())
+      this.live.lastRecap = this.transcript.latestRecap()
       this.scheduleFlush()
       this.deps.log(`[session ${this.id}] recap written after ${((Date.now() - started) / 1000).toFixed(1)}s`)
       return true
@@ -763,6 +804,7 @@ export class SessionRuntime {
     this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
     this.record.lastActiveAt = Date.now()
     this.live.lastPreview = point.text.replace(/\s+/g, ' ').slice(0, 140)
+    this.live.lastRecap = undefined
     this.live.unread = 0
     this.deps.saveRecord(this.record)
     this.scheduleFlush()
@@ -804,6 +846,7 @@ export class SessionRuntime {
     this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
     this.record.lastActiveAt = Date.now()
     this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
+    this.live.lastRecap = undefined
     this.live.unread = 0
     this.deps.saveRecord(this.record)
     this.deps.log(`[session ${this.id}] rewound to ${messageId} (files: ${restoreFiles ? filesRestored : 'kept'})`)
@@ -963,6 +1006,7 @@ export class SessionRuntime {
     this.record.lastPromptAt = this.record.lastActiveAt
     this.live.lastActivityAt = this.record.lastActiveAt
     this.live.lastPreview = text.slice(0, 120)
+    this.live.lastRecap = undefined
     this.deps.saveRecord(this.record)
     this.scheduleFlush()
     return uuid
@@ -1452,6 +1496,8 @@ export class SessionRuntime {
         const preview = msg.subtype === 'success' ? msg.result : humanResultSubtype(msg.subtype, (msg as { errors?: string[] }).errors)
         const text = (this.lastAssistantText || preview || '').trim()
         this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
+        // A recap says where the chat stands; this answer is newer, so it is what the sidebar shows.
+        this.live.lastRecap = undefined
         this.record.lastActiveAt = ts
         this.deps.saveRecord(this.record)
         // A turn that only compacted the context is housekeeping, not an answer: it must not mark
@@ -1842,6 +1888,98 @@ export async function lastPromptTimeFromFile(file: string, chunkBytes = 1024 * 1
     return undefined
   } finally {
     await fh.close().catch(() => undefined)
+  }
+}
+
+export interface TranscriptSnapshot {
+  /** Claude Code's recap of the chat, when it is the newest thing in the file. */
+  recap?: string
+  /** The last thing Claude said, when no recap follows it. */
+  reply?: string
+}
+
+/**
+ * What a chat has to say for itself without its history being loaded: Claude Code's recap when the
+ * chat ends on one, and the last thing Claude said otherwise. Read backwards from the end of the
+ * transcript like the last-prompt scan above, because what is wanted is at the end of a file that
+ * can be hundreds of megabytes, and for the same reason in whole bytes rather than chunk by chunk.
+ */
+export async function lastSnapshotFromFile(file: string, chunkBytes = 512 * 1024, maxBytes = 16 * 1024 * 1024): Promise<TranscriptSnapshot> {
+  let size: number
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    return {}
+  }
+  const fh = await fs.promises.open(file, 'r').catch(() => null)
+  if (!fh) return {}
+  try {
+    let end = size
+    let carry = Buffer.alloc(0)
+    let scanned = 0
+    while (end > 0 && scanned < maxBytes) {
+      const start = Math.max(0, end - chunkBytes)
+      const buf = Buffer.alloc(end - start)
+      await fh.read(buf, 0, end - start, start)
+      const data = carry.length ? Buffer.concat([buf, carry]) : buf
+      let body = data
+      if (start > 0) {
+        const nl = data.indexOf(0x0a)
+        if (nl === -1) {
+          carry = data
+          scanned += end - start
+          end = start
+          continue
+        }
+        carry = data.subarray(0, nl)
+        body = data.subarray(nl + 1)
+      } else {
+        carry = Buffer.alloc(0)
+      }
+      const lines = body.toString('utf8').split('\n')
+      // The last such line in the file wins, so the chunk is read from its end backwards.
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const snap = snapshotOfLine(lines[i])
+        if (snap) return snap
+      }
+      scanned += end - start
+      end = start
+    }
+    return {}
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
+/** One line of at most 140 characters, the length a preview is cut to elsewhere. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 140)
+}
+
+/** A recap or an answer of Claude's in a transcript line, if the line is either. */
+function snapshotOfLine(line: string): TranscriptSnapshot | undefined {
+  if (line.includes('"subtype":"away_summary"')) {
+    try {
+      const e = JSON.parse(line) as { content?: string }
+      const text = e.content ? recapText(e.content) : ''
+      return text ? { recap: oneLine(text) } : undefined
+    } catch {
+      // Transcripts are appended line by line, so the last line can be half written.
+      return undefined
+    }
+  }
+  if (!line.includes('"type":"assistant"')) return undefined
+  try {
+    const e = JSON.parse(line) as { type?: string; isSidechain?: boolean; message?: { content?: unknown } }
+    // A sidechain entry is a subagent's own conversation, not something said in this chat.
+    if (e.type !== 'assistant' || e.isSidechain) return undefined
+    const c = e.message?.content
+    let text = ''
+    if (typeof c === 'string') text = c
+    else if (Array.isArray(c)) for (const b of c as { type?: string; text?: string }[]) if (b.type === 'text') text += `${b.text ?? ''} `
+    return text.trim() ? { reply: oneLine(text) } : undefined
+  } catch {
+    return undefined
   }
 }
 

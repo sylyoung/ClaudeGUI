@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.0.37 — 2026-09-18
+
+### The sidebar tells you what a chat is about, and which model it runs on
+
+- Request: "I also need no chat name in the second line in the snapshot. the second line in the
+  snapshot should be 1) model name 2) status 3) last chat", then, on what the last line should say:
+  "I actually wanted the recap, but I find it is still not enabled in this version 1.0.36, or the
+  first sentence of last reply like it is now", on the folder: "just add the info of the chat's
+  folder to right click that chat's info", and on the layout: "put model name to first line, after
+  chat name. also give model name a coloring, each color for one enterprise family, and the best
+  model (e.g., Fable, Astra, Deepseek Pro) in bold font against lower model in normal font".
+- A chat's row now reads: first line the chat's name and the model it runs on, second line its state
+  and what the chat itself last had to say. The folder name is gone from it — for most chats it was
+  the chat's own name written twice — and is in the right-click menu instead, as "Folder: …", which
+  copies the path when clicked; it is still in the row's tooltip too.
+- What the chat has to say is Claude Code's recap of it when the chat ends on one, marked with the
+  same sparkle the recap card in the chat carries, and the last thing Claude said otherwise. The
+  state is now always written: an idle chat used to show its last reply *instead of* saying "idle".
+- Those two lines no longer come only from chats that have run since the session host started. The
+  end of a chat's transcript is read backwards at startup — the recap, or the last answer — so every
+  chat has its line from the first moment. Checked against all 37 chats and their transcripts, up to
+  1.77 GB each: the backwards scan finds the same line at chunk sizes from 4 KB to 8 MB, and the
+  same line a plain whole-file read finds, in every one of them.
+- Markdown is taken off that line: a summary that begins "**No — the data isn't out yet**" now reads
+  "No — the data isn't out yet". Only the pairs of asterisks and the backticks go, never a character
+  inside a word, so a file name with an underscore or a star in it is left alone.
+- The model name is written in its company's colour — Claude in Anthropic's coral, GPT in OpenAI's
+  green, DeepSeek in its blue, Kimi in purple, anything else grey — and the best model of each
+  company in bold: Fable, Astra, DeepSeek V4 Pro, Kimi K3. The model shown in a chat's own header
+  follows the same colours, which until now were one per Claude tier.
+- Note for the recap itself, which is a session host feature and was added in 1.0.35: the session
+  host running here is still 1.0.34, started on 16 September, so no recap has been written yet in
+  this app. The installed 1.0.36 build does contain it (checked in the packaged bundle). It starts
+  working after Updates → "Restart session host", with the chats stopped first.
+
 ## 1.0.36 — 2026-09-18
 
 ### Chinese, dashes and accents survive opening a chat

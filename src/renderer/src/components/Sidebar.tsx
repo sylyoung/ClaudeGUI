@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, Bot, CheckSquare, ChevronDown, ChevronRight, Clock, Cpu, Download, FolderPlus, LayoutList, Pin, PinOff, Play, Plus, Settings, SlidersHorizontal, Square, TerminalSquare, X } from 'lucide-react'
+import { Archive, Bot, CheckSquare, ChevronDown, ChevronRight, Clock, Cpu, Download, FolderPlus, LayoutList, Pin, PinOff, Play, Plus, Settings, SlidersHorizontal, Sparkles, Square, TerminalSquare, X } from 'lucide-react'
 import type { SessionGroup, SessionLiveState, SessionRecord } from '@shared/types'
 import { groupColorFor } from '@shared/colors'
 import { lastPromptOf } from '@shared/util'
 import { sidebarSections, useStore, type SidebarSection } from '@/store'
 import { ContextMenu, type MenuItem } from './common/ContextMenu'
 import { GroupColorPicker } from './common/GroupColorPicker'
-import { basename, formatDateTime, sessionModelName, shortenPath, timeAgo } from '@/lib/format'
+import { basename, formatDateTime, isFlagshipModel, modelCompany, plainLine, sessionModelId, sessionModelName, shortenPath, timeAgo } from '@/lib/format'
 import { CONTEXT_COLOUR_RULE, contextLevel, contextPercent } from '@/lib/tasks'
 import { StateMark } from './common/StateMark'
 import { visualState } from '@/lib/sessionState'
@@ -90,7 +90,6 @@ export function Sidebar() {
   const startSessions = useStore((s) => s.startSessions)
   const stopSessions = useStore((s) => s.stopSessions)
   const bulkBusy = useStore((s) => s.bulkBusy)
-  const files = useStore((s) => s.files)
   const searchNonce = useStore((s) => s.searchFocusNonce)
   const searchRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -422,13 +421,20 @@ export function Sidebar() {
     const gColor = groupColorFor(g, dark)
     const busy = bulkBusy[r.id]
     const modelName = sessionModelName(r, l, settings?.defaultModel)
-    const showDir = groupByFolder ? false : (files[r.id]?.panelOpen ?? true)
+    const modelId = sessionModelId(r, l, settings?.defaultModel)
+    // What the chat itself has to say, in one line: Claude Code's recap of it while that is the
+    // newest thing in it, and the last reply otherwise. The folder is not repeated here — for most
+    // chats it is the chat's own name — and is in the right-click menu instead.
+    const recap = l?.lastRecap
+    const said = recap ?? l?.lastPreview
+    const snapshot = said ? plainLine(said) : undefined
     const tip = [
       r.title,
       `${vs.label}: ${vs.description}`,
       `model ${modelName}${l?.model ? ` (${l.model})` : r.model ? ` (${r.model})` : ''}`,
       shortenPath(r.cwd, appInfo?.homeDir),
       g ? `group ${g.name}` : 'no group',
+      ...(snapshot ? [`${recap ? 'recap' : 'last reply'}: ${snapshot}`] : []),
       `your last prompt ${formatDateTime(lastPrompt)} (${timeAgo(lastPrompt)})`,
       `last activity ${formatDateTime(lastAct)} (${timeAgo(lastAct)})`,
       `${hk ? `⌘${hk} selects it · ` : ''}⌘-click / ⇧-click selects several · drag to ${sort === 'manual' ? 'reorder or ' : ''}move to a group${view === 'recent' ? ' / pin' : ''}`
@@ -453,32 +459,39 @@ export function Sidebar() {
         data-tip={tip}
       >
         <StateMark state={vs.key} />
-        {renamingSession?.id === r.id ? (
-          <input
-            className="inline-edit"
+        <span className="title-line">
+          {renamingSession?.id === r.id ? (
+            <input
+              className="inline-edit"
             autoFocus
-            value={renamingSession.name}
-            onChange={(e) => setRenamingSession({ id: r.id, name: e.target.value })}
-            onClick={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-            onBlur={() => void commitSessionRename()}
-            onKeyDown={(e) => {
-              if (isComposing(e)) return
-              if (e.key === 'Enter') void commitSessionRename()
-              if (e.key === 'Escape') setRenamingSession(null)
-            }}
-          />
-        ) : (
-          <span
-            className="name"
-            /* In the recent view the groups are not visible as sections, so the group's colour is
-               carried by the chat name itself instead of a group tag on the second line. */
-            style={view === 'recent' && gColor ? { color: gColor, opacity: vs.key === 'stopped' ? 0.7 : undefined } : undefined}
-            onDoubleClick={() => setRenamingSession({ id: r.id, name: r.title })}
-          >
-            {r.title}
-          </span>
-        )}
+              value={renamingSession.name}
+              onChange={(e) => setRenamingSession({ id: r.id, name: e.target.value })}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              onBlur={() => void commitSessionRename()}
+              onKeyDown={(e) => {
+                if (isComposing(e)) return
+                if (e.key === 'Enter') void commitSessionRename()
+                if (e.key === 'Escape') setRenamingSession(null)
+              }}
+            />
+          ) : (
+            <>
+              <span
+                className="name"
+                /* In the recent view the groups are not visible as sections, so the group's colour is
+                   carried by the chat name itself instead of a group tag on the second line. */
+                style={view === 'recent' && gColor ? { color: gColor, opacity: vs.key === 'stopped' ? 0.7 : undefined } : undefined}
+                onDoubleClick={() => setRenamingSession({ id: r.id, name: r.title })}
+              >
+                {r.title}
+              </span>
+              {/* The model stands beside the chat's name, in its company's colour and in bold when it
+                  is that company's best model, which leaves the second line to the chat itself. */}
+              <span className={`model mc-${modelCompany(modelId)} ${isFlagshipModel(modelId) ? 'flagship' : ''}`}>{modelName}</span>
+            </>
+          )}
+        </span>
         <span className="right">
           {r.pinned && <Pin size={11} className="pin" />}
           {l?.unread ? <span className="badge" data-tip={`${l.unread} finished turn${l.unread === 1 ? '' : 's'} you have not looked at`}>{l.unread}</span> : null}
@@ -486,11 +499,14 @@ export function Sidebar() {
           <span data-tip={`Your last prompt: ${formatDateTime(lastPrompt)}`}>{timeAgo(lastPrompt)}</span>
         </span>
         <span className="meta">
-          <span className="model">{modelName}</span>
-          <span className="faint"> · </span>
-          <span className={`state-text vs-${vs.key}`}>{busy ? (busy === 'start' ? 'starting…' : 'stopping…') : vs.key === 'idle' && l?.lastPreview ? l.lastPreview : vs.label}</span>
-          {!busy && vs.key === 'unread' && l?.lastPreview && <span className="faint"> · {l.lastPreview}</span>}
-          {showDir && <span className="faint"> · {basename(r.cwd)}</span>}
+          <span className={`state-text vs-${vs.key}`}>{busy ? (busy === 'start' ? 'starting…' : 'stopping…') : vs.label}</span>
+          {!busy && snapshot && (
+            <span className="faint">
+              {' · '}
+              {recap && <Sparkles size={10} className="recap-mark" />}
+              {snapshot}
+            </span>
+          )}
         </span>
         <Indicators live={l} />
       </div>

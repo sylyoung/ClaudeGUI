@@ -69,7 +69,7 @@ export class SessionManager {
     for (const record of store.listSessions()) this.runtimes.set(record.id, this.makeRuntime(record))
     this.activeSessionId = store.getActiveSession()
     this.assignMissingGroupColors()
-    void this.backfillPromptTimes()
+    void this.backfillPromptTimes().then(() => this.fillSnapshots())
   }
 
   /** Groups created before 1.0.4 have no colour yet: give each one the next free palette colour. */
@@ -98,6 +98,19 @@ export class SessionManager {
       changed += 1
     }
     if (changed) this.host.log(`[manager] backfilled last-prompt time for ${changed} session(s)`)
+  }
+
+  /**
+   * Gives every chat the line the sidebar shows of it — its recap, or the last thing Claude said —
+   * read from the end of its transcript. Live state does not survive a session host restart, so
+   * without this the sidebar has nothing to say about any chat that has not run since.
+   */
+  private async fillSnapshots(): Promise<void> {
+    let filled = 0
+    for (const rt of this.runtimes.values()) {
+      if (await rt.fillSnapshot().catch(() => false)) filled += 1
+    }
+    if (filled) this.host.log(`[manager] read the last line of ${filled} chat(s) from their transcripts`)
   }
 
   private makeRuntime(record: SessionRecord): SessionRuntime {
