@@ -39,6 +39,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     { id: 'kimi', name: 'Kimi', launcher: 'cc-kimi', modelsUrl: 'https://api.moonshot.cn/v1/models', enabled: true }
   ],
   autoTitle: true,
+  autoRecap: true,
   // General
   notifications: true,
   notifyOnTurnFinished: true,

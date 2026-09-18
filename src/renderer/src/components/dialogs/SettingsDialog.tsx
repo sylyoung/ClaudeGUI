@@ -241,6 +241,12 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   <Field label="Max thinking tokens (0 = model default)"><Num value={draft.maxThinkingTokens} min={0} step={1000} onChange={(v) => upd({ maxThinkingTokens: v })} /></Field>
                 </div>
                 <Check label="Let Claude Code name new sessions automatically" checked={draft.autoTitle} onChange={(v) => upd({ autoTitle: v })} />
+                <Check
+                  label="Recap a chat that worked while you were looking elsewhere"
+                  hint="Claude Code writes the same sentence in the terminal when you come back to a chat: where the chat stands and what comes next. It is asked for shortly after the chat finishes, out of the answer's prompt cache, and shown on the chat's line in the sidebar."
+                  checked={draft.autoRecap}
+                  onChange={(v) => upd({ autoRecap: v })}
+                />
               </Section>
               <Section title="Tools & settings sources">
                 <div className="grid2">

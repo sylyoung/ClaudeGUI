@@ -296,6 +296,11 @@ export class SessionRuntime {
           ts += 1
         }
         this.transcript.insertRecaps(recaps)
+        // The recap this app asked for is not in Claude Code's transcript (the side-question call
+        // leaves nothing behind), so it is put back from the record, in its place in the chat.
+        if (this.record.lastRecap && this.record.lastRecapAt) {
+          this.transcript.insertRecaps([{ id: `recap-${this.record.lastRecapAt}`, text: this.record.lastRecap, ts: this.record.lastRecapAt }])
+        }
         await this.loadSubagentHistory(ts)
         this.transcript.takeChanges()
       }
@@ -392,9 +397,10 @@ export class SessionRuntime {
     if (this.live.lastRecap || this.live.lastPreview || this.historyLoaded) return false
     const file = path.join(projectDirFor(this.record.cwd), `${this.record.claudeSessionId}.jsonl`)
     const snap = await lastSnapshotFromFile(file).catch(() => ({}) as TranscriptSnapshot)
-    if (!snap.recap && !snap.reply) return false
+    const kept = this.record.lastRecap
+    if (!kept && !snap.recap && !snap.reply) return false
     if (this.live.lastRecap || this.live.lastPreview) return false // filled meanwhile by a real turn
-    this.live.lastRecap = snap.recap
+    this.live.lastRecap = kept ?? snap.recap
     if (snap.reply) this.live.lastPreview = snap.reply
     this.scheduleFlush()
     return true
@@ -465,8 +471,14 @@ export class SessionRuntime {
         this.deps.log(`[session ${this.id}] recap: nothing came back`)
         return false
       }
-      this.transcript.addRecap(randomUUID(), text, Date.now())
+      const at = Date.now()
+      this.transcript.addRecap(randomUUID(), text, at)
       this.live.lastRecap = this.transcript.latestRecap()
+      // Claude Code writes its own recaps into its transcript; this one was asked for through the
+      // side-question call, which leaves no trace there, so the chat's record keeps it instead.
+      this.record.lastRecap = this.live.lastRecap
+      this.record.lastRecapAt = at
+      this.deps.saveRecord(this.record)
       this.scheduleFlush()
       this.deps.log(`[session ${this.id}] recap written after ${((Date.now() - started) / 1000).toFixed(1)}s`)
       return true
@@ -1498,6 +1510,8 @@ export class SessionRuntime {
         this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
         // A recap says where the chat stands; this answer is newer, so it is what the sidebar shows.
         this.live.lastRecap = undefined
+        this.record.lastRecap = undefined
+        this.record.lastRecapAt = undefined
         this.record.lastActiveAt = ts
         this.deps.saveRecord(this.record)
         // A turn that only compacted the context is housekeeping, not an answer: it must not mark

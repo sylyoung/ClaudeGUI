@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.40 — 2026-09-18
+
+### The recap is written when a chat finishes working out of sight, and it is kept
+
+- Reports: "there is still no automatic recap", then "I restarted. still no recap".
+- Three things were in the way. The session host that owned the chats was the one ClaudeGUI 1.0.34
+  had started, and the recap is host code that arrived in 1.0.35, so it had never run at all; the
+  restart fixed that one. On the new host the recap was still only asked for while the whole window
+  was out of focus, and only for a chat whose last turn had ended between three and four and a half
+  minutes earlier — so with many chats open, the chats the user was not looking at never got one.
+  And a recap the app asked for lived only in memory, because it is asked for through the call that
+  deliberately leaves nothing in Claude Code's transcript, so it disappeared whenever the session
+  host was restarted.
+- A chat that finishes a turn while you are looking at another chat, or away from the window, is now
+  recapped once it has been quiet for 45 seconds — early enough that Claude Code answers out of the
+  prompt cache that turn left behind, late enough that a follow-up prompt comes first. The older
+  rule, which recaps the running chats when the window loses focus, is unchanged.
+- The recap is kept in the chat's own record, so the sidebar still has it after the session host is
+  restarted, and opening the chat puts it back where it belongs in the conversation.
+- Settings → Claude has a switch for it, "Recap a chat that worked while you were looking
+  elsewhere", the same choice Claude Code offers in its own /config.
+
 ## 1.0.39 — 2026-09-18
 
 ### The model is shown by its company's logo, not by a colour

@@ -28,6 +28,14 @@ export interface SessionRecord {
   lastPromptAt?: number
   /** Model the last process reported at start (shown while the session is not running). */
   lastModel?: string
+  /**
+   * Claude Code's last recap of this chat. The recap is asked for through the side-question call,
+   * which leaves nothing in Claude Code's own transcript, so the app keeps it here; without that it
+   * would be lost with the session host process and the sidebar would fall back to the last reply.
+   */
+  lastRecap?: string
+  /** When that recap was written (epoch ms). A turn finishing afterwards clears both. */
+  lastRecapAt?: number
   pinned?: boolean
   archived?: boolean
   source: 'gui' | 'cli-import'
@@ -486,6 +494,11 @@ export interface AppSettings {
   fileCheckpointing: boolean
   /** Let Claude Code name new sessions automatically. */
   autoTitle: boolean
+  /**
+   * Let Claude Code recap a chat that finished working while you were looking elsewhere, the way it
+   * does in the terminal when you come back to it. Claude Code offers the same switch in /config.
+   */
+  autoRecap: boolean
   /** Other model providers (see ModelProviderSetting); their models join the model picker. */
   providers: ModelProviderSetting[]
 

@@ -40,6 +40,14 @@ const RECAP_AFTER_MS = 180_000
 const RECAP_CACHE_MS = 270_000
 /** How often the away check runs. The window it is looking for is 90 seconds wide. */
 const RECAP_POLL_MS = 15_000
+/**
+ * …and how long a chat that finished a turn out of sight is left alone before it is recapped.
+ * Waiting for the window to lose focus is not enough by itself: with many chats open the user is
+ * looking at one of them and away from the other thirty-six, and those are the ones whose recap
+ * they want to find in the sidebar. Long enough that a follow-up prompt typed straight away comes
+ * first, and well inside the prompt cache the finished turn left behind.
+ */
+const RECAP_QUIET_MS = 45_000
 
 export interface ManagerHost {
   getEnv(): Promise<Record<string, string>>
@@ -61,6 +69,8 @@ export class SessionManager {
   activeSessionId: string | undefined
   /** Runs while the user is away from the window, looking for chats worth recapping. */
   private recapTimer: NodeJS.Timeout | null = null
+  /** Chats that finished a turn out of sight and are waiting to be quiet enough to recap, by id. */
+  private recapSoon = new Map<string, NodeJS.Timeout>()
 
   constructor(
     private store: SessionsStore,
@@ -132,6 +142,7 @@ export class SessionManager {
           rt.bumpUnread()
           this.host.notify({ sessionId: rt.id, title: `${isError ? '⚠️ ' : '✅ '}${rt.record.title}`, body: preview || (isError ? 'Turn ended with an error' : 'Finished'), kind: isError ? 'error' : 'turn' })
         }
+        if (!foreground && !silent) this.recapWhenQuiet(rt)
         this.refreshBadge()
         this.host.onTurnFinished()
       },
@@ -509,6 +520,9 @@ export class SessionManager {
     const rt = this.runtimes.get(id)
     if (!rt) return
     await rt.stop(false)
+    const pending = this.recapSoon.get(id)
+    if (pending) clearTimeout(pending)
+    this.recapSoon.delete(id)
     this.runtimes.delete(id)
     this.store.removeSession(id)
     if (deleteTranscript) {
@@ -547,12 +561,34 @@ export class SessionManager {
    * that says so.
    */
   private recapAwayChats(): void {
+    if (this.host.getSettings().autoRecap === false) return
     const now = Date.now()
     for (const rt of this.runtimes.values()) {
       if (now - rt.lastTurnEnd < RECAP_AFTER_MS) continue
       if (!rt.recapWanted(now, RECAP_CACHE_MS)) continue
       void rt.writeRecap().catch(() => undefined)
     }
+  }
+
+  /**
+   * A chat finished a turn while the user was looking at something else. Once it has stayed quiet
+   * for a moment — no follow-up prompt, nothing asked of the user — Claude Code is asked for its
+   * recap of it, so the sidebar says where the chat stands instead of quoting the end of the last
+   * answer. The wait is cancelled and restarted by the next turn of the same chat.
+   */
+  private recapWhenQuiet(rt: SessionRuntime): void {
+    if (this.host.getSettings().autoRecap === false) return
+    const pending = this.recapSoon.get(rt.id)
+    if (pending) clearTimeout(pending)
+    const timer = setTimeout(() => {
+      this.recapSoon.delete(rt.id)
+      if (this.host.isWindowFocused() && this.activeSessionId === rt.id) return
+      if (this.host.getSettings().autoRecap === false) return
+      if (!rt.recapWanted(Date.now(), RECAP_CACHE_MS)) return
+      void rt.writeRecap().catch(() => undefined)
+    }, RECAP_QUIET_MS)
+    timer.unref?.()
+    this.recapSoon.set(rt.id, timer)
   }
 
   setActive(id: string | undefined): void {
