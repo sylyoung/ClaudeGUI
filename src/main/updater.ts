@@ -209,8 +209,8 @@ export class Updater {
       this.child = child
       let out = ''
       let rest = { out: '', err: '' }
-      const feed = (key: 'out' | 'err', chunk: Buffer) => {
-        const text = rest[key] + chunk.toString()
+      const feed = (key: 'out' | 'err', chunk: string) => {
+        const text = rest[key] + chunk
         const lines = text.split('\n')
         rest[key] = lines.pop() ?? ''
         for (const l of lines) {
@@ -218,8 +218,13 @@ export class Updater {
           else this.logLine(l)
         }
       }
-      child.stdout?.on('data', (c: Buffer) => feed('out', c))
-      child.stderr?.on('data', (c: Buffer) => feed('err', c))
+      // Decoded by the stream itself, which holds back the trailing bytes of a character split
+      // between two chunks; decoding each chunk here would turn such a character into a question
+      // mark in the update log.
+      child.stdout?.setEncoding('utf8')
+      child.stderr?.setEncoding('utf8')
+      child.stdout?.on('data', (c: string) => feed('out', c))
+      child.stderr?.on('data', (c: string) => feed('err', c))
       child.on('error', (err) => {
         this.child = null
         reject(new Error(`${opts.label}: ${err.message}`))

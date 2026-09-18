@@ -1804,16 +1804,32 @@ export async function lastPromptTimeFromFile(file: string, chunkBytes = 1024 * 1
   if (!fh) return undefined
   try {
     let end = size
-    let carry = '' // partial line at the start of the previously read (later) chunk
+    // Partial line at the start of the previously read (later) chunk. Kept as bytes, not as text:
+    // a chunk boundary can fall inside a character, and decoding the two halves separately would
+    // lose it and leave the line unparseable.
+    let carry = Buffer.alloc(0)
     let scanned = 0
     while (end > 0 && scanned < maxBytes) {
       const start = Math.max(0, end - chunkBytes)
       const buf = Buffer.alloc(end - start)
       await fh.read(buf, 0, end - start, start)
-      const text = buf.toString('utf8') + carry
-      const lines = text.split('\n')
-      if (start > 0) carry = lines.shift() ?? ''
-      else carry = ''
+      const data = carry.length ? Buffer.concat([buf, carry]) : buf
+      let body = data
+      if (start > 0) {
+        const nl = data.indexOf(0x0a)
+        if (nl === -1) {
+          // No line ended in this chunk, so the whole of it is still one unfinished line.
+          carry = data
+          scanned += end - start
+          end = start
+          continue
+        }
+        carry = data.subarray(0, nl)
+        body = data.subarray(nl + 1)
+      } else {
+        carry = Buffer.alloc(0)
+      }
+      const lines = body.toString('utf8').split('\n')
       let best: number | undefined
       for (const line of lines) {
         const t = promptTimeOfLine(line)

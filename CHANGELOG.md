@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.0.36 — 2026-09-18
+
+### Chinese, dashes and accents survive opening a chat
+
+- Request: "the snapshot of chats conversions in special characters will shown as question mark.
+  check my recent ChallengeNeurIPS26".
+- What was happening: the app window and the session host talk over a Unix socket in
+  newline-delimited JSON, and the socket delivers whatever bytes happen to be ready — a chat's
+  history arrives as hundreds of chunks cut at byte offsets that have nothing to do with characters.
+  The parser turned each chunk into text on its own, so a character whose bytes were split between
+  two chunks was replaced by the Unicode replacement character, the black diamond with a question
+  mark in it. Since that is still valid JSON nothing complained; the character simply arrived broken
+  in the chat. Every character outside plain ASCII was exposed: Chinese, the em dash, curly quotes,
+  Greek letters, accented Latin.
+- Measured on the real ChallengeNeurIPS26 transcript: one 3.17 MB history sent over a real socket
+  arrived in 407 chunks and lost 15 characters that way. The parser now keeps the trailing bytes of
+  an unfinished character until the rest of it arrives, and the same 3.17 MB comes back identical to
+  what was sent, with no replacement characters at all. Fed the same frame split at every one of its
+  byte offsets in turn, all of them now round-trip; 49 of 133 used to corrupt the text.
+- Nothing was lost on disk. The transcripts Claude Code writes were never touched by this — the
+  damage was on the way to the screen only, so the chats read correctly again once the app and the
+  session host are both running this version.
+- The same mistake was in two smaller places and is fixed there too: the backwards scan that finds a
+  chat's last prompt in a large transcript (a split character made that line unreadable and the
+  chat's time in the list came from an older prompt), and the update log, which shows the output of
+  the commands an update runs.
+
 ## 1.0.35 — 2026-09-17
 
 ### The chats get Claude Code's own recap, and the chat filter stays while you open results

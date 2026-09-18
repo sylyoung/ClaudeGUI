@@ -5,6 +5,7 @@
  * enough to stop it.
  */
 import type { Socket } from 'net'
+import { StringDecoder } from 'string_decoder'
 import type { AppSettings, SessionEvent } from '@shared/types'
 import type { RateLimitEventInfo } from './sessions/SessionRuntime'
 
@@ -63,12 +64,23 @@ export type ErrorFrame = { k: 'error'; e: string }
 
 export type Frame = HelloFrame | WelcomeFrame | RequestFrame | ResponseFrame | EventFrame | ErrorFrame
 
-/** Incremental newline-delimited JSON parser. */
+/**
+ * Incremental newline-delimited JSON parser.
+ *
+ * A socket hands over whatever bytes were ready, so a chunk can end anywhere — including in the
+ * middle of a character. Every character outside ASCII takes more than one byte in UTF-8, so
+ * decoding each chunk on its own replaces a character cut in half with the Unicode replacement
+ * character, and because that is still valid JSON the damage is never noticed: it simply arrives
+ * in the chat. A chat history is sent as one frame of many chunks, so a long conversation in
+ * Chinese, or one with dashes and quotation marks, loses a few characters every time it is opened.
+ * StringDecoder holds back the trailing bytes of an unfinished character until the rest of it comes.
+ */
 export class LineParser {
   private buf = ''
+  private readonly decoder = new StringDecoder('utf8')
   constructor(private onFrame: (f: Frame) => void, private onBad: (line: string, err: Error) => void) {}
   feed(chunk: Buffer | string): void {
-    this.buf += chunk.toString()
+    this.buf += typeof chunk === 'string' ? chunk : this.decoder.write(chunk)
     let idx: number
     while ((idx = this.buf.indexOf('\n')) >= 0) {
       const line = this.buf.slice(0, idx)
