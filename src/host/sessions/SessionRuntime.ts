@@ -6,8 +6,6 @@ import path from 'path'
 import readline from 'readline'
 import {
   getSessionInfo,
-  getSessionMessages,
-  getSubagentMessages,
   query,
   type Options,
   type PermissionMode as SdkPermissionMode,
@@ -40,6 +38,7 @@ import type {
   TextBlockView
 } from '@shared/types'
 import { TranscriptState, looksSynthetic, recapText } from './transcript'
+import { readSessionHistory, readSubagentHistory } from './history'
 import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
 import { splitList } from '@shared/util'
 
@@ -277,16 +276,14 @@ export class SessionRuntime {
   }
 
   private async loadHistory(): Promise<void> {
+    const mainFile = this.transcriptPath()
     try {
-      const entries = await getSessionMessages(this.record.claudeSessionId, {
-        dir: this.record.cwd,
-        includeSystemMessages: true
-      })
+      const read = await readSessionHistory(this.record.claudeSessionId, this.record.cwd, mainFile)
+      const entries = read.messages
       // Replay before any live message so ordering is preserved.
       const liveSnapshot = this.transcript.messages
       const wasEmpty = liveSnapshot.length === 0
       if (wasEmpty) {
-        const mainFile = path.join(projectDirFor(this.record.cwd), `${this.record.claudeSessionId}.jsonl`)
         const { stamps, recaps } = await readTranscriptIndex(mainFile)
         let ts = this.record.createdAt || Date.now()
         for (const e of entries) {
@@ -304,7 +301,9 @@ export class SessionRuntime {
         await this.loadSubagentHistory(ts)
         this.transcript.takeChanges()
       }
-      this.deps.log(`[session ${this.id}] history loaded: ${entries.length} entries`)
+      this.deps.log(
+        `[session ${this.id}] history loaded: ${entries.length} entries (transcript ${read.fileMB} MB${read.elsewhere ? ', read in its own process' : ''})`
+      )
       // What the sidebar shows of the chat: the recap if the chat ends on one, and otherwise the
       // last thing Claude said. Both come from the conversation itself, so a chat that has not run
       // in this process yet — every chat after the session host is restarted — is not a blank line.
@@ -372,8 +371,9 @@ export class SessionRuntime {
         const meta = JSON.parse(fs.readFileSync(path.join(subDir, f), 'utf8')) as { toolUseId?: string }
         const agentId = f.replace(/^agent-/, '').replace(/\.meta\.json$/, '')
         if (!meta.toolUseId || !this.transcript.hasTool(meta.toolUseId) || this.transcript.toolChildCount(meta.toolUseId) > 0) continue
-        const msgs = await getSubagentMessages(this.record.claudeSessionId, agentId, { dir: this.record.cwd })
-        const { stamps } = await readTranscriptIndex(path.join(subDir, f.replace(/\.meta\.json$/, '.jsonl')))
+        const subFile = path.join(subDir, f.replace(/\.meta\.json$/, '.jsonl'))
+        const msgs = await readSubagentHistory(this.record.claudeSessionId, agentId, this.record.cwd, subFile)
+        const { stamps } = await readTranscriptIndex(subFile)
         let ts = baseTs
         for (const m of msgs) {
           const real = stamps.get((m as { uuid: string }).uuid)

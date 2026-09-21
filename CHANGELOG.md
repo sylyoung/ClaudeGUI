@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.0.41 — 2026-09-21
+
+### A chat with a very large transcript no longer kills the session host
+
+- Report: "why cant ClaudeGUI use both GPT models and claude models? I started a GPT one, working
+  fine, and then a claude one, and then broke".
+- Mixing providers was not the cause. macOS kept the crash report: the session host process ran out
+  of JavaScript memory ("abort() called" from V8's out-of-memory handler) at 11:19:41, three minutes
+  after it started, and everything it owned went down with it — the app noticed it was gone and
+  started a new one, which is why all the chats stopped at once.
+- What it ran out of memory on: opening a chat makes Claude Code read that chat's history, and it
+  does so by going through the whole transcript file and keeping everything written since the last
+  compaction. The cost follows the size of the file, not the number of messages it gives back. Of
+  the chats opened in those three minutes, one had a transcript of 1.2 GB (TDBRAIN) and two of about
+  340 MB (MEGNet and this one); reading the 1.2 GB one alone takes about 2.7 GB and returns six
+  messages. The session host cannot have more than about 4 GB, and that ceiling cannot be raised —
+  Electron builds V8 with compressed pointers, which caps it — so a few of those reads next to each
+  other went through it.
+- A transcript larger than 64 MB is now read in a separate process that exists only for that read,
+  so the memory it needs is given back to the system when it exits and the session host only ever
+  receives the messages themselves. No two history reads run at the same time either, whatever their
+  size, so their peaks cannot add up.
+- Measured on the same chats: opening all six at once used to take gigabytes inside the host; it now
+  costs it 204 MB at its highest, and every chat came back with exactly the history it had before.
+- The host log now says how big the transcript was and where it was read, for example
+  "history loaded: 6 entries (transcript 1179 MB, read in its own process)".
+
 ## 1.0.40 — 2026-09-18
 
 ### The recap is written when a chat finishes working out of sight, and it is kept

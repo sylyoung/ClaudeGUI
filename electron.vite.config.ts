@@ -8,8 +8,13 @@ export default defineConfig({
     resolve: { alias: { '@shared': resolve('src/shared') } },
     build: {
       rollupOptions: {
-        // index = Electron main process, host = detached session host (plain Node, ELECTRON_RUN_AS_NODE)
-        input: { index: resolve('src/main/index.ts'), host: resolve('src/host/index.ts') },
+        // index = Electron main process, host = detached session host (plain Node, ELECTRON_RUN_AS_NODE),
+        // historyReader = short-lived process the host starts to read one large transcript
+        input: {
+          index: resolve('src/main/index.ts'),
+          host: resolve('src/host/index.ts'),
+          historyReader: resolve('src/host/historyReader.ts')
+        },
         output: { format: 'es', entryFileNames: '[name].mjs', chunkFileNames: 'chunks/[name]-[hash].mjs' }
       }
     }
