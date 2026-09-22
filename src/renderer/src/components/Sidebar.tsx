@@ -282,6 +282,10 @@ export function Sidebar() {
   const dragRef = useRef<{ item: DragItem; startX: number; startY: number; active: boolean; pointerId: number; el: HTMLElement } | null>(null)
   const posRef = useRef({ x: 0, y: 0 })
   const suppressClick = useRef(false)
+  /** Takes the window listeners of the press that is going on down again; null when none are up. */
+  const endDrag = useRef<(() => void) | null>(null)
+  /** The newest finishDrag, so a listener put up on the press still commits with fresh state. */
+  const finishRef = useRef<(commit: boolean) => void>(() => {})
 
   const hitTest = useCallback(
     (x: number, y: number, item: DragItem): DropTarget | null => {
@@ -334,6 +338,27 @@ export function Sidebar() {
     const t = e.target as HTMLElement
     if (t.closest('button, input, [contenteditable="true"]')) return
     dragRef.current = { item, startX: e.clientX, startY: e.clientY, active: false, pointerId: e.pointerId, el: e.currentTarget as HTMLElement }
+    // The end of a drag must not depend on where the button comes up: a row only hears the release
+    // while it still holds the pointer, and it loses it when the list redraws the row away, while
+    // a release over the empty space below the sessions reaches no row at all. A drag that never
+    // ends leaves the drop target lit and the row it carries half transparent for good, so the
+    // window listens for the end as well — including losing the window, which is where the release
+    // goes when the pointer leaves the app. These are put up with the press rather than when the
+    // drag starts, so that a flick quicker than one redraw is caught too.
+    endDrag.current?.()
+    const onUp = (ev: PointerEvent) => {
+      if (dragRef.current?.pointerId === ev.pointerId) finishRef.current(true)
+    }
+    const onLost = (): void => finishRef.current(false)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onLost)
+    window.addEventListener('blur', onLost)
+    endDrag.current = () => {
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onLost)
+      window.removeEventListener('blur', onLost)
+      endDrag.current = null
+    }
   }
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current
@@ -355,6 +380,7 @@ export function Sidebar() {
   const finishDrag = (commit: boolean) => {
     const d = dragRef.current
     dragRef.current = null
+    endDrag.current?.()
     document.body.classList.remove('is-dragging')
     if (!d?.active) return
     suppressClick.current = true
@@ -383,6 +409,7 @@ export function Sidebar() {
       return null
     })
   }
+  finishRef.current = finishDrag
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current
     if (!d || d.pointerId !== e.pointerId) return

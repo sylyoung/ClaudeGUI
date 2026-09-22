@@ -63,6 +63,8 @@ export class TranscriptState {
   /** uuids of user messages the GUI itself inserted (so replays are not duplicated) */
   private localUserUuids = new Set<string>()
   private orphanResults = new Map<string, { content: string; images?: ImageAttachment[]; isError: boolean; structured?: unknown; ts: number }>()
+  /** ids of rows a replay hands back out of the chat's order; settleReplayOrder() puts them right */
+  private outOfOrder: string[] = []
   private seq = 0
 
   reset(): void {
@@ -74,6 +76,7 @@ export class TranscriptState {
     this.assistants.clear()
     this.finalized.clear()
     this.orphanResults.clear()
+    this.outOfOrder = []
   }
 
   takeChanges(): { changed: ChatMessage[]; removed: string[] } {
@@ -220,6 +223,30 @@ export class TranscriptState {
     this.messages.splice(index, 0, msg)
     this.topById.set(msg.id, msg)
     this.touch(msg)
+  }
+
+  /** Where a row belongs by its own time: after the last row that is not younger than it. */
+  private indexForTime(ts: number): number {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i].ts <= ts) return i + 1
+    }
+    return 0
+  }
+
+  /**
+   * Puts the rows that did not arrive in the chat's own order where their time places them, once
+   * the whole history has been read. Claude Code hands a compaction's summary back first, before
+   * the messages the compaction kept, so the notice that carries it would otherwise stand above
+   * the answer that came before the compaction instead of where the chat was actually cut.
+   */
+  settleReplayOrder(): void {
+    for (const id of this.outOfOrder) {
+      const idx = this.messages.findIndex((m) => m.id === id)
+      if (idx < 0) continue
+      const [msg] = this.messages.splice(idx, 1)
+      this.insertTop(msg, this.indexForTime(msg.ts))
+    }
+    this.outOfOrder = []
   }
 
   removeMessage(id: string): void {
@@ -551,10 +578,14 @@ export class TranscriptState {
         return true
       }
       // Replayed history: the CLI does not repeat its compaction notice, so the chat gets one of
-      // its own instead of a wall of text that looks like a prompt the user typed.
+      // its own instead of a wall of text that looks like a prompt the user typed. It goes in by
+      // its own time, not at the end: Claude Code hands the summary back before the messages the
+      // compaction kept, so appending it would put the notice — and the whole summary with it —
+      // above the answer that came before the compaction instead of where the chat was cut.
       const id = uuid ?? this.nextId('sys')
       if (!this.topById.has(id)) {
-        this.addTop({ kind: 'system', id, ts, subtype: 'compact_boundary', level: 'notice', text: 'Context compacted earlier in this chat', data: { summary: text } })
+        this.addTop({ kind: 'system', id, ts, subtype: 'compact_boundary', level: 'notice', text: 'Context compacted', data: { summary: text } })
+        this.outOfOrder.push(id)
       }
       return true
     }

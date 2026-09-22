@@ -3,7 +3,6 @@ import { randomUUID } from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import readline from 'readline'
 import {
   getSessionInfo,
   query,
@@ -292,6 +291,7 @@ export class SessionRuntime {
           this.transcript.applyHistoryEntry(e as never, ts)
           ts += 1
         }
+        this.transcript.settleReplayOrder()
         this.transcript.insertRecaps(recaps)
         // The recap this app asked for is not in Claude Code's transcript (the side-question call
         // leaves nothing behind), so it is put back from the record, in its place in the chat.
@@ -1774,26 +1774,35 @@ export interface TranscriptIndex {
   recaps: TranscriptRecap[]
 }
 
+/** A line longer than this can only be an answer or a tool result, never a recap or a compaction
+ *  notice, so the middle of it is thrown away as the file is read instead of being held in one
+ *  piece: it is the length of the lines, not the length of the file, that costs the memory. */
+const INDEX_LINE_MAX = 1024 * 1024
+/** How much of such a line is kept: its end, which is where the uuid and the timestamp are. */
+const INDEX_LINE_TAIL = 16 * 1024
+
 /**
  * The timestamp of each entry of a transcript, and the recaps in it, in one pass over the file.
  * Claude Code hands a chat's history back without the entries' own timestamps and without the
  * recaps at all (a recap arrives as a system message whose file entry carries the text, which the
  * history reader does not pass on), so both are read from the transcript itself.
+ *
+ * The file is read in pieces and no line is ever held whole beyond a megabyte, so a chat of any
+ * size can be indexed: a 346 MB transcript costs about 0.7 s and a few megabytes of memory. It
+ * used to be given up on beyond 200 MB, which left every row of the largest chats without a time
+ * of its own — they all showed the moment the chat was created.
  */
 export async function readTranscriptIndex(file: string): Promise<TranscriptIndex> {
   const stamps = new Map<string, number>()
   const recaps: TranscriptRecap[] = []
-  let size = 0
   try {
-    size = fs.statSync(file).size
+    fs.statSync(file)
   } catch {
     return { stamps, recaps }
   }
-  if (size > 200 * 1024 * 1024) return { stamps, recaps }
-  const rl = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
   const re = /"uuid":"([0-9a-f-]{36})"[^\n]*?"timestamp":"([^"]+)"|"timestamp":"([^"]+)"[^\n]*?"uuid":"([0-9a-f-]{36})"/
-  for await (const line of rl) {
-    if (line.includes('"subtype":"away_summary"')) {
+  const takeLine = (line: string, whole: boolean): void => {
+    if (whole && line.includes('"subtype":"away_summary"')) {
       try {
         const entry = JSON.parse(line) as { uuid?: string; content?: string; timestamp?: string }
         const t = Date.parse(entry.timestamp ?? '')
@@ -1802,14 +1811,31 @@ export async function readTranscriptIndex(file: string): Promise<TranscriptIndex
         // Transcripts are appended line by line, so the last line can be half written.
       }
     }
-    if (!line.includes('"timestamp"')) continue
+    if (!line.includes('"timestamp"')) return
     const m = re.exec(line)
-    if (!m) continue
+    if (!m) return
     const uuid = m[1] ?? m[4]
-    const iso = m[2] ?? m[3]
-    const t = Date.parse(iso)
+    const t = Date.parse(m[2] ?? m[3])
     if (uuid && !Number.isNaN(t)) stamps.set(uuid, t)
   }
+  let rest = Buffer.alloc(0)
+  let whole = true
+  for await (const chunk of fs.createReadStream(file) as AsyncIterable<Buffer>) {
+    let from = 0
+    for (let nl = chunk.indexOf(10, from); nl !== -1; nl = chunk.indexOf(10, from)) {
+      const part = chunk.subarray(from, nl)
+      takeLine((rest.length ? Buffer.concat([rest, part]) : part).toString('utf8'), whole)
+      rest = Buffer.alloc(0)
+      whole = true
+      from = nl + 1
+    }
+    rest = Buffer.concat([rest, chunk.subarray(from)])
+    if (rest.length > INDEX_LINE_MAX) {
+      rest = Buffer.from(rest.subarray(rest.length - INDEX_LINE_TAIL))
+      whole = false
+    }
+  }
+  if (rest.length) takeLine(rest.toString('utf8'), whole)
   return { stamps, recaps }
 }
 

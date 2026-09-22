@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.0.43 — 2026-09-22
+
+### A drag in the sidebar always ends, and a compaction stands where it happened
+
+- Reports: "there is a blue box over all pinned. and claudegui chat is greyed out even though it is
+  active. also I could not see the last /compact chat text".
+- The blue box and the faded row were one thing: a drag that never ended. A session row only heard
+  the release while it still held the pointer, and nothing else in the sidebar listened, so letting
+  go over the empty space below the sessions — or after the list had redrawn the row away — left
+  the drag running with nothing to end it. The section under the pointer stayed lit as the drop
+  target, which is the blue box over the pinned sessions, and the row being carried stayed at a
+  third of its opacity, which is the greyed-out chat. Reproduced in a dev instance with exactly
+  that picture, and gone with the fix.
+- The window now ends a drag as well — on the release, on a cancelled pointer, and on losing the
+  window, which is where the release goes when the pointer leaves the app. The listeners go up with
+  the press rather than when the drag starts, so a flick quicker than one redraw is caught too.
+  Dropping a chat on the pinned section still pins it, a plain click still opens a chat, and
+  leaving the window in the middle of a drag now cancels it instead of committing it.
+- The compaction was in the chat, but at the top of it. Claude Code hands a chat's history back
+  with the summary first, before the messages the compaction kept, and the app added rows in the
+  order they arrived — so the "Context compacted" row, and the whole summary folded into it, stood
+  above the answer that came before the compaction instead of under the /compact that caused it.
+  Rows that arrive out of the chat's order are now put in their place by their own time once the
+  whole history has been read.
+- That only works if the rows have their times, and the largest chats had none: a transcript over
+  200 MB was given up on rather than indexed, so every row in it showed the moment the chat was
+  created. The index no longer has a size limit — the file is read in pieces and no line is ever
+  held whole beyond a megabyte, since it is the length of the lines, not of the file, that costs
+  the memory. The 346 MB transcript of the ClaudeGUI chat indexes in 0.7 s in a few megabytes.
+- Checked on that chat itself: before, the compaction notice came first and every row carried the
+  chat's creation time; after, the rows carry their real times and the notice sits between the
+  /compact at 01:04 and what followed at 05:17, with "what Claude kept" opening the summary.
+
 ## 1.0.42 — 2026-09-22
 
 ### The ChatGPT login is renewed by the app, and a chat's name keeps the whole of its own line
