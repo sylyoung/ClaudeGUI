@@ -89,7 +89,11 @@ const api = {
   },
   usage: {
     get: () => invoke<UsageState>('usage:get'),
-    refresh: () => invoke<UsageState>('usage:refresh')
+    refresh: () => invoke<UsageState>('usage:refresh'),
+    /** Renew the ChatGPT login the Codex CLI stores, without waiting for it to expire. */
+    renewChatGpt: () => invoke<UsageState>('usage:renew-chatgpt'),
+    /** Start the GPT bridge's own browser sign-in, for when it can no longer renew itself. */
+    signInBridge: () => invoke<{ message: string }>('usage:bridge-sign-in')
   },
   /** Claude Code's login: whether it can authenticate, and signing it in again. */
   auth: {

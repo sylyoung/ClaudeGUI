@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, ArrowUpCircle, Gauge, RefreshCw, RotateCw } from 'lucide-react'
+import { AlertTriangle, ArrowUpCircle, Gauge, KeyRound, RefreshCw, RotateCw } from 'lucide-react'
 import type { UsageProviderId, UsageProviderState, UsageSnapshot, UsageWindow } from '@shared/types'
 import { useStore } from '@/store'
 import { Popover } from '../common/Popover'
@@ -140,6 +140,83 @@ function SubscriptionSwitch({ value, onChange }: { value: UsageProviderId; onCha
   )
 }
 
+/** How long a login still has, in the plain words used elsewhere in this panel. */
+function validFor(expiresAt: number | undefined): string {
+  if (!expiresAt) return 'no expiry reported'
+  return expiresAt <= Date.now() ? 'expired' : `valid ${timeUntil(expiresAt)}`.replace('valid in', 'valid for')
+}
+
+/**
+ * The two ChatGPT logins a GPT chat rests on. They are separate: the plan limits above are read
+ * with the one the Codex CLI stores, while the chats themselves talk to the local bridge, which
+ * keeps a login of its own. The app renews the first by itself; the second renews itself and can
+ * only be repaired by its own sign-in, so each row carries the action that belongs to it.
+ */
+function ChatGptLogins() {
+  const login = useStore((s) => s.usage.chatgpt)
+  const [note, setNote] = useState<string | null>(null)
+  const [busy, setBusy] = useState<'codex' | 'bridge' | null>(null)
+  useTick(10_000)
+  if (!login) return null
+  const { codex, bridge } = login
+  const renew = (): void => {
+    setBusy('codex')
+    setNote(null)
+    void window.api.usage
+      .renewChatGpt()
+      .then(() => setNote('The Codex login was renewed.'))
+      .catch((err: Error) => setNote(err.message))
+      .finally(() => setBusy(null))
+  }
+  const signIn = (): void => {
+    setBusy('bridge')
+    setNote(null)
+    void window.api.usage
+      .signInBridge()
+      .then((r) => setNote(r.message))
+      .catch((err: Error) => setNote(err.message))
+      .finally(() => setBusy(null))
+  }
+  const stale = (at: number | undefined): boolean => !!at && at - Date.now() < 60 * 60_000
+  return (
+    <div className="logins">
+      <div className="logins-head">
+        <KeyRound size={12} />
+        <b>ChatGPT logins</b>
+        <span className="faint">the limits and the chats use different ones</span>
+      </div>
+      <div className={`login-row ${codex.error || stale(codex.expiresAt) ? 'attention' : ''}`}>
+        <span className="l-name">
+          Codex login <span className="faint">— what the limits above are read with, and what the Codex CLI uses</span>
+        </span>
+        <span className="l-state">
+          {codex.present ? validFor(codex.expiresAt) : 'none stored'}
+          {codex.lastRefresh ? ` · renewed ${relativeTime(codex.lastRefresh)}` : ''}
+          {codex.renewing ? ' · renewing…' : ''}
+          {codex.error ? ` · ${codex.error}` : ''}
+        </span>
+        <button className="btn sm" onClick={renew} disabled={busy !== null || codex.renewing || !codex.present} data-tip="Renew this login now. The app also does it by itself a day before it would expire, and again if ChatGPT refuses it.">
+          <RefreshCw size={11} className={busy === 'codex' || codex.renewing ? 'spin' : ''} /> Renew now
+        </button>
+      </div>
+      <div className={`login-row ${bridge.error || stale(bridge.expiresAt) ? 'attention' : ''}`}>
+        <span className="l-name">
+          GPT bridge <span className="faint">— its own login, which the GPT chats themselves talk through</span>
+        </span>
+        <span className="l-state">
+          {bridge.error ? bridge.error : validFor(bridge.expiresAt)}
+          {bridge.storage && !bridge.error ? ` · kept in the ${bridge.storage}` : ''}
+          {bridge.signingIn ? ' · signing in…' : ''}
+        </span>
+        <button className="btn sm" onClick={signIn} disabled={busy !== null || bridge.signingIn} data-tip="Sign the bridge in again in the browser. It renews itself while it runs; this is for when it no longer can.">
+          Sign in…
+        </button>
+      </div>
+      {note && <div className="l-note faint">{note}</div>}
+    </div>
+  )
+}
+
 /**
  * The full breakdown. Rendered in the popover and in Settings → Usage; the settings dialog passes
  * its draft through the optional props so the switch there is saved with the rest of the page.
@@ -186,6 +263,7 @@ export function UsageDetails({
           )}
         </div>
       )}
+      {id === 'codex' && <ChatGptLogins />}
       {usage.windows.length === 0 && !usage.error && <div className="faint">No limit information yet. Limits appear after the first check or the first API response.</div>}
       {usage.windows.length > 0 && <ScaleLegend warn={warn} />}
       {usage.windows.map((w) => (

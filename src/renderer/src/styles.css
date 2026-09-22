@@ -200,7 +200,7 @@ a:hover { text-decoration: underline; }
 .group-header:hover { color: var(--text-dim); }
 .group-header .count { margin-left: auto; font-weight: 400; }
 .session-item {
-  display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; grid-template-rows: auto auto; column-gap: 8px; row-gap: 2px;
+  display: grid; grid-template-columns: 14px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 8px; row-gap: 2px;
   padding: var(--row-pad) 8px; border-radius: 7px; cursor: pointer; align-items: center; margin-bottom: 1px; min-width: 0;
 }
 .session-item:hover { background: var(--bg-hover); }
@@ -208,20 +208,25 @@ a:hover { text-decoration: underline; }
 .session-item .dot { grid-row: 1 / span 2; }
 /* The state mark sits beside the whole two-line row, centred on it — not on the title alone. */
 .session-item > .mark { grid-row: 1 / span 2; align-self: center; }
+/* Each of the two lines gets the whole width of the row and shares it only with what stands on the
+   same line. They used to share one column for what sits on the right, which meant the wider of the
+   two decided for both: with tall chips on the second line the chat's name was cut short on the
+   first while the space taken from it stayed empty. */
+.session-item .row-line { grid-column: 2; display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* First line: the chat's name, then the model it runs on. The name gives way first when the row is
    too narrow, because the model name is short and is what tells the chats of a folder apart. */
-.session-item .title-line { grid-column: 2; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.session-item .title-line { flex: 1 1 auto; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .session-item .title-line .inline-edit { flex: 1; min-width: 0; }
 .session-item .name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .session-item .model { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; white-space: nowrap; }
 .session-item .model.flagship { font-weight: 700; }
-.session-item .meta { grid-column: 2; font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.session-item .meta { flex: 1 1 auto; font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .session-item .meta b { color: var(--amber); font-weight: 600; }
 /* Marks the sentence on a chat's second line as Claude Code's recap of it rather than its last
    reply — the same sparkle the recap card in the chat carries. */
 .session-item .meta .recap-mark { color: var(--accent); vertical-align: -1px; margin-right: 3px; }
-.session-item .right { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-faint); }
-.session-item .indicators { grid-column: 3; display: flex; gap: 4px; justify-content: flex-end; }
+.session-item .right { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-faint); }
+.session-item .indicators { flex: 0 0 auto; margin-left: auto; display: flex; gap: 4px; justify-content: flex-end; }
 .ind { display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; color: var(--text-faint); padding: 0 4px; border-radius: 4px; background: var(--bg-elev2); border: 1px solid var(--border); font-family: var(--mono); }
 .ind.ctx.ok { color: var(--ctx-ok); }
 .ind.ctx.warn { color: var(--ctx-warn); }
@@ -496,6 +501,18 @@ code .file-link { border: none; background: none; }
 .usage-row.sev-unknown .u-val { color: var(--text-faint); }
 .u-sub { font-size: 11.5px; color: var(--text-faint); }
 .u-footer { font-size: 11px; line-height: 1.5; border-top: 1px solid var(--border); padding-top: 8px; }
+/* The two ChatGPT logins: one row each, with what it is, how long it still has, and the button that
+   belongs to it. A row turns amber when its login is about to lapse or could not be read. */
+.logins { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+.logins-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.logins-head .faint { font-size: 11px; }
+.login-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center; }
+.login-row .l-name { grid-column: 1; font-weight: 500; }
+.login-row .l-name .faint { font-weight: 400; }
+.login-row .l-state { grid-column: 1; font-size: 11.5px; color: var(--text-faint); }
+.login-row .btn { grid-column: 2; grid-row: 1 / span 2; }
+.login-row.attention .l-state { color: var(--ctx-warn); }
+.l-note { font-size: 11.5px; }
 
 /* The keyboard-shortcut list: one key and its plain-language meaning per line. */
 .shortcuts { display: flex; flex-direction: column; gap: 16px; overflow: auto; }

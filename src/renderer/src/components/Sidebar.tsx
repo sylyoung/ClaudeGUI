@@ -460,60 +460,67 @@ export function Sidebar() {
         data-tip={tip}
       >
         <StateMark state={vs.key} />
-        <span className="title-line">
-          {renamingSession?.id === r.id ? (
-            <input
-              className="inline-edit"
-            autoFocus
-              value={renamingSession.name}
-              onChange={(e) => setRenamingSession({ id: r.id, name: e.target.value })}
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              onBlur={() => void commitSessionRename()}
-              onKeyDown={(e) => {
-                if (isComposing(e)) return
-                if (e.key === 'Enter') void commitSessionRename()
-                if (e.key === 'Escape') setRenamingSession(null)
-              }}
-            />
-          ) : (
-            <>
-              <span
-                className="name"
-                /* In the recent view the groups are not visible as sections, so the group's colour is
-                   carried by the chat name itself instead of a group tag on the second line. */
-                style={view === 'recent' && gColor ? { color: gColor, opacity: vs.key === 'stopped' ? 0.7 : undefined } : undefined}
-                onDoubleClick={() => setRenamingSession({ id: r.id, name: r.title })}
-              >
-                {r.title}
+        {/* Each line is a row of its own, so the width one of them needs is not taken from the
+            other: while the two shared a column, wide chips on the second line cut the chat's name
+            on the first and left the space they took from it empty. */}
+        <span className="row-line">
+          <span className="title-line">
+            {renamingSession?.id === r.id ? (
+              <input
+                className="inline-edit"
+                autoFocus
+                value={renamingSession.name}
+                onChange={(e) => setRenamingSession({ id: r.id, name: e.target.value })}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onBlur={() => void commitSessionRename()}
+                onKeyDown={(e) => {
+                  if (isComposing(e)) return
+                  if (e.key === 'Enter') void commitSessionRename()
+                  if (e.key === 'Escape') setRenamingSession(null)
+                }}
+              />
+            ) : (
+              <>
+                <span
+                  className="name"
+                  /* In the recent view the groups are not visible as sections, so the group's colour is
+                     carried by the chat name itself instead of a group tag on the second line. */
+                  style={view === 'recent' && gColor ? { color: gColor, opacity: vs.key === 'stopped' ? 0.7 : undefined } : undefined}
+                  onDoubleClick={() => setRenamingSession({ id: r.id, name: r.title })}
+                >
+                  {r.title}
+                </span>
+                {/* The model stands beside the chat's name: the logo of the company it comes from, then
+                    its name in the ordinary text colour, in bold when it is that company's best model.
+                    The second line is left to the chat itself. */}
+                <span className={`model ${isFlagshipModel(modelId) ? 'flagship' : ''}`}>
+                  <ModelIcon model={modelId} />
+                  {modelName}
+                </span>
+              </>
+            )}
+          </span>
+          <span className="right">
+            {r.pinned && <Pin size={11} className="pin" />}
+            {l?.unread ? <span className="badge" data-tip={`${l.unread} finished turn${l.unread === 1 ? '' : 's'} you have not looked at`}>{l.unread}</span> : null}
+            {hk && <span className="hotkey-hint">⌘{hk}</span>}
+            <span data-tip={`Your last prompt: ${formatDateTime(lastPrompt)}`}>{timeAgo(lastPrompt)}</span>
+          </span>
+        </span>
+        <span className="row-line">
+          <span className="meta">
+            <span className={`state-text vs-${vs.key}`}>{busy ? (busy === 'start' ? 'starting…' : 'stopping…') : vs.label}</span>
+            {!busy && snapshot && (
+              <span className="faint">
+                {' · '}
+                {recap && <Sparkles size={10} className="recap-mark" />}
+                {snapshot}
               </span>
-              {/* The model stands beside the chat's name: the logo of the company it comes from, then
-                  its name in the ordinary text colour, in bold when it is that company's best model.
-                  The second line is left to the chat itself. */}
-              <span className={`model ${isFlagshipModel(modelId) ? 'flagship' : ''}`}>
-                <ModelIcon model={modelId} />
-                {modelName}
-              </span>
-            </>
-          )}
+            )}
+          </span>
+          <Indicators live={l} />
         </span>
-        <span className="right">
-          {r.pinned && <Pin size={11} className="pin" />}
-          {l?.unread ? <span className="badge" data-tip={`${l.unread} finished turn${l.unread === 1 ? '' : 's'} you have not looked at`}>{l.unread}</span> : null}
-          {hk && <span className="hotkey-hint">⌘{hk}</span>}
-          <span data-tip={`Your last prompt: ${formatDateTime(lastPrompt)}`}>{timeAgo(lastPrompt)}</span>
-        </span>
-        <span className="meta">
-          <span className={`state-text vs-${vs.key}`}>{busy ? (busy === 'start' ? 'starting…' : 'stopping…') : vs.label}</span>
-          {!busy && snapshot && (
-            <span className="faint">
-              {' · '}
-              {recap && <Sparkles size={10} className="recap-mark" />}
-              {snapshot}
-            </span>
-          )}
-        </span>
-        <Indicators live={l} />
       </div>
     )
   }

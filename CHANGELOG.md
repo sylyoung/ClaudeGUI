@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.0.42 — 2026-09-22
+
+### The ChatGPT login is renewed by the app, and a chat's name keeps the whole of its own line
+
+- Reports: "refresh the chatgpt token automatically, or add a button in the app for it", and
+  "the chat name would get shrinked when model name is too long, but weirdly that the full first
+  line is not taken, for example check Interview with GPT-5.6".
+- Why the ChatGPT login lapsed: a Codex access token lives exactly ten days, the Codex CLI renews it
+  while it runs, and ClaudeGUI only ever read it. The one stored on 12 September reached its limit
+  at about 00:24 on 22 September, which is the minute the app first logged "ChatGPT did not accept
+  the stored Codex login (HTTP 401)" and the Codex CLI asked to be signed in again.
+- The app now renews that login itself: a day before it would expire, and again if ChatGPT refuses
+  it, in which case the question is simply asked once more with the new token. It is the same
+  exchange the CLI performs — the refresh token is presented to auth.openai.com with Codex's own
+  client id, over the route the GPT chats take — and the file is replaced in one step, only after a
+  complete answer has arrived, so a failed renewal leaves the previous login untouched.
+- Plan usage limits → ChatGPT now shows both logins a GPT chat rests on, because they are separate
+  and expire apart: the Codex login the limits are read with (with a "Renew now" button), and the
+  local bridge's own login, which the chats themselves talk through and which is kept in the macOS
+  Keychain (with a "Sign in…" button for when it can no longer renew itself).
+- The chat rows in the sidebar were two lines sharing one column for whatever stands on the right,
+  so the wider of the two decided for both: on a row with context or task chips on the second line,
+  the first line lost exactly that width, the chat's name was cut to make room, and the space taken
+  from it stayed empty after the time. Measured on the Interview chat on GPT-5.6 Sol (1M) in a
+  270-pixel sidebar: the first line had 90 pixels for the name and the model with 62 pixels unused,
+  and the name was squeezed to nothing. Each line is now a row of its own: 153 pixels, nothing
+  unused, and the name keeps its share.
+
 ## 1.0.41 — 2026-09-21
 
 ### A chat with a very large transcript no longer kills the session host

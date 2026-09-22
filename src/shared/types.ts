@@ -638,6 +638,36 @@ export interface UsageProviderState {
 export interface UsageState {
   /** One entry per subscription. Both are read on every check, so switching costs nothing. */
   providers: UsageProviderState[]
+  /** The logins the GPT chats depend on; absent until the first check has read them. */
+  chatgpt?: ChatGptLoginState
+}
+
+/**
+ * The two ChatGPT logins behind a GPT chat, which are kept in different places and expire apart.
+ *
+ * `codex` is the one the Codex CLI stores in ~/.codex/auth.json; the app reads it for the ChatGPT
+ * plan limits and renews it before its ten days are up. `bridge` is the one the local bridge keeps
+ * for itself (macOS Keychain) and renews on its own — the chats use that one, and when it can no
+ * longer renew it only its own browser sign-in brings it back.
+ */
+export interface ChatGptLoginState {
+  codex: {
+    present: boolean
+    /** When the stored access token stops being accepted (epoch ms). */
+    expiresAt?: number
+    lastRefresh?: number
+    renewing?: boolean
+    /** Why the last renewal did not happen. */
+    error?: string
+  }
+  bridge: {
+    path?: string
+    account?: string
+    expiresAt?: number
+    storage?: string
+    signingIn?: boolean
+    error?: string
+  }
 }
 
 // ---------------------------------------------------------------------------

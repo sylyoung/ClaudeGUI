@@ -110,6 +110,8 @@ export function registerIpc(ctx: IpcContext): void {
   // ---- plan usage
   handle('usage:get', () => ctx.usage.state())
   handle('usage:refresh', () => ctx.usage.refresh('manual'))
+  handle('usage:renew-chatgpt', () => ctx.usage.renewChatGpt())
+  handle('usage:bridge-sign-in', () => ctx.usage.signInGptBridge())
 
   // ---- Claude Code login
   handle('auth:state', () => ctx.auth.state)

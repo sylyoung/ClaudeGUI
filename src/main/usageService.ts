@@ -1,10 +1,9 @@
 import { spawn } from 'child_process'
-import fs from 'fs'
-import os from 'os'
-import path from 'path'
-import type { AuthState, SdkUsage, UsageProviderId, UsageSeverity, UsageSnapshot, UsageState, UsageWindow } from '@shared/types'
+import type { AuthState, ChatGptLoginState, SdkUsage, UsageProviderId, UsageSeverity, UsageSnapshot, UsageState, UsageWindow } from '@shared/types'
 import { emptyUsageSnapshot } from '@shared/defaults'
 import { readStoredLogin } from './claudeLogin'
+import { codexAuthFile, readCodexLogin, renewCodexLogin, type CodexLogin } from './codexLogin'
+import { readBridgeLogin, signInBridge } from './gptBridge'
 import { proxyOf } from './gptRoute'
 
 /**
@@ -43,6 +42,13 @@ export interface UsageDeps {
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+/**
+ * How early the Codex login is renewed. Its token lives ten days and the app is often the only
+ * thing that touches it, so renewing a day ahead is what keeps it from lapsing between two uses.
+ */
+const RENEW_BEFORE_MS = 24 * 60 * 60_000
+/** The bridge's own login is read by running it, so not on every check. */
+const BRIDGE_CHECK_MS = 10 * 60_000
 /** Do not hammer the endpoint when many turns finish at once. */
 const MIN_INTERVAL_MS = 20_000
 
@@ -50,6 +56,10 @@ export class UsageService {
   private snapshots: Record<UsageProviderId, UsageSnapshot> = { claude: emptyUsageSnapshot(), codex: emptyUsageSnapshot() }
   private timer: NodeJS.Timeout | null = null
   private inflight: Promise<UsageState> | null = null
+  /** The two logins the GPT chats depend on, as last read. */
+  private chatgpt: ChatGptLoginState = { codex: { present: false }, bridge: {} }
+  private bridgeReadAt = 0
+  private renewing: Promise<CodexLogin | null> | null = null
 
   constructor(private deps: UsageDeps) {}
 
@@ -59,7 +69,8 @@ export class UsageService {
       providers: [
         { id: 'claude', label: 'Claude', snapshot: this.snapshots.claude },
         { id: 'codex', label: 'ChatGPT', snapshot: this.snapshots.codex }
-      ]
+      ],
+      chatgpt: this.chatgpt
     }
   }
 
@@ -175,33 +186,46 @@ export class UsageService {
 
   // --------------------------------------------------------------- chatgpt
 
+  /** The GPT route (the launcher's proxy) laid over the shell environment, which is Claude's path. */
+  private async codexEnv(): Promise<Record<string, string>> {
+    const shell = await this.deps.getEnv()
+    const via = this.deps.gptRoute()
+    return via ? { ...shell, ...via } : shell
+  }
+
   private async readCodex(warn: number, opts: { refreshRoute: boolean }): Promise<UsageSnapshot> {
     const prev = this.snapshots.codex
-    const login = readCodexLogin()
+    let login = readCodexLogin()
+    this.noteCodexLogin(login)
     if (!login) {
-      return { ...prev, error: 'The Codex CLI has no login stored here (~/.codex/auth.json), so the ChatGPT plan limits cannot be read. Run "codex login" to add one.' }
+      return { ...prev, error: `The Codex CLI has no login stored here (${codexAuthFile()}), so the ChatGPT plan limits cannot be read. Run "codex login" to add one.` }
     }
-    const headers = [
-      `Authorization: Bearer ${login.accessToken}`,
-      'Accept: application/json',
-      'User-Agent: codex_cli_rs/0.1.0',
-      'originator: codex_cli_rs'
-    ]
-    if (login.accountId) headers.push(`chatgpt-account-id: ${login.accountId}`)
-    // The GPT route (the launcher's proxy) over the shell's environment, which belongs to the Claude
-    // path. The launcher may have moved to another proxy since the host last ran it, so an explicit
-    // check that fails at the network level runs it once and tries again with what it sets.
+    // Renewed before it can lapse, not after: the token lives ten days, and a day's margin means a
+    // stretch without the CLI never ends in ChatGPT refusing it.
+    if (login.expiresAt && login.expiresAt - Date.now() < RENEW_BEFORE_MS) login = (await this.renewCodexLogin('it expires soon')) ?? login
+    // The launcher may have moved to another proxy since the host last ran it, so an explicit check
+    // that fails at the network level runs it once and tries again with what it sets.
     const shell = await this.deps.getEnv()
     let via = this.deps.gptRoute()
     let env = via ? { ...shell, ...via } : shell
-    let res = await curlJson(CODEX_USAGE_URL, headers, env, { forceProxy: true })
+    let res = await this.askCodexUsage(login, env)
     if (res.status === 0 && opts.refreshRoute) {
       via = await this.deps.refreshGptRoute()
       if (via) {
         env = { ...shell, ...via }
-        res = await curlJson(CODEX_USAGE_URL, headers, env, { forceProxy: true })
+        res = await this.askCodexUsage(login, env)
       }
     }
+    // A refused token is renewed once and the question asked again, which is the whole point of
+    // holding the refresh token: the user sees neither the refusal nor a sign-in prompt.
+    if (res.status === 401 || res.status === 403) {
+      const renewed = await this.renewCodexLogin(`ChatGPT refused it (HTTP ${res.status})`)
+      if (renewed) {
+        login = renewed
+        res = await this.askCodexUsage(login, env)
+      }
+    }
+    void this.readBridge(env)
     if (res.status === 200 && res.json) {
       const json = res.json as Record<string, unknown>
       return {
@@ -211,7 +235,10 @@ export class UsageService {
         subscription: typeof json.plan_type === 'string' ? json.plan_type : prev.subscription
       }
     }
-    if (res.status === 401 || res.status === 403) return { ...prev, error: `ChatGPT did not accept the stored Codex login (HTTP ${res.status}); run "codex login" again.` }
+    if (res.status === 401 || res.status === 403) {
+      const why = this.chatgpt.codex.error
+      return { ...prev, error: `ChatGPT did not accept the stored Codex login (HTTP ${res.status}) and renewing it did not help${why ? `: ${why}` : ''}. Run "codex login" again.` }
+    }
     if (res.status === 0) {
       const proxy = proxyOf(env)
       return {
@@ -222,6 +249,89 @@ export class UsageService {
       }
     }
     return { ...prev, error: `ChatGPT's usage endpoint returned HTTP ${res.status}.` }
+  }
+
+  private askCodexUsage(login: CodexLogin, env: Record<string, string>): Promise<{ status: number; json: unknown }> {
+    const headers = [
+      `Authorization: Bearer ${login.accessToken}`,
+      'Accept: application/json',
+      'User-Agent: codex_cli_rs/0.1.0',
+      'originator: codex_cli_rs'
+    ]
+    if (login.accountId) headers.push(`chatgpt-account-id: ${login.accountId}`)
+    return curlJson(CODEX_USAGE_URL, headers, env, { forceProxy: true })
+  }
+
+  private noteCodexLogin(login: CodexLogin | null, patch: Partial<ChatGptLoginState['codex']> = {}): void {
+    this.chatgpt = {
+      ...this.chatgpt,
+      codex: { present: !!login, expiresAt: login?.expiresAt, lastRefresh: login?.lastRefresh, ...patch }
+    }
+  }
+
+  /**
+   * Renew the stored Codex login. One at a time, and through the GPT route: auth.openai.com is
+   * reached the same way chatgpt.com is. Returns null when it could not be done, with the reason
+   * kept for the window.
+   */
+  private renewCodexLogin(why: string): Promise<CodexLogin | null> {
+    if (this.renewing) return this.renewing
+    this.noteCodexLogin(readCodexLogin(), { renewing: true })
+    this.emitState()
+    this.renewing = (async () => {
+      const env = await this.codexEnv()
+      try {
+        const login = await renewCodexLogin((url, body) =>
+          curlJson(url, ['Content-Type: application/json', 'Accept: application/json', 'User-Agent: codex_cli_rs/0.1.0'], env, { forceProxy: true, body })
+        )
+        this.noteCodexLogin(login, { renewing: false, error: undefined })
+        this.deps.log(`[usage] chatgpt: the Codex login was renewed (${why}); it now runs to ${new Date(login.expiresAt ?? 0).toISOString()}`)
+        return login
+      } catch (err) {
+        const message = (err as Error).message
+        this.noteCodexLogin(readCodexLogin(), { renewing: false, error: message })
+        this.deps.log(`[usage] chatgpt: the Codex login could not be renewed (${why}): ${message}`)
+        return null
+      } finally {
+        this.renewing = null
+        this.emitState()
+      }
+    })()
+    return this.renewing
+  }
+
+  /** Read the bridge's own login now and then; it costs a process, so not on every check. */
+  private async readBridge(env: Record<string, string>): Promise<void> {
+    if (Date.now() - this.bridgeReadAt < BRIDGE_CHECK_MS) return
+    this.bridgeReadAt = Date.now()
+    const base = env.ANTHROPIC_BASE_URL
+    const bridge = await readBridgeLogin(base, env).catch((err) => ({ error: (err as Error).message }))
+    this.chatgpt = { ...this.chatgpt, bridge: { ...bridge, signingIn: this.chatgpt.bridge.signingIn } }
+    this.emitState()
+  }
+
+  /** The button in the window: renew the Codex login now and read the limits again. */
+  async renewChatGpt(): Promise<UsageState> {
+    const login = await this.renewCodexLogin('you asked for it')
+    if (!login) return this.state()
+    return this.refresh('login renewed')
+  }
+
+  /** The other button: the bridge's own browser sign-in, for when it can no longer renew itself. */
+  async signInGptBridge(): Promise<{ message: string }> {
+    const env = await this.codexEnv()
+    this.chatgpt = { ...this.chatgpt, bridge: { ...this.chatgpt.bridge, signingIn: true } }
+    this.emitState()
+    try {
+      const { path: file, message } = await signInBridge(env.ANTHROPIC_BASE_URL, env)
+      this.deps.log(`[usage] chatgpt: the bridge's own sign-in was started (${file})`)
+      // Its answer arrives in the browser, so the expiry is worth reading again shortly after.
+      this.bridgeReadAt = 0
+      return { message }
+    } finally {
+      this.chatgpt = { ...this.chatgpt, bridge: { ...this.chatgpt.bridge, signingIn: false } }
+      this.emitState()
+    }
   }
 
   /** Merge a rate_limit_event that a Claude session received with its API response. */
@@ -245,25 +355,11 @@ export class UsageService {
 
 // ---------------------------------------------------------------- credentials
 
-/**
- * The token the Codex CLI signs in with. Read straight from its own file, the same way the CLI
- * does; the token is never logged and only travels in a curl config on stdin.
- */
-function readCodexLogin(): { accessToken: string; accountId?: string } | null {
-  const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
-  try {
-    const doc = JSON.parse(fs.readFileSync(path.join(home, 'auth.json'), 'utf8')) as { tokens?: { access_token?: string; account_id?: string } }
-    const accessToken = doc.tokens?.access_token
-    return accessToken ? { accessToken, accountId: doc.tokens?.account_id } : null
-  } catch {
-    return null
-  }
-}
-
 // ---------------------------------------------------------------- endpoint
 
 /**
- * GET a JSON document with curl (honours the proxy variables of the captured shell environment).
+ * Fetch a JSON document with curl (honours the proxy variables of the captured shell environment).
+ * With `body` the request is a POST carrying it, which is how a login is renewed.
  *
  * `forceProxy` is for the ChatGPT endpoints: curl lets NO_PROXY override a proxy, so an environment
  * carrying `NO_PROXY=*` would send the request out directly, and ChatGPT refuses a direct source.
@@ -273,12 +369,14 @@ function curlJson(
   url: string,
   headers: string[],
   env: Record<string, string>,
-  opts: { forceProxy?: boolean } = {}
+  opts: { forceProxy?: boolean; body?: string } = {}
 ): Promise<{ status: number; json: unknown }> {
   return new Promise((resolve, reject) => {
     const hasProxy = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'].some((k) => env[k])
     // The token travels in a config document on stdin so it never appears in the process list.
     let config = headers.map((h) => `header = ${JSON.stringify(h)}`).join('\n') + `\nurl = ${JSON.stringify(url)}\n`
+    // Same reason the tokens go here: a refresh token would otherwise be visible in the arguments.
+    if (opts.body) config += `data = ${JSON.stringify(opts.body)}\n`
     if (opts.forceProxy && hasProxy) config += 'noproxy = ""\n'
     const child = spawn('curl', ['-sS', '--max-time', '25', '-K', '-', '-o', '-', '-w', '\n%{http_code}'], { env, stdio: ['pipe', 'pipe', 'pipe'] })
     let out = ''
