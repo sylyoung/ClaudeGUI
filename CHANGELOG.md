@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.44 — 2026-09-23
+
+### The model list offers only models that can be chosen
+
+- Report: "the gpt 5.2-5.4 old ones are unusable, no need to show up".
+- The model picker used to end its GPT section with the ids the bridge still carries but the
+  ChatGPT subscription no longer sells — gpt-5.2, gpt-5.3-codex with its spark and fast variants,
+  gpt-5.4 and gpt-5.4-mini — shown greyed with a note saying Codex would refuse them. They are
+  gone: a model that cannot be chosen is only something to read past. The GPT section now lists
+  what the subscription offers, in the order the subscription ranks it, and nothing else.
+- What is still shown greyed is the opposite case, which the user can act on: a model the
+  subscription does offer but the local bridge does not know yet. That row is what says the bridge
+  needs updating — which is exactly how GPT-6 Sol and GPT-6 Luna turned up this round.
+- Checked in a running app: the GPT section reads GPT-6 Astra, Sol and Luna, then GPT-5.6 Sol,
+  Terra and Luna, then GPT-5.5, each with its fast variant and every one of them selectable; the
+  DeepSeek and Kimi sections are unchanged.
+- Outside the app, on this machine: the bridge that carries the GPT chats (claude-code-proxy,
+  started by cc-gpt) was updated from 0.1.39 to 0.1.42, which is the version that knows gpt-6-sol
+  and gpt-6-luna. The app itself needed no change for the new models — it reads each provider's
+  list from the provider.
+
 ## 1.0.43 — 2026-09-22
 
 ### A drag in the sidebar always ends, and a compaction stands where it happened

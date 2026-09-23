@@ -348,13 +348,12 @@ interface CodexCachedModel {
  * the bridge accepts. A current model the bridge does not know is listed but cannot be chosen,
  * so a bridge that needs updating is visible rather than silently missing models. The bridge also
  * carries older ids (gpt-5.2, gpt-5.3-codex, gpt-5.4...) that a ChatGPT account is refused with
- * ("not supported when using Codex with a ChatGPT account"), so only the subscription's own list is
- * offered; those ids are kept in the list, greyed, so the refusal is visible rather than mysterious.
+ * ("not supported when using Codex with a ChatGPT account"); they are left out of the list
+ * altogether, because a model that cannot be chosen is only something to read past.
  */
 function codexModels(bridge: { id: string; label?: string }[], suffix: string, log: (...a: unknown[]) => void): ProviderModelView[] {
   const known = new Set(bridge.map((m) => m.id))
   const out: ProviderModelView[] = []
-  const seen = new Set<string>()
   let current: CodexCachedModel[] = []
   try {
     const file = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'models_cache.json')
@@ -376,7 +375,6 @@ function codexModels(bridge: { id: string; label?: string }[], suffix: string, l
     const name = m.display_name ?? m.slug
     for (const [id, label] of [[m.slug, name], [`${m.slug}-fast`, `${name} (fast)`]] as const) {
       if (id.endsWith('-fast') && !known.has(id)) continue
-      seen.add(id)
       out.push({
         value: id + suffix,
         label,
@@ -384,16 +382,6 @@ function codexModels(bridge: { id: string; label?: string }[], suffix: string, l
         unavailable: known.has(id) ? undefined : 'Your Codex subscription offers this model, but the bridge (claude-code-proxy) does not know it yet; update the bridge to use it.'
       })
     }
-  }
-  // Ids the bridge still carries but the subscription no longer offers. They stay visible (greyed)
-  // so the picker does not silently hide a model the user has seen in other tools.
-  for (const m of bridge) {
-    if (seen.has(m.id) || !/^gpt-/.test(m.id)) continue
-    out.push({
-      value: m.id + suffix,
-      label: m.label?.replace(/ \(codex\)$/, '') ?? m.id,
-      unavailable: 'Your ChatGPT subscription does not offer this model any more, so Codex refuses it; pick one of the models above.'
-    })
   }
   return out
 }
