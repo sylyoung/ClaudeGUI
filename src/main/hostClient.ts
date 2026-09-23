@@ -13,6 +13,7 @@ import type {
   AppSettings,
   ChatMessage,
   CliSessionSummary,
+  EarlierMessages,
   EffortLevel,
   HostStatus,
   ImageAttachment,
@@ -379,6 +380,9 @@ export class HostClient extends EventEmitter {
   }
   history(id: string): Promise<ChatMessage[]> {
     return this.call('history', id)
+  }
+  earlier(id: string): Promise<EarlierMessages> {
+    return this.call('earlier', id)
   }
   create(opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): Promise<SessionRecord> {
     return this.call('create', opts)

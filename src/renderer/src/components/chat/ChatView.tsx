@@ -96,6 +96,11 @@ function useDirInfo(cwd: string, status: string | undefined): DirInfo | null {
 export function ChatView({ record, live }: { record: SessionRecord; live: SessionLiveState | undefined }) {
   const messages = useStore((s) => s.messages[record.id] ?? EMPTY_MESSAGES)
   const loaded = useStore((s) => Boolean(s.historyLoaded[record.id]))
+  // A chat is loaded from the end of its transcript; anything above 0 means there is more of it
+  // in the file, which is read when the chat is scrolled to the top.
+  const earlierAvailable = (live?.historyFrom ?? 0) > 0
+  const earlierBusy = useStore((s) => Boolean(s.earlierBusy[record.id]))
+  const loadEarlier = useStore((s) => s.loadEarlier)
   const appInfo = useStore((s) => s.appInfo)
   const filesOpen = useStore((s) => s.filesOpen)
   const toggleFiles = useStore((s) => s.toggleFiles)
@@ -542,7 +547,19 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <span className="spacer" />
           <ContextBar sessionId={record.id} live={live} />
         </div>
-        <MessageList sessionId={record.id} messages={messages} live={live} pending={live?.pendingPermissions ?? []} onAnswer={onAnswer} loaded={loaded} working={working} turnStartedAt={lastTurnStart} />
+        <MessageList
+          sessionId={record.id}
+          messages={messages}
+          live={live}
+          pending={live?.pendingPermissions ?? []}
+          onAnswer={onAnswer}
+          loaded={loaded}
+          working={working}
+          turnStartedAt={lastTurnStart}
+          earlierAvailable={earlierAvailable}
+          earlierBusy={earlierBusy}
+          onLoadEarlier={() => void loadEarlier(record.id)}
+        />
         {live?.error && status === 'error' && (
           <div className="msg-system error" style={{ margin: '0 20px 8px' }}>
             <ChevronDown size={14} />

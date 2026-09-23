@@ -7,6 +7,7 @@ import { deleteSession, forkSession, getSessionInfo, listSessions } from '@anthr
 import type {
   AppSettings,
   ChatMessage,
+  EarlierMessages,
   CliSessionSummary,
   EffortLevel,
   ImageAttachment,
@@ -291,6 +292,11 @@ export class SessionManager {
 
   async history(id: string): Promise<ChatMessage[]> {
     return this.get(id).ensureHistory()
+  }
+
+  /** The part of a chat before the part that is loaded, read when the user scrolls to the top. */
+  async earlier(id: string): Promise<EarlierMessages> {
+    return this.get(id).earlier()
   }
 
   // --------------------------------------------------------------- mutations

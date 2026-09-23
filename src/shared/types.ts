@@ -247,6 +247,13 @@ export interface SessionLiveState {
   promptDelivery: Record<string, PromptDelivery>
   /** Shell commands typed after "!" that are still running, by the id of their row in the chat. */
   runningShellIds?: string[]
+  /**
+   * Where in the chat's transcript file the loaded conversation begins, in bytes. A chat is opened
+   * on the end of its file and reaches further back only when the user scrolls up, so anything
+   * above 0 means there is more of the chat to show; 0 means the whole file is loaded. Undefined
+   * until the chat has been opened once.
+   */
+  historyFrom?: number
   /** When this chat last failed because Claude Code's login was not accepted (cleared by the next real answer). */
   authFailedAt?: number
   /** What Claude Code said when that happened. */
@@ -393,6 +400,15 @@ export interface RewindPreview {
     deletions: number
     paths: string[]
   }
+}
+
+/**
+ * What scrolling up to the top of a chat brings back: the messages of the part of the transcript
+ * before the part already shown, and whether there is still more before those.
+ */
+export interface EarlierMessages {
+  messages: ChatMessage[]
+  more: boolean
 }
 
 export interface RewindResult {

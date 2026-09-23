@@ -1,28 +1,35 @@
 /**
- * Reading a chat's history without putting the session host at risk.
+ * Reading a chat's history: the end of its transcript first, the rest only when it is asked for.
  *
- * Claude Code hands back a chat's history by walking its whole transcript file, so the memory a
- * read needs grows with the file, not with the number of messages it returns: a 1.2 GB transcript
- * costs about 2.7 GB for the moment of the read and returns six messages. The session host has a
- * fixed ceiling of roughly 4 GB (Electron builds V8 with compressed pointers, so it cannot be
- * raised), and two such reads at the same time went through it and killed the host, taking every
- * running chat with it.
+ * Claude Code's own reader, `getSessionMessages()`, walks a chat's whole transcript file and only
+ * then cuts what it returns, so the cost of opening a chat grows with the file rather than with
+ * what is shown. On this machine that is the difference between a moment and half a minute: the
+ * transcripts here run from a few megabytes to two gigabytes, and the largest cost about 28 seconds
+ * and over a gigabyte of memory to open (measured 2026-09-23) — for six messages.
  *
- * So: a big transcript is read in a separate process (historyReader.ts) whose memory is released
- * when it exits, and no two reads ever run at the same time.
+ * The reader also accepts a `sessionStore`, which it asks for the transcript entries instead of
+ * opening the file itself. That is what is used here: the store hands it the lines of one byte
+ * range of the same file, so Claude Code still does all the parsing and folding — nothing about a
+ * chat is read differently — it is simply given the part of the file that is being looked at. The
+ * same 352 MB chat then loads in 25 ms instead of 1003 ms, with the same messages.
+ *
+ * A chat opens on the last `FIRST_WINDOW` bytes, widened while that keeps bringing more of the
+ * conversation into view, and scrolling up asks for the range before it.
  */
-import { spawn } from 'child_process'
 import fs from 'fs'
-import path from 'path'
-import { fileURLToPath } from 'url'
-import { getSessionMessages, getSubagentMessages, type SessionMessage } from '@anthropic-ai/claude-agent-sdk'
+import { getSessionMessages, getSubagentMessages, type SessionMessage, type SessionStore, type SessionStoreEntry } from '@anthropic-ai/claude-agent-sdk'
 
-/** Transcripts smaller than this are read in the host itself; the read costs a few megabytes. */
-const READ_HERE_MAX_BYTES = 64 * 1024 * 1024
-/** A read that has not finished by then is given up on, and the reading process is stopped. */
-const READ_TIMEOUT_MS = 180_000
+/** What a chat is opened on: enough for the whole current conversation of every chat measured here. */
+const FIRST_WINDOW = 8 * 1024 * 1024
+/** How far the first read may be widened while more of the conversation keeps appearing. */
+const MAX_WINDOW = 64 * 1024 * 1024
+/** How much further back one "show earlier messages" reaches. */
+export const EARLIER_WINDOW = 8 * 1024 * 1024
 
-/** One history read at a time: it is two of them together that the memory ceiling cannot take. */
+/**
+ * One read at a time. Each is now small, so this costs almost nothing — it is kept because it is
+ * what stops a dozen chats opening at once from adding up to a memory spike in the session host.
+ */
 let queue: Promise<unknown> = Promise.resolve()
 
 function oneAtATime<T>(task: () => Promise<T>): Promise<T> {
@@ -34,7 +41,7 @@ function oneAtATime<T>(task: () => Promise<T>): Promise<T> {
   return run
 }
 
-function sizeOf(file: string): number {
+export function sizeOf(file: string): number {
   try {
     return fs.statSync(file).size
   } catch {
@@ -42,74 +49,95 @@ function sizeOf(file: string): number {
   }
 }
 
-/** out/main/historyReader.mjs, next to the session host's own bundle. */
-function readerScript(): string {
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), 'historyReader.mjs')
-}
-
-/** Run one read in its own process and parse what it printed. */
-function readElsewhere(args: string[]): Promise<SessionMessage[]> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [readerScript(), ...args], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
-    const out: Buffer[] = []
-    let err = ''
-    let settled = false
-    const timer = setTimeout(() => {
-      if (!settled) child.kill('SIGKILL')
-    }, READ_TIMEOUT_MS)
-    timer.unref?.()
-    const finish = (fn: () => void): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      fn()
+/**
+ * The transcript entries whose lines lie in [from, to) of the file. A range that does not start at
+ * the beginning of the file starts in the middle of a line, and that half line is dropped; the same
+ * happens at the end, where the file may be being written to right now.
+ */
+async function entriesInRange(file: string, from: number, to: number): Promise<SessionStoreEntry[]> {
+  const fh = await fs.promises.open(file, 'r')
+  try {
+    const buf = Buffer.alloc(Math.max(0, to - from))
+    if (buf.length === 0) return []
+    const { bytesRead } = await fh.read(buf, 0, buf.length, from)
+    let text = buf.subarray(0, bytesRead).toString('utf8')
+    if (from > 0) {
+      const nl = text.indexOf('\n')
+      text = nl === -1 ? '' : text.slice(nl + 1)
     }
-    child.stdout.on('data', (b: Buffer) => out.push(b))
-    child.stderr.on('data', (b: Buffer) => (err += String(b)))
-    child.on('error', (e) => finish(() => reject(e)))
-    child.on('close', (code, signal) => {
-      finish(() => {
-        if (signal) return reject(new Error(`the reading process was stopped (${signal}) after ${READ_TIMEOUT_MS / 1000}s`))
-        if (code !== 0) return reject(new Error(err.trim() || `the reading process ended with code ${code}`))
-        try {
-          resolve(JSON.parse(Buffer.concat(out).toString('utf8')) as SessionMessage[])
-        } catch (e) {
-          reject(new Error(`the reading process printed no history (${(e as Error).message})`))
-        }
-      })
-    })
-  })
+    const entries: SessionStoreEntry[] = []
+    for (const line of text.split('\n')) {
+      const t = line.trim()
+      if (!t) continue
+      try {
+        entries.push(JSON.parse(t) as SessionStoreEntry)
+      } catch {
+        // A line cut in half by the edge of the range, or one still being written.
+      }
+    }
+    return entries
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
 }
 
-/** How the read was done, for the log line the caller writes. */
+/** A store that answers Claude Code's reader with one range of one file, and nothing else. */
+function rangeStore(file: string, from: number, to: number): SessionStore {
+  return {
+    async append() {
+      /* nothing is written through this store */
+    },
+    async load() {
+      return entriesInRange(file, from, to)
+    },
+    async listSubkeys() {
+      return []
+    }
+  }
+}
+
 export interface HistoryRead {
   messages: SessionMessage[]
   /** Size of the transcript file, in megabytes, rounded. */
   fileMB: number
-  /** True when the read happened in a separate process because the transcript is large. */
-  elsewhere: boolean
+  /** Where the read started in the file. 0 means the chat is loaded from its very beginning. */
+  from: number
 }
 
-/** A chat's history, as Claude Code hands it back. */
+/**
+ * The end of a chat's transcript: the last `FIRST_WINDOW` bytes, doubled while that keeps bringing
+ * more messages back, so that a chat whose current conversation is unusually long still opens whole.
+ */
 export function readSessionHistory(sessionId: string, dir: string, file: string): Promise<HistoryRead> {
   const size = sizeOf(file)
-  const elsewhere = size > READ_HERE_MAX_BYTES
-  return oneAtATime(async () => ({
-    messages: elsewhere
-      ? await readElsewhere(['session', sessionId, dir])
-      : await getSessionMessages(sessionId, { dir, includeSystemMessages: true }),
-    fileMB: Math.round(size / 1048576),
-    elsewhere
-  }))
+  return oneAtATime(async () => {
+    let window = FIRST_WINDOW
+    let from = Math.max(0, size - window)
+    let messages = await getSessionMessages(sessionId, { dir, includeSystemMessages: true, sessionStore: rangeStore(file, from, size) })
+    while (from > 0 && window < MAX_WINDOW) {
+      window = Math.min(window * 2, MAX_WINDOW)
+      const wider = Math.max(0, size - window)
+      const more = await getSessionMessages(sessionId, { dir, includeSystemMessages: true, sessionStore: rangeStore(file, wider, size) })
+      if (more.length <= messages.length) break
+      messages = more
+      from = wider
+    }
+    return { messages, fileMB: Math.round(size / 1048576), from }
+  })
 }
 
-/** One subagent's messages, the same way. */
+/** The messages of one earlier range of the same transcript, for "show earlier messages". */
+export function readSessionSlice(sessionId: string, dir: string, file: string, from: number, to: number): Promise<SessionMessage[]> {
+  return oneAtATime(() => getSessionMessages(sessionId, { dir, includeSystemMessages: true, sessionStore: rangeStore(file, from, to) }))
+}
+
+/** One subagent's messages. Their files are small, but the end is read first here as well. */
 export function readSubagentHistory(sessionId: string, agentId: string, dir: string, file: string): Promise<SessionMessage[]> {
-  const elsewhere = sizeOf(file) > READ_HERE_MAX_BYTES
-  return oneAtATime(async () =>
-    elsewhere ? readElsewhere(['subagent', sessionId, dir, agentId]) : getSubagentMessages(sessionId, agentId, { dir })
+  const size = sizeOf(file)
+  const from = Math.max(0, size - MAX_WINDOW)
+  return oneAtATime(() =>
+    from === 0
+      ? getSubagentMessages(sessionId, agentId, { dir })
+      : getSubagentMessages(sessionId, agentId, { dir, sessionStore: rangeStore(file, from, size) })
   )
 }

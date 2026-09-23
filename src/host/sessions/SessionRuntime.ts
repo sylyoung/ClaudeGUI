@@ -19,6 +19,7 @@ import type {
   BackgroundTaskView,
   ChatMessage,
   ContextUsageView,
+  EarlierMessages,
   EffortLevel,
   ImageAttachment,
   ModelInfoView,
@@ -38,7 +39,7 @@ import type {
 } from '@shared/types'
 import { TranscriptState, looksSynthetic, recapText } from './transcript'
 import { handoffNote, hasUnfinishedWork, mergeHandoffNote, type HandoffSnapshot } from './handoffNote'
-import { readSessionHistory, readSubagentHistory } from './history'
+import { EARLIER_WINDOW, readSessionHistory, readSessionSlice, readSubagentHistory } from './history'
 import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
 import { splitList } from '@shared/util'
 
@@ -200,6 +201,13 @@ export class SessionRuntime {
   private pending = new Map<string, { resolve: (r: PermissionResult) => void; request: PendingPermission; suggestions?: PermissionUpdate[] }>()
   private historyLoaded = false
   private historyPromise: Promise<void> | null = null
+  /**
+   * Where in the transcript file the loaded part of the chat begins. A chat is opened on the end of
+   * its file (see history.ts) and reaches further back only when the user scrolls up, so this walks
+   * towards 0; at 0 the whole file is in hand and there is nothing earlier to show.
+   */
+  private historyFrom = 0
+  private earlierPromise: Promise<EarlierMessages> | null = null
   /** The chat's prompts as its transcript file has them; only ever grows, so it is kept between reads. */
   private promptIndex: PromptIndex | undefined
   private flushTimer: NodeJS.Timeout | null = null
@@ -282,11 +290,12 @@ export class SessionRuntime {
     try {
       const read = await readSessionHistory(this.record.claudeSessionId, this.record.cwd, mainFile)
       const entries = read.messages
+      this.historyFrom = read.from
       // Replay before any live message so ordering is preserved.
       const liveSnapshot = this.transcript.messages
       const wasEmpty = liveSnapshot.length === 0
       if (wasEmpty) {
-        const { stamps, recaps } = await readTranscriptIndex(mainFile)
+        const { stamps, recaps } = await readTranscriptIndex(mainFile, read.from)
         let ts = this.record.createdAt || Date.now()
         for (const e of entries) {
           const real = stamps.get((e as { uuid: string }).uuid)
@@ -305,7 +314,7 @@ export class SessionRuntime {
         this.transcript.takeChanges()
       }
       this.deps.log(
-        `[session ${this.id}] history loaded: ${entries.length} entries (transcript ${read.fileMB} MB${read.elsewhere ? ', read in its own process' : ''})`
+        `[session ${this.id}] history loaded: ${entries.length} entries (transcript ${read.fileMB} MB, read from ${Math.round(read.from / 1048576)} MB on)`
       )
       // What the sidebar shows of the chat: the recap if the chat ends on one, and otherwise the
       // last thing Claude said. Both come from the conversation itself, so a chat that has not run
@@ -324,7 +333,57 @@ export class SessionRuntime {
       this.deps.log(`[session ${this.id}] no history (${(err as Error).message})`)
     }
     this.historyLoaded = true
+    this.live.historyFrom = this.historyFrom
+    this.stateDirty = true
     this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: this.transcript.messages })
+    this.scheduleFlush()
+  }
+
+  /**
+   * What came before the part of the chat that is loaded — the answer to scrolling up to the top.
+   *
+   * The range before the loaded one is read and folded on its own, and the messages are handed
+   * straight to the window rather than added to the chat's own state: the running conversation is
+   * not disturbed by it, and the session host does not end up holding a whole transcript again for
+   * a chat somebody scrolled through once. The window keeps them for as long as the chat is open.
+   */
+  async earlier(): Promise<EarlierMessages> {
+    if (this.earlierPromise) return this.earlierPromise
+    this.earlierPromise = this.readEarlier().finally(() => (this.earlierPromise = null))
+    return this.earlierPromise
+  }
+
+  private async readEarlier(): Promise<EarlierMessages> {
+    await this.ensureHistory()
+    const to = this.historyFrom
+    if (to <= 0) return { messages: [], more: false }
+    const file = this.transcriptPath()
+    const from = Math.max(0, to - EARLIER_WINDOW)
+    const state = new TranscriptState()
+    try {
+      const entries = await readSessionSlice(this.record.claudeSessionId, this.record.cwd, file, from, to)
+      const { stamps, recaps } = await readTranscriptIndex(file, from, to)
+      let ts = this.record.createdAt || Date.now()
+      for (const e of entries) {
+        const real = stamps.get((e as { uuid: string }).uuid)
+        if (real) ts = real
+        state.applyHistoryEntry(e as never, ts)
+        ts += 1
+      }
+      state.settleReplayOrder()
+      state.insertRecaps(recaps)
+      this.historyFrom = from
+      this.live.historyFrom = from
+      this.stateDirty = true
+      this.scheduleFlush()
+      this.deps.log(
+        `[session ${this.id}] earlier messages: ${state.messages.length} rows from ${Math.round(from / 1048576)}–${Math.round(to / 1048576)} MB of the transcript`
+      )
+      return { messages: state.messages, more: from > 0 }
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] earlier messages failed: ${(err as Error).message}`)
+      throw err
+    }
   }
 
   /**
@@ -981,13 +1040,23 @@ export class SessionRuntime {
   async runShell(command: string): Promise<string> {
     const cmd = command.trim()
     if (!cmd) throw new Error('Type a command after "!"')
-    await this.ensureStarted()
+    // As with a prompt: the line appears in the chat first, and is taken out again if the chat
+    // turns out not to be startable.
     const id = randomUUID()
     this.markRead()
     this.transcript.addLocalShellRun(id, `<bash-input>${cmd}</bash-input>`)
     this.live.runningShellIds = [...(this.live.runningShellIds ?? []), id]
     this.stateDirty = true
-    this.scheduleFlush()
+    this.flush()
+    try {
+      await this.ensureStarted()
+    } catch (err) {
+      this.transcript.removeMessage(id)
+      this.live.runningShellIds = (this.live.runningShellIds ?? []).filter((x) => x !== id)
+      this.stateDirty = true
+      this.flush()
+      throw err
+    }
     void this.finishShell(id, cmd)
     return id
   }
@@ -1059,9 +1128,14 @@ export class SessionRuntime {
   // ------------------------------------------------------------------ input
 
   /** Hand a prompt to Claude Code; the id it is known by in the chat is returned. */
+  /**
+   * Send a prompt. The row appears in the chat before anything else happens, because starting a
+   * chat that is not running takes real time — a chat on another provider runs its launcher first,
+   * measured at 12.5 s and once at 80 s — and during that time the prompt has already left the
+   * input box. It is shown as waiting until the process has actually taken it, and taken out again
+   * if the chat cannot be started at all.
+   */
   async send(text: string, images?: ImageAttachment[]): Promise<string> {
-    await this.ensureStarted()
-    if (!this.queue) throw new Error('Session is not running')
     const uuid = randomUUID()
     // Writing into a chat means having it in front of you: anything that was waiting to be read
     // has been read by now, so the unread mark goes when the prompt is sent. Without this a mark
@@ -1069,6 +1143,23 @@ export class SessionRuntime {
     // compaction itself had left something new to read.
     this.markRead()
     this.transcript.addLocalUserMessage(uuid, text, images)
+    this.setDelivery(uuid, 'queued')
+    this.setQueued([...this.live.queuedIds, uuid])
+    this.record.lastActiveAt = Date.now()
+    this.record.lastPromptAt = this.record.lastActiveAt
+    this.live.lastActivityAt = this.record.lastActiveAt
+    this.live.lastPreview = text.slice(0, 120)
+    this.live.lastRecap = undefined
+    this.deps.saveRecord(this.record)
+    this.stateDirty = true
+    this.flush()
+    try {
+      await this.ensureStarted()
+      if (!this.queue) throw new Error('Session is not running')
+    } catch (err) {
+      this.unsend(uuid)
+      throw err
+    }
     const content: unknown[] = []
     if (text.trim()) content.push({ type: 'text', text })
     for (const img of images ?? []) {
@@ -1084,22 +1175,24 @@ export class SessionRuntime {
     // A prompt waits whenever Claude Code still owes an answer for an earlier one. Reading that
     // from the prompts themselves rather than from the session status also covers the moments
     // where the status is briefly idle although the CLI has already taken the next prompt.
-    if (this.hasUnfinishedPrompt() || this.live.status === 'running' || this.live.status === 'requires_action') {
-      this.setDelivery(uuid, 'queued')
-      this.setQueued([...this.live.queuedIds, uuid])
-    } else {
+    const others = Object.entries(this.live.promptDelivery).some(([id, state]) => id !== uuid && (state === 'queued' || state === 'working'))
+    if (!others && this.live.status !== 'running' && this.live.status !== 'requires_action') {
       this.setDelivery(uuid, 'working')
+      this.setQueued(this.live.queuedIds.filter((id) => id !== uuid))
       this.setStatus('running')
     }
     this.queue.push(message)
-    this.record.lastActiveAt = Date.now()
-    this.record.lastPromptAt = this.record.lastActiveAt
-    this.live.lastActivityAt = this.record.lastActiveAt
-    this.live.lastPreview = text.slice(0, 120)
-    this.live.lastRecap = undefined
-    this.deps.saveRecord(this.record)
     this.scheduleFlush()
     return uuid
+  }
+
+  /** Take a prompt back out of the chat: the chat could not be started, so it was never sent. */
+  private unsend(uuid: string): void {
+    this.transcript.removeMessage(uuid)
+    this.setDelivery(uuid, null)
+    this.setQueued(this.live.queuedIds.filter((id) => id !== uuid))
+    this.stateDirty = true
+    this.flush()
   }
 
   /** Remember which prompts Claude Code has not taken off its queue yet. */
@@ -1636,6 +1729,10 @@ export class SessionRuntime {
       case 'conversation_reset': {
         this.transcript.reset()
         this.record.conversationId = msg.new_conversation_id
+        // The conversation starts again here, so there is nothing above it to scroll up to: what
+        // came before belongs to the conversation that was cleared, not to this one.
+        this.historyFrom = 0
+        this.live.historyFrom = 0
         this.deps.saveRecord(this.record)
         this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: [] })
         break
@@ -1865,12 +1962,14 @@ const INDEX_LINE_TAIL = 16 * 1024
  * recaps at all (a recap arrives as a system message whose file entry carries the text, which the
  * history reader does not pass on), so both are read from the transcript itself.
  *
- * The file is read in pieces and no line is ever held whole beyond a megabyte, so a chat of any
- * size can be indexed: a 346 MB transcript costs about 0.7 s and a few megabytes of memory. It
- * used to be given up on beyond 200 MB, which left every row of the largest chats without a time
- * of its own — they all showed the moment the chat was created.
+ * Only the part of the file the chat is loaded from is read — `from` to `to` in bytes, the same
+ * range the messages themselves came from — because the times are wanted for those messages and no
+ * others. A pass over the whole of a large transcript is not free: 5.6 s for a 2 GB one.
+ *
+ * The file is read in pieces and no line is ever held whole beyond a megabyte, so a range of any
+ * size can be indexed at a cost of a few megabytes of memory.
  */
-export async function readTranscriptIndex(file: string): Promise<TranscriptIndex> {
+export async function readTranscriptIndex(file: string, from = 0, to?: number): Promise<TranscriptIndex> {
   const stamps = new Map<string, number>()
   const recaps: TranscriptRecap[] = []
   try {
@@ -1897,23 +1996,27 @@ export async function readTranscriptIndex(file: string): Promise<TranscriptIndex
     if (uuid && !Number.isNaN(t)) stamps.set(uuid, t)
   }
   let rest = Buffer.alloc(0)
-  let whole = true
-  for await (const chunk of fs.createReadStream(file) as AsyncIterable<Buffer>) {
-    let from = 0
-    for (let nl = chunk.indexOf(10, from); nl !== -1; nl = chunk.indexOf(10, from)) {
-      const part = chunk.subarray(from, nl)
-      takeLine((rest.length ? Buffer.concat([rest, part]) : part).toString('utf8'), whole)
+  // A range that starts inside a line starts with the tail of that line, which belongs to the
+  // entry before it: it is dropped rather than parsed as an entry of its own.
+  let whole = from === 0
+  let first = from > 0
+  for await (const chunk of fs.createReadStream(file, { start: from, end: to === undefined ? undefined : Math.max(from, to - 1) }) as AsyncIterable<Buffer>) {
+    let at = 0
+    for (let nl = chunk.indexOf(10, at); nl !== -1; nl = chunk.indexOf(10, at)) {
+      const part = chunk.subarray(at, nl)
+      if (first) first = false
+      else takeLine((rest.length ? Buffer.concat([rest, part]) : part).toString('utf8'), whole)
       rest = Buffer.alloc(0)
       whole = true
-      from = nl + 1
+      at = nl + 1
     }
-    rest = Buffer.concat([rest, chunk.subarray(from)])
+    rest = Buffer.concat([rest, chunk.subarray(at)])
     if (rest.length > INDEX_LINE_MAX) {
       rest = Buffer.from(rest.subarray(rest.length - INDEX_LINE_TAIL))
       whole = false
     }
   }
-  if (rest.length) takeLine(rest.toString('utf8'), whole)
+  if (rest.length && !first) takeLine(rest.toString('utf8'), whole)
   return { stamps, recaps }
 }
 

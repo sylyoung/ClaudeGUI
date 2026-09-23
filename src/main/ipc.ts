@@ -154,6 +154,7 @@ export function registerIpc(ctx: IpcContext): void {
   // ---- sessions (all forwarded to the session host process)
   handle('sessions:list', () => host.list())
   handle('sessions:history', (id: string) => host.history(id))
+  handle('sessions:earlier', (id: string) => host.earlier(id))
   handle('sessions:create', async (opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }) => {
     const record = await host.create(opts)
     store.addRecentDirectory(record.cwd)

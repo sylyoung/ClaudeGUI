@@ -15,7 +15,10 @@ export function MessageList({
   onAnswer,
   loaded,
   working,
-  turnStartedAt
+  turnStartedAt,
+  earlierAvailable,
+  earlierBusy,
+  onLoadEarlier
 }: {
   sessionId: string
   messages: ChatMessage[]
@@ -26,33 +29,70 @@ export function MessageList({
   /** A turn is running: what Claude is doing right now is shown as the last row of the chat. */
   working: boolean
   turnStartedAt: number
+  /** The chat's transcript holds more than what is loaded, further back than the first row here. */
+  earlierAvailable: boolean
+  /** That part is being read right now. */
+  earlierBusy: boolean
+  onLoadEarlier: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [stick, setStick] = useState(true)
   const [limit, setLimit] = useState(PAGE)
   const prevSession = useRef(sessionId)
+  /** The chat has been scrolled back at least once, so saying where it begins means something. */
+  const [paged, setPaged] = useState(false)
+  const loadedAt = useRef(0)
 
   useEffect(() => {
     if (prevSession.current !== sessionId) {
       prevSession.current = sessionId
       setLimit(PAGE)
       setStick(true)
+      setPaged(false)
     }
   }, [sessionId])
+
+  const visible = messages.length > limit ? messages.slice(messages.length - limit) : messages
+  const hidden = messages.length - visible.length
+
+  /**
+   * Reach further back: first through what the window already holds, then — when that is all on
+   * screen — into the chat's transcript, which is read from the end and only as far back as it is
+   * looked at.
+   */
+  const showEarlier = useCallback(() => {
+    setPaged(true)
+    if (messages.length > limit) {
+      setLimit((l) => l + PAGE * 2)
+      return
+    }
+    if (!earlierAvailable || earlierBusy || Date.now() - loadedAt.current < 400) return
+    loadedAt.current = Date.now()
+    onLoadEarlier()
+  }, [messages.length, limit, earlierAvailable, earlierBusy, onLoadEarlier])
 
   const onScroll = useCallback(() => {
     const el = ref.current
     if (!el) return
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight
     setStick(dist < 80)
-  }, [])
+    // Scrolling to the top of a chat is the request for what came before it.
+    if (el.scrollTop < 240) showEarlier()
+  }, [showEarlier])
 
+  // Following the newest message, and — when reading further back instead — keeping the row that
+  // was under the eye where it was: rows added above would otherwise push the chat down.
+  const firstShown = useRef<string | undefined>(undefined)
+  const lastHeight = useRef(0)
   useLayoutEffect(() => {
-    if (stick && ref.current) ref.current.scrollTop = ref.current.scrollHeight
+    const el = ref.current
+    if (!el) return
+    const first = visible[0]?.id
+    if (stick) el.scrollTop = el.scrollHeight
+    else if (first !== firstShown.current && el.scrollHeight > lastHeight.current) el.scrollTop += el.scrollHeight - lastHeight.current
+    firstShown.current = first
+    lastHeight.current = el.scrollHeight
   })
-
-  const visible = messages.length > limit ? messages.slice(messages.length - limit) : messages
-  const hidden = messages.length - visible.length
 
   // What has happened to each prompt you typed. There are two states and no others. A prompt
   // Claude Code has not taken yet is queued: it waits at the very end of the chat, below the answer
@@ -77,10 +117,19 @@ export function MessageList({
   return (
     <div className="messages" ref={ref} onScroll={onScroll}>
       <div className="messages-inner">
-        {hidden > 0 && (
-          <button data-tip="Show earlier messages" className="btn ghost" style={{ alignSelf: 'center' }} onClick={() => setLimit((l) => l + PAGE * 2)}>
-            Show {Math.min(hidden, PAGE * 2)} earlier messages ({hidden} hidden)
+        {earlierBusy && <div className="faint" style={{ textAlign: 'center' }}>Reading earlier messages…</div>}
+        {!earlierBusy && (hidden > 0 || earlierAvailable) && (
+          <button
+            data-tip={hidden > 0 ? 'Show earlier messages' : "Read further back in this chat's transcript. Scrolling to the top does the same."}
+            className="btn ghost"
+            style={{ alignSelf: 'center' }}
+            onClick={showEarlier}
+          >
+            {hidden > 0 ? `Show ${Math.min(hidden, PAGE * 2)} earlier messages (${hidden} hidden)` : 'Show earlier messages'}
           </button>
+        )}
+        {!earlierBusy && paged && hidden === 0 && !earlierAvailable && messages.length > 0 && (
+          <div className="faint" style={{ textAlign: 'center' }}>The beginning of this chat</div>
         )}
         {!loaded && messages.length === 0 && <div className="faint" style={{ textAlign: 'center' }}>Loading history…</div>}
         {flow.map((m) => (

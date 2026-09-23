@@ -97,6 +97,8 @@ interface State {
   /** Text to put back into the composer of a session (set by interruptSession). */
   composerRestore: Record<string, { text: string; images: ImageAttachment[]; nonce: number }>
   historyLoaded: Record<string, boolean>
+  /** A chat is being read further back right now (the user scrolled to the top of it). */
+  earlierBusy: Record<string, boolean>
   activeId?: string
   dialog: DialogKind
   /** Tab to open the Settings dialog on (null = last used). */
@@ -146,6 +148,11 @@ interface State {
   setUpdate: (u: UpdateState) => void
   /** Re-read records and live states from the main process (after the session host was replaced). */
   reloadSessions: () => Promise<void>
+  /**
+   * Fetch the part of a chat that comes before the part on screen, and put it above it. A chat is
+   * opened on its recent messages only; this is what scrolling to the top asks for.
+   */
+  loadEarlier: (id: string) => Promise<boolean>
   toast: (text: string, kind?: Toast['kind']) => void
   dismissToast: (id: number) => void
   setSettings: (patch: Partial<AppSettings>) => Promise<void>
@@ -215,6 +222,7 @@ export const useStore = create<State>((set, get) => ({
   sentQueue: {},
   composerRestore: {},
   historyLoaded: {},
+  earlierBusy: {},
   dialog: null,
   settingsTab: null,
   sidebarOpen: true,
@@ -290,7 +298,12 @@ export const useStore = create<State>((set, get) => ({
     const live: Record<string, SessionLiveState> = {}
     for (const r of list.records) records[r.id] = r
     for (const l of list.live) live[l.id] = l
-    set({ records, live, groups: list.groups ?? [], messages: {}, historyLoaded: {} })
+    // The chats themselves are kept. This runs when the window's link to the session host was
+    // re-made, which happens on its own from time to time (a broken connection, a host replaced by
+    // an update), and emptying every chat here is what used to make a chat that had been open for
+    // hours say "Loading history…" again. Only the "already read" marks go, so that each chat is
+    // read again — from its own record, in milliseconds — the next time it is opened.
+    set((s) => ({ records, live, groups: list.groups ?? [], messages: s.messages, historyLoaded: {} }))
     const id = get().activeId
     if (id && records[id]) await get().ensureHistory(id)
     else if (id) set({ activeId: undefined })
@@ -363,6 +376,33 @@ export const useStore = create<State>((set, get) => ({
       })
     } catch (err) {
       get().toast(`Failed to load history: ${(err as Error).message}`, 'error')
+    }
+  },
+
+  loadEarlier: async (id) => {
+    if (get().earlierBusy[id]) return false
+    set((s) => ({ earlierBusy: { ...s.earlierBusy, [id]: true } }))
+    try {
+      const { messages } = await window.api.sessions.earlier(id)
+      if (!messages.length) return false
+      let added = 0
+      set((s) => {
+        const existing = s.messages[id] ?? []
+        const have = new Set(existing.map((m) => m.id))
+        // They go above the chat in the order the transcript has them, which is the order the chat
+        // was written in. It is not always the order of the clock — a compaction rewrites the file
+        // and the times of the entries around it overlap — and the transcript's own order is the
+        // one to follow there.
+        const older = messages.filter((m) => !have.has(m.id))
+        added = older.length
+        return older.length ? { messages: { ...s.messages, [id]: [...older, ...existing] } } : {}
+      })
+      return added > 0
+    } catch (err) {
+      get().toast(`Could not read earlier messages: ${(err as Error).message}`, 'error')
+      return false
+    } finally {
+      set((s) => ({ earlierBusy: { ...s.earlierBusy, [id]: false } }))
     }
   },
 

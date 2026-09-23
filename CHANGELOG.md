@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.0.46 — 2026-09-23
+
+### A chat opens on its recent messages, and reaches further back when you scroll up
+
+- Request: "the chats probably should load only the recent chats, no need full transcript, to the
+  memory" and "ye the older chats are only loaded when I scrolled up in the chat, or use rewind.
+  make all interaction intuitive and reasonable." Two complaints led to it: chats that had been open
+  for hours saying "Loading history…" again, and a prompt typed into a chat not appearing in it.
+- Opening a chat used to read its whole transcript file. Claude Code's reader walks the file from
+  the start and only then cuts what it returns, so the cost followed the size of the file rather
+  than what was shown: on this machine the largest chats are 0.9–2 GB, and the biggest cost about 28
+  seconds and over a gigabyte of memory to open — for six messages. A second pass over the same file
+  followed, to collect the time each row shows (5.6 s on the 2 GB chat).
+- A chat is now opened on the end of its transcript: the last 8 MB, widened while that keeps
+  bringing more of the conversation into view. Claude Code's own reader still does the reading and
+  the folding — it accepts being handed the lines instead of opening the file itself, so nothing
+  about a chat is parsed differently; it is simply given the part of the file that is being looked
+  at. Measured on the real transcripts here: the 353 MB chat returns exactly the same 310 messages
+  in 91 ms instead of 858 ms, the 27 MB chat the same 35 in 91 ms, and the 2 GB chat opens in 76 ms
+  instead of about 28 seconds. The pass that collects the times reads the same part of the file.
+- Scrolling to the top of a chat reads the part before it, 8 MB at a time, and puts it above what is
+  already there without moving the row under your eye. The button at the top does the same for
+  anyone who would rather click, and when the whole file is in hand the chat says "The beginning of
+  this chat". What comes back this way reaches further than before: Claude Code hands back only the
+  conversation since the last compaction, and scrolling up now walks past that into the rest of the
+  file. Measured on a 27 MB chat: 14 rows on opening, then 105, 157 and 189 rows in three steps of
+  65–235 ms each. Rewind is unchanged — it has always read the transcript file itself, so every
+  prompt of a chat is still in its list.
+- Because the reads are small, two things they forced are gone: the separate process the host
+  started for a large transcript, and the risk of the session host running out of memory that it was
+  built for in 1.0.41.
+- A prompt now appears in the chat the moment it is sent. It used to be written into the chat only
+  after the chat's process had started, which for a chat that was not running meant the prompt had
+  left the input box and was nowhere to be seen for as long as the start took — 12.5 seconds in one
+  measured case, 80 in another, because a chat on another provider runs its launcher first. The row
+  is shown as waiting until the process takes it, and taken out again if the chat cannot be started
+  at all (measured: a chat whose folder had been deleted leaves no stray row, and says why). A
+  command typed after "!" behaves the same way. Measured on a cold chat: the row appears after 20 ms
+  and the process comes up 3.5 seconds later.
+- A chat no longer says "Loading history…" when the window's link to the session host is re-made.
+  That link breaks by itself from time to time — nine times in the last two weeks, most recently at
+  09:14 today, when the host's connection overflowed while 41 chats were running — and every time,
+  the window threw away every chat's messages, which is why chats opened long before had to be read
+  again. The messages are kept now; only the "already read" marks go, so each chat is read again,
+  in milliseconds, the next time it is opened.
+
 ## 1.0.45 — 2026-09-23
 
 ### A chat that is stopped mid-work leaves a note in its input box, and a draft is no longer lost

@@ -5,6 +5,7 @@ import type {
   AppSettings,
   ChatMessage,
   CliSessionSummary,
+  EarlierMessages,
   EffortLevel,
   FileContent,
   FileProbe,
@@ -110,6 +111,8 @@ const api = {
   sessions: {
     list: () => invoke<{ records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] }>('sessions:list'),
     history: (id: string) => invoke<ChatMessage[]>('sessions:history', id),
+    /** The part of the chat before what is loaded — what scrolling to the top of the chat asks for. */
+    earlier: (id: string) => invoke<EarlierMessages>('sessions:earlier', id),
     create: (opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }) =>
       invoke<SessionRecord>('sessions:create', opts),
     importCli: (sessionId: string, cwd: string, title?: string) => invoke<SessionRecord>('sessions:importCli', sessionId, cwd, title),
