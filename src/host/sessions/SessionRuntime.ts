@@ -39,7 +39,7 @@ import type {
 } from '@shared/types'
 import { TranscriptState, looksSynthetic, recapText } from './transcript'
 import { handoffNote, hasUnfinishedWork, mergeHandoffNote, type HandoffSnapshot } from './handoffNote'
-import { EARLIER_WINDOW, readSessionHistory, readSessionSlice, readSubagentHistory } from './history'
+import { readSessionHistory, readSessionSlice, readSubagentHistory } from './history'
 import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
 import { splitList } from '@shared/util'
 
@@ -358,10 +358,9 @@ export class SessionRuntime {
     const to = this.historyFrom
     if (to <= 0) return { messages: [], more: false }
     const file = this.transcriptPath()
-    const from = Math.max(0, to - EARLIER_WINDOW)
     const state = new TranscriptState()
     try {
-      const entries = await readSessionSlice(this.record.claudeSessionId, this.record.cwd, file, from, to)
+      const { messages: entries, from } = await readSessionSlice(this.record.claudeSessionId, this.record.cwd, file, to)
       const { stamps, recaps } = await readTranscriptIndex(file, from, to)
       let ts = this.record.createdAt || Date.now()
       for (const e of entries) {
@@ -849,7 +848,7 @@ export class SessionRuntime {
    * itself is cut, which is what Claude Code's own rewind does to its transcript.
    */
   private async rewindPoint(messageId: string): Promise<{ text: string; forkAt: string | null; cutAt: number; cut: boolean; reason?: string }> {
-    if (this.transcript.messages.some((m) => m.id === messageId)) {
+    if (this.transcript.messages.findIndex((m) => m.id === messageId) > this.compactedUpTo()) {
       const { text, forkAt } = this.rewindTarget(messageId)
       return { text, forkAt, cutAt: 0, cut: false, reason: forkAt ? undefined : this.noForkReason(messageId) }
     }
@@ -863,6 +862,20 @@ export class SessionRuntime {
       cut: true,
       reason: found.forkAt ? undefined : 'This is the first prompt of the chat, so there is nothing before it to go back to.'
     }
+  }
+
+  /**
+   * Where the conversation Claude Code itself still has begins: the last compaction in the chat.
+   * The chat shows what came before it — the whole transcript is read, compaction or not — but
+   * Claude Code cannot be resumed there, so a rewind to a prompt above this line has to cut the
+   * transcript instead of forking it, as it always has.
+   */
+  private compactedUpTo(): number {
+    for (let i = this.transcript.messages.length - 1; i >= 0; i--) {
+      const m = this.transcript.messages[i]
+      if (m.kind === 'system' && m.subtype === 'compact_boundary') return i
+    }
+    return -1
   }
 
   /** Why there is no point to go back to before this prompt. */

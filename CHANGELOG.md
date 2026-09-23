@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.0.48 — 2026-09-23
+
+### A chat shows what was said in it, compaction or not
+
+- Reported: "something is still wrong, I cannot even load many chats' text in my 1.0.47 app". The
+  chats were not failing to load — they were loading five or six rows and stopping. Read from the
+  session host's own log of that morning: QuantTrade 5 rows, Memory 6, the 2 GB DataPruning chat 6,
+  Investment 5, LabGithub 5. A chat whose last act was a compaction showed nothing but the
+  "/compact" you typed and "Context compacted" under it.
+- The cause is in how a conversation is read, and it was there long before 1.0.46. Claude Code
+  builds a chat out of its transcript by taking the last entry and following each entry's parent
+  backwards; a compaction writes a fresh entry with no parent, so the walk ends there. That is right
+  for Claude Code — it is about to go on with the conversation, and may only use what is still in
+  the model's context — and wrong for a window whose job is to show what was said. Measured on a
+  39 MB chat: the part being looked at holds 1,943 messages, Claude Code's reader hands back 5, and
+  a full read of the whole file hands back the same 5.
+- A transcript is now read as the pieces of conversation it actually holds. A new piece begins
+  wherever an entry's parent is missing — what a compaction and a resumed session leave behind —
+  and each piece is handed to Claude Code's reader on its own, so it still does all the parsing and
+  folding of every message; the pieces are put back in the order the file has them, and an entry
+  written twice is kept once. Nothing is read differently, and nothing is parsed by this app.
+- What that is worth, on the chats on this machine (before → after): QuantTrade 5 → 489 messages,
+  Memory 6 → 1,277, DataPruning (2 GB) 6 → 332, HSDA (1.5 GB) 6 → 293, Investment 5 → 249,
+  LabGithub 5 → 275, this chat 33 → 402, the Interview chat 313 → 1,579.
+- A chat is opened on a smaller part of its file than before — 2 MB instead of 8, since that part
+  now yields hundreds of messages instead of a handful — and the read is widened, doubling, until
+  the chat holds about two screenfuls. Reading all 41 chats of this machine and keeping every
+  message of all of them took 532 ms in total and 142 MB of heap (489 MB resident), well under the
+  session host's ceiling of about 4 GB.
+- Scrolling to the top reaches further back the same way: 2 MB at a time, widened when that brings
+  back little, until the file is exhausted and the chat says "The beginning of this chat". Verified
+  on a copy of a real compacted chat in a test instance: it opens on 177 rows ending at "Context
+  compacted" where it used to open on 5, and scrolling up reaches its first message, 568 rows.
+- Rewind is unchanged, deliberately. A prompt from before the last compaction is now on screen, but
+  Claude Code still cannot be resumed there, so a rewind to it cuts the transcript as it always has;
+  a prompt in the current conversation still restarts Claude Code at the answer before it. Both were
+  verified in a test instance ("cut" for a prompt above the compaction line, the ordinary rewind for
+  one below it).
+- This one lives in the session host, which keeps your chats alive across an in-app update, so it
+  starts working after a full quit (⌘Q) and reopen.
+
 ## 1.0.47 — 2026-09-23
 
 ### Claude Opus 5.5
