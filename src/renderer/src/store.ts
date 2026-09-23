@@ -194,6 +194,9 @@ interface State {
 
 let toastSeq = 0
 
+/** History requests on their way, by chat: a second request for the same chat waits for the first. */
+const historyRequests = new Map<string, Promise<void>>()
+
 function upsertMessage(list: ChatMessage[], msg: ChatMessage): ChatMessage[] {
   const idx = list.findIndex((m) => m.id === msg.id)
   if (idx >= 0) {
@@ -365,18 +368,28 @@ export const useStore = create<State>((set, get) => ({
 
   ensureHistory: async (id) => {
     if (get().historyLoaded[id]) return
-    try {
-      const msgs = await window.api.sessions.history(id)
-      set((s) => {
-        // Live messages may have arrived while loading; merge by id.
-        const existing = s.messages[id] ?? []
-        const byId = new Map(msgs.map((m) => [m.id, m]))
-        for (const m of existing) if (!byId.has(m.id)) byId.set(m.id, m)
-        return { messages: { ...s.messages, [id]: [...byId.values()] }, historyLoaded: { ...s.historyLoaded, [id]: true } }
-      })
-    } catch (err) {
-      get().toast(`Failed to load history: ${(err as Error).message}`, 'error')
-    }
+    // Clicking a chat again while it is still loading asks for nothing new: the answer on its way
+    // is the same, and every extra copy of a long chat is more for the app to carry.
+    const pending = historyRequests.get(id)
+    if (pending) return pending
+    const request = (async () => {
+      try {
+        const msgs = await window.api.sessions.history(id)
+        set((s) => {
+          // Live messages may have arrived while loading; merge by id.
+          const existing = s.messages[id] ?? []
+          const byId = new Map(msgs.map((m) => [m.id, m]))
+          for (const m of existing) if (!byId.has(m.id)) byId.set(m.id, m)
+          return { messages: { ...s.messages, [id]: [...byId.values()] }, historyLoaded: { ...s.historyLoaded, [id]: true } }
+        })
+      } catch (err) {
+        get().toast(`Failed to load history: ${(err as Error).message}`, 'error')
+      } finally {
+        historyRequests.delete(id)
+      }
+    })()
+    historyRequests.set(id, request)
+    return request
   },
 
   loadEarlier: async (id) => {

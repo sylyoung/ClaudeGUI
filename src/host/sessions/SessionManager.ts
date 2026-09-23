@@ -26,6 +26,7 @@ import type {
 } from '@shared/types'
 import type { SessionsStore } from '../../main/store'
 import { SessionRuntime, lastPromptTimeFromFile, projectDirFor, type RateLimitEventInfo } from './SessionRuntime'
+import { messagesForWindow } from './forWindow'
 import type { ProviderLaunch } from '../providers/ProviderService'
 
 export type NotifyKind = 'turn' | 'permission' | 'error'
@@ -291,7 +292,12 @@ export class SessionManager {
   }
 
   async history(id: string): Promise<ChatMessage[]> {
-    return this.get(id).ensureHistory()
+    return messagesForWindow(await this.get(id).ensureHistory())
+  }
+
+  /** The pictures one tool call returned, which the rows handed to the window leave out. */
+  async toolImages(id: string, toolUseId: string): Promise<ImageAttachment[]> {
+    return this.get(id).toolImages(toolUseId)
   }
 
   /** The part of a chat before the part that is loaded, read when the user scrolls to the top. */

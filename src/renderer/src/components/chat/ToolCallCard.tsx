@@ -3,7 +3,7 @@ import {
   Ban, Bot, Check, ChevronDown, ChevronRight, Circle, Clock, FileEdit, FilePlus, FileText, Globe, ListChecks, Loader2, Search,
   Terminal, Wrench, X, HelpCircle, Sparkles, FolderSearch, MessageSquare
 } from 'lucide-react'
-import type { ChatMessage, ToolUseBlockView } from '@shared/types'
+import type { ChatMessage, ImageAttachment, ToolUseBlockView } from '@shared/types'
 import { CodeBlock } from '../common/CodeBlock'
 import { DiffView } from '../common/DiffView'
 import { Markdown } from './Markdown'
@@ -82,6 +82,37 @@ export function toolSummary(block: ToolUseBlockView): string {
   }
 }
 
+/** Pictures fetched for opened cards, kept while the window is open so a card scrolled away and back does not ask again. */
+const fetchedImages = new Map<string, ImageAttachment[]>()
+
+/**
+ * A tool's pictures, once its card is open. The chat's rows arrive without them (a PDF read returns
+ * every page as a picture, megabytes that would otherwise travel with the chat every time it opens),
+ * so they are fetched from the session host the first time the card shows them.
+ */
+function useToolImages(sessionId: string | undefined, block: ToolUseBlockView, shown: boolean): { images?: ImageAttachment[]; error?: string } {
+  const held = block.result?.images
+  const missing = Boolean(held?.some((i) => !i.data))
+  const key = `${sessionId}/${block.id}`
+  const [state, setState] = useState<{ images?: ImageAttachment[]; error?: string }>(() => ({ images: fetchedImages.get(key) }))
+  useEffect(() => {
+    if (!shown || !missing || !sessionId || state.images || state.error) return
+    let live = true
+    window.api.sessions.toolImages(sessionId, block.id).then(
+      (images) => {
+        fetchedImages.set(key, images)
+        if (live) setState({ images })
+      },
+      (err: Error) => live && setState({ error: err.message })
+    )
+    return () => {
+      live = false
+    }
+  }, [shown, missing, sessionId, key, state.images, state.error])
+  if (!missing) return { images: held }
+  return state
+}
+
 function extOf(p: unknown): string | undefined {
   if (typeof p !== 'string') return undefined
   const m = /\.([A-Za-z0-9]+)$/.exec(p)
@@ -107,6 +138,8 @@ export function ToolCallCard({ block, depth = 0, renderChild }: { block: ToolUse
         : expandAll || isError || EXPANDED_BY_DEFAULT.has(block.name) || (block.children?.length ?? 0) > 0)
   const i = block.input
   const filePath = typeof (i.file_path ?? i.notebook_path) === 'string' ? String(i.file_path ?? i.notebook_path) : undefined
+  const pictures = useToolImages(ctx?.sessionId, block, expanded)
+  const pictureCount = block.result?.images?.length ?? 0
 
   const status = (() => {
     switch (block.status) {
@@ -189,13 +222,20 @@ export function ToolCallCard({ block, depth = 0, renderChild }: { block: ToolUse
                   </pre>
                 )
               ) : (
-                !block.result.images?.length && <span className="faint">(empty)</span>
+                !pictureCount && <span className="faint">(empty)</span>
               )}
-              {block.result.images?.map((img, k) => (
+              {pictures.images?.map((img, k) => (
                 <div className="images" key={k}>
                   <img src={`data:${img.mediaType};base64,${img.data}`} alt="tool output" />
                 </div>
               ))}
+              {pictureCount > 0 && !pictures.images && (
+                <span className="faint">
+                  {pictures.error
+                    ? `The ${pictureCount === 1 ? 'picture' : `${pictureCount} pictures`} could not be loaded: ${pictures.error}`
+                    : `Loading ${pictureCount === 1 ? 'the picture' : `${pictureCount} pictures`}…`}
+                </span>
+              )}
             </div>
           )}
         </div>

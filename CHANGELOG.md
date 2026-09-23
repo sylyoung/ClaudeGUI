@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.0.49 — 2026-09-23
+
+### Opening a chat that read PDFs no longer freezes the app
+
+- Reported: "the text loading problem is still there. And I think I knew when this happens. If I
+  start a GPT chat, the whole app is like frozen loading." Seen in the app itself, a few minutes
+  after it was reopened on 1.0.48: its main process — the part between the window and the chats —
+  at 100% CPU, its memory swinging between 1 and 2.4 GB, for about ten minutes after the Interview
+  chat was opened. Nothing could reach the window while that lasted: no chat's text, no reply, not
+  the prompt you had just sent.
+- A sample of that process put 95% of its time in the code that receives data from the session
+  host. The session host sends each chat's opening messages as one piece, and macOS hands a local
+  connection over 8 KB at a time; for each 8 KB the app added the new part to everything received so
+  far and searched all of it again for the end of the piece. The work grows with the square of the
+  size: a 9 MB piece took 1.3 seconds in a quiet test and much longer in the app, which was carrying
+  41 chats at the time.
+- Why GPT chats: it is not the model, it is what those chats did. Reading a PDF returns every page
+  as a picture of about 200 KB, and the Interview chat read many PDFs — its opening messages were
+  9.1 MB, 7.3 MB of them pictures. The Claude chats of this machine open with 0.2 to 0.4 MB.
+- The app now keeps the 8 KB pieces as they come, searches only the new one, and joins them once,
+  when the whole message is there: that same 9.1 MB is read in 8 ms instead of 1.3 s. Measured in a
+  test copy of the app on a copy of the Interview chat's recent part, fetching the opened chat took
+  0.9–1.0 s with 1.0.48 and 17–24 ms with 1.0.49. Characters outside ASCII still arrive intact (the
+  existing check over a real socket, with a 3 MB Chinese transcript, passes).
+- A chat's opening messages no longer carry the pictures tools returned. A tool card shows its
+  pictures only once it is opened, so now it fetches them from the session host at that moment
+  (4 PDF pages, about 760 KB, in 3 ms). The Interview chat opens with 1.84 MB instead of 9.1 MB.
+  Pictures you paste into a prompt, and the older part of a chat read when you scroll to the top,
+  are sent as before.
+- Clicking a chat again while it is still loading no longer asks for all of it a second time.
+- The picture fetching needs the session host of this version: quit with ⌘Q and open the app again
+  after updating. The faster reading works as soon as the updated app starts.
+
 ## 1.0.48 — 2026-09-23
 
 ### A chat shows what was said in it, compaction or not

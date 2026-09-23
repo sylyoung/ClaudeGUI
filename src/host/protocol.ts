@@ -5,7 +5,6 @@
  * enough to stop it.
  */
 import type { Socket } from 'net'
-import { StringDecoder } from 'string_decoder'
 import type { AppSettings, SessionEvent } from '@shared/types'
 import type { RateLimitEventInfo } from './sessions/SessionRuntime'
 
@@ -67,24 +66,29 @@ export type Frame = HelloFrame | WelcomeFrame | RequestFrame | ResponseFrame | E
 /**
  * Incremental newline-delimited JSON parser.
  *
- * A socket hands over whatever bytes were ready, so a chunk can end anywhere — including in the
- * middle of a character. Every character outside ASCII takes more than one byte in UTF-8, so
- * decoding each chunk on its own replaces a character cut in half with the Unicode replacement
- * character, and because that is still valid JSON the damage is never noticed: it simply arrives
- * in the chat. A chat history is sent as one frame of many chunks, so a long conversation in
- * Chinese, or one with dashes and quotation marks, loses a few characters every time it is opened.
- * StringDecoder holds back the trailing bytes of an unfinished character until the rest of it comes.
+ * A socket hands over whatever bytes were ready, and on macOS a Unix socket hands them over 8 KB at
+ * a time, so a chat history of several megabytes arrives in hundreds of chunks. The chunks are kept
+ * as they came and only the new one is searched for the end of the frame; the frame is joined and
+ * decoded once, when its newline arrives. Appending each chunk to the text read so far and searching
+ * all of it again made one frame cost the square of its size: a 9 MB history (a chat that read PDFs,
+ * whose pages come back as pictures) kept the app's main process busy for minutes, and every chat,
+ * every prompt sent and every reply waited behind it.
+ *
+ * Decoding whole frames also keeps every character intact. A chunk can end in the middle of a
+ * character — everything outside ASCII takes more than one byte in UTF-8 — but a frame cannot: the
+ * newline byte never occurs inside a multi-byte character, so text cut at a newline is always whole.
  */
 export class LineParser {
-  private buf = ''
-  private readonly decoder = new StringDecoder('utf8')
+  private parts: Buffer[] = []
   constructor(private onFrame: (f: Frame) => void, private onBad: (line: string, err: Error) => void) {}
   feed(chunk: Buffer | string): void {
-    this.buf += typeof chunk === 'string' ? chunk : this.decoder.write(chunk)
+    let rest = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk
     let idx: number
-    while ((idx = this.buf.indexOf('\n')) >= 0) {
-      const line = this.buf.slice(0, idx)
-      this.buf = this.buf.slice(idx + 1)
+    while ((idx = rest.indexOf(10)) >= 0) {
+      const head = rest.subarray(0, idx)
+      const line = (this.parts.length ? Buffer.concat([...this.parts, head]) : head).toString('utf8')
+      this.parts = []
+      rest = rest.subarray(idx + 1)
       if (!line.trim()) continue
       try {
         this.onFrame(JSON.parse(line) as Frame)
@@ -92,6 +96,7 @@ export class LineParser {
         this.onBad(line, err as Error)
       }
     }
+    if (rest.length) this.parts.push(rest)
   }
 }
 

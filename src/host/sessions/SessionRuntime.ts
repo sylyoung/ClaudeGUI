@@ -40,6 +40,7 @@ import type {
 import { TranscriptState, looksSynthetic, recapText } from './transcript'
 import { handoffNote, hasUnfinishedWork, mergeHandoffNote, type HandoffSnapshot } from './handoffNote'
 import { readSessionHistory, readSessionSlice, readSubagentHistory } from './history'
+import { findToolImages, messageForWindow, messagesForWindow } from './forWindow'
 import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
 import { splitList } from '@shared/util'
 
@@ -335,8 +336,17 @@ export class SessionRuntime {
     this.historyLoaded = true
     this.live.historyFrom = this.historyFrom
     this.stateDirty = true
-    this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: this.transcript.messages })
+    this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: messagesForWindow(this.transcript.messages) })
     this.scheduleFlush()
+  }
+
+  /**
+   * The pictures a tool call returned, for its card in the window: the rows the window gets leave
+   * them here (see forWindow.ts), and the card asks for them when it is opened.
+   */
+  async toolImages(toolUseId: string): Promise<ImageAttachment[]> {
+    await this.ensureHistory()
+    return findToolImages(this.transcript.messages, toolUseId) ?? []
   }
 
   /**
@@ -346,6 +356,8 @@ export class SessionRuntime {
    * straight to the window rather than added to the chat's own state: the running conversation is
    * not disturbed by it, and the session host does not end up holding a whole transcript again for
    * a chat somebody scrolled through once. The window keeps them for as long as the chat is open.
+   * For the same reason they keep the pictures tools returned: the host has nowhere else to fetch
+   * them from later, and a slice read on request is not what holds up opening a chat.
    */
   async earlier(): Promise<EarlierMessages> {
     if (this.earlierPromise) return this.earlierPromise
@@ -1939,7 +1951,7 @@ export class SessionRuntime {
   flush(): void {
     const { changed, removed } = this.transcript.takeChanges()
     for (const id of removed) this.deps.emit({ type: 'message-removed', sessionId: this.id, messageId: id })
-    for (const m of changed) this.deps.emit({ type: 'message', sessionId: this.id, message: m })
+    for (const m of changed) this.deps.emit({ type: 'message', sessionId: this.id, message: messageForWindow(m) })
     if (this.stateDirty) {
       this.stateDirty = false
       this.deps.emit({ type: 'state', state: { ...this.live } })

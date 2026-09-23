@@ -134,6 +134,8 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.history(a[0])
     case 'earlier':
       return manager.earlier(a[0])
+    case 'toolImages':
+      return manager.toolImages(a[0], a[1])
     case 'create':
       return manager.create(a[0])
     case 'importCli':

@@ -271,6 +271,11 @@ export interface ImageAttachment {
   mediaType: string
   data: string // base64
   name?: string
+  /**
+   * Set, with `data` left empty, on a picture a tool returned that stayed in the session host: the
+   * window asks for it (sessions.toolImages) when its tool card is opened. The size in bytes.
+   */
+  bytes?: number
 }
 
 export interface TextBlockView {

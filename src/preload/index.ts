@@ -113,6 +113,8 @@ const api = {
     history: (id: string) => invoke<ChatMessage[]>('sessions:history', id),
     /** The part of the chat before what is loaded — what scrolling to the top of the chat asks for. */
     earlier: (id: string) => invoke<EarlierMessages>('sessions:earlier', id),
+    /** The pictures one tool call returned: the chat's rows leave them out until its card is opened. */
+    toolImages: (id: string, toolUseId: string) => invoke<ImageAttachment[]>('sessions:toolImages', id, toolUseId),
     create: (opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }) =>
       invoke<SessionRecord>('sessions:create', opts),
     importCli: (sessionId: string, cwd: string, title?: string) => invoke<SessionRecord>('sessions:importCli', sessionId, cwd, title),

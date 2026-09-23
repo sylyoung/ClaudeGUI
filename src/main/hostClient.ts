@@ -384,6 +384,9 @@ export class HostClient extends EventEmitter {
   earlier(id: string): Promise<EarlierMessages> {
     return this.call('earlier', id)
   }
+  toolImages(id: string, toolUseId: string): Promise<ImageAttachment[]> {
+    return this.call('toolImages', id, toolUseId)
+  }
   create(opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): Promise<SessionRecord> {
     return this.call('create', opts)
   }
