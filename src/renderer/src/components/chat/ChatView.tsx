@@ -32,6 +32,7 @@ const GB = 1024 * 1024 * 1024
 const FALLBACK_MODELS = [
   { value: '', label: 'Default (settings.json)' },
   { value: 'claude-fable-5-1', label: 'Fable 5.1 (claude-fable-5-1)' },
+  { value: 'claude-opus-5-5', label: 'Opus 5.5 (claude-opus-5-5)' },
   { value: 'claude-opus-5', label: 'Opus 5 (claude-opus-5)' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5 (claude-sonnet-5)' },
   { value: 'claude-haiku-4-5', label: 'Haiku 4.5 (claude-haiku-4-5)' }

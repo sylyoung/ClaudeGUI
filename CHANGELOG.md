@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.0.47 — 2026-09-23
+
+### Claude Opus 5.5
+
+- Asked: "I think claude opus 5.5 is released?" It was — on 22 September 2026, the day before. The
+  app could not offer it: Claude Code adds a model, and the copy the app carries was 2.1.263, from
+  before the release. Opus 5.5 arrived in Claude Code 2.1.280, whose note reads "Added Claude Opus
+  5.5 (`claude-opus-5-5`), now the default Opus model". The app now carries that version (Agent SDK
+  0.3.280).
+- What the model is: `claude-opus-5-5`, a 1M-token context, $4 per million tokens in and $20 out —
+  a fifth less than Opus 5 — and Anthropic's suggested starting point for most work, with Fable 5.1
+  still the one for the hardest and longest-running tasks. Opus 5 stays available and chats already
+  running on it are untouched (verified: a chat pinned to `claude-opus-5` starts and stays there).
+- A new chat now starts on Opus 5.5 where it used to start on Opus 5, because that is what Claude
+  Code's default Opus means today. Verified in a test instance: a freshly created chat reports
+  `claude-opus-5-5` and a context window of 1,000,000 tokens.
+- The model picker inside a running chat is Claude Code's own list, so it needed nothing: it now
+  offers "Opus", "Opus (1M context)", "Fable", "Sonnet" and "Haiku", each described in Claude Code's
+  own words ("Opus 5.5 · Best for everyday, complex tasks"). The three lists the app keeps itself
+  did need it, and have it: the picker of a chat that is not running, the new-chat dialog, and the
+  suggestions under "Default model for new sessions" in Settings.
+- A chat on Opus 5.5 would have been named "Opus 5" everywhere — in the sidebar, in the chat's
+  status row, in rewind. Model names are matched by the longest id that fits, and "claude-opus-5-5"
+  begins with "claude-opus-5", so the shorter name won. The longer id is now tried first (verified:
+  the sidebar reads "Opus 5.5" and the status row "Default · Opus 5.5").
+- The app now says which Claude Code it runs, since that is what decides which models a chat can be
+  given: Settings → Claude ends its note with "In use now: Claude Code 2.1.280", and Settings →
+  About lists "Claude Code 2.1.280" above the Agent SDK's own 0.3.280. It is read from the
+  executable actually in use, so pointing the app at your own build shows that build's version.
+- Reading a chat's history was re-checked against the new Claude Code, because 1.0.46 hands it the
+  part of the transcript being looked at rather than the file: same messages as a full read on every
+  chat tested (27 MB: 35 messages, same; 357 MB: 119 messages in 63 ms against 799 ms for the full
+  read, same; 2 GB: 6 messages in 71 ms).
+- The new Claude Code starts working after a full quit (⌘Q) and reopen, not at the moment of the
+  update: the session host keeps your chats alive across an in-app update, and it is the host that
+  runs Claude Code.
+
 ## 1.0.46 — 2026-09-23
 
 ### A chat opens on its recent messages, and reaches further back when you scroll up

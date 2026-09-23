@@ -831,6 +831,8 @@ export interface AppInfo {
   electron: string
   node: string
   sdkVersion: string
+  /** Version of the Claude Code CLI inside the executable in use, e.g. "2.1.280"; empty if it could not be asked. */
+  claudeVersion?: string
   userDataPath: string
   claudeExecutable: string
   homeDir: string

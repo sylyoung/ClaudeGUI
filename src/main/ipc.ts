@@ -16,6 +16,27 @@ import { openExternal, openInEditor, openPath, openTerminal, openWithApp, showIt
 import { getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache, getLoginShellEnv } from './env'
 import * as gitSvc from './gitService'
 
+/**
+ * The Claude Code version inside an executable. The SDK's own package version (0.3.x) is what the
+ * app has shown so far, but the version people read about — the one whose notes say which models it
+ * knows — is Claude Code's (2.1.x), and only the binary itself can say it. Asked once per
+ * executable, so switching to your own build shows that build's version.
+ */
+const claudeVersions = new Map<string, string>()
+
+function claudeVersionOf(exe: string): Promise<string> {
+  const known = claudeVersions.get(exe)
+  if (known !== undefined) return Promise.resolve(known)
+  return new Promise((resolve) => {
+    execFile(exe, ['--version'], { timeout: 5000 }, (err, out) => {
+      // "2.1.280 (Claude Code)" — the number is what is shown.
+      const v = err ? '' : String(out).trim().split(/\s+/)[0]
+      claudeVersions.set(exe, v)
+      resolve(v)
+    })
+  })
+}
+
 export interface IpcContext {
   store: SettingsStore
   host: HostClient
@@ -73,19 +94,23 @@ export function registerIpc(ctx: IpcContext): void {
   const env = () => getSpawnEnv(parseExtraEnv(settings().extraEnv))
 
   // ---- app / settings
-  handle('app:info', (): AppInfo => ({
-    version: app.getVersion(),
-    platform: process.platform,
-    electron: process.versions.electron,
-    node: process.versions.node,
-    sdkVersion: ctx.sdkVersion,
-    userDataPath: app.getPath('userData'),
-    claudeExecutable: ctx.resolveExecutable(),
-    homeDir: os.homedir(),
-    packaged: app.isPackaged,
-    bundlePath: ctx.bundlePath,
-    logFile: ctx.logFile
-  }))
+  handle('app:info', async (): Promise<AppInfo> => {
+    const exe = ctx.resolveExecutable()
+    return {
+      version: app.getVersion(),
+      platform: process.platform,
+      electron: process.versions.electron,
+      node: process.versions.node,
+      sdkVersion: ctx.sdkVersion,
+      claudeVersion: await claudeVersionOf(exe),
+      userDataPath: app.getPath('userData'),
+      claudeExecutable: exe,
+      homeDir: os.homedir(),
+      packaged: app.isPackaged,
+      bundlePath: ctx.bundlePath,
+      logFile: ctx.logFile
+    }
+  })
   handle('app:theme', () => ctx.getThemeInfo())
   handle('app:startupNotice', () => ctx.takeStartupNotice())
   handle('settings:get', () => settings())

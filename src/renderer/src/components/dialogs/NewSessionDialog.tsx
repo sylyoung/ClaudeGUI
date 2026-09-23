@@ -8,7 +8,7 @@ import { decodeModelChoice, encodeModelChoice } from '@/lib/providers'
 
 import { EFFORTS, EFFORT_LABELS, MODES } from '@/lib/options'
 
-const CLAUDE_MODELS = ['claude-fable-5-1', 'claude-fable-5-1[1m]', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']
+const CLAUDE_MODELS = ['claude-fable-5-1', 'claude-fable-5-1[1m]', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']
 /** Picker value meaning "type a model id yourself". */
 const CUSTOM = '__custom__'
 
@@ -109,7 +109,7 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
             ))}
           </select>
           {choice === CUSTOM && (
-            <input className="input" style={{ marginTop: 6 }} value={customModel} onChange={(e) => setCustomModel(e.target.value)} placeholder="model id, e.g. claude-opus-5" spellCheck={false} autoFocus />
+            <input className="input" style={{ marginTop: 6 }} value={customModel} onChange={(e) => setCustomModel(e.target.value)} placeholder="model id, e.g. claude-opus-5-5" spellCheck={false} autoFocus />
           )}
         </div>
         <div className="field">

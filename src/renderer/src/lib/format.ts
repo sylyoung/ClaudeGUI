@@ -69,10 +69,14 @@ export function shortenPath(p: string, home?: string): string {
   return p
 }
 
-/** Names of the Claude models as people write them, matched by prefix so a dated id still finds its name. */
+/**
+ * Names of the Claude models as people write them, matched by prefix so a dated id still finds its
+ * name. The longer id comes first, or "claude-opus-5-5" would be read as Opus 5.
+ */
 const CLAUDE_MODEL_NAMES: Record<string, string> = {
   'claude-fable-5-1': 'Fable 5.1',
   'claude-fable-5': 'Fable 5',
+  'claude-opus-5-5': 'Opus 5.5',
   'claude-opus-5': 'Opus 5',
   'claude-opus-4-8': 'Opus 4.8',
   'claude-opus-4-7': 'Opus 4.7',

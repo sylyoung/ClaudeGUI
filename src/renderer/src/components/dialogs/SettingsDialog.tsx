@@ -217,14 +217,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           {tab === 'claude' && (
             <>
               <Section title="Claude Code">
-                <Field label={`Claude executable (empty = SDK-bundled binary, v${appInfo?.sdkVersion})`} hint="Settings, skills, hooks and MCP servers from ~/.claude are used either way. Applies to newly started processes.">
+                <Field label={`Claude executable (empty = SDK-bundled binary, v${appInfo?.sdkVersion})`} hint={`Settings, skills, hooks and MCP servers from ~/.claude are used either way. Applies to newly started processes.${appInfo?.claudeVersion ? ` In use now: Claude Code ${appInfo.claudeVersion}.` : ''}`}>
                   <input className="input" value={draft.claudeExecutable} onChange={(e) => upd({ claudeExecutable: e.target.value })} placeholder={appInfo?.claudeExecutable} spellCheck={false} />
                 </Field>
                 <div className="grid2">
                   <Field label="Default model for new sessions">
                     <input className="input" value={draft.defaultModel} onChange={(e) => upd({ defaultModel: e.target.value })} placeholder="(use settings.json model)" spellCheck={false} list="model-ids" />
                     <datalist id="model-ids">
-                      {['claude-fable-5-1', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'].map((m) => <option key={m} value={m} />)}
+                      {['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'].map((m) => <option key={m} value={m} />)}
                     </datalist>
                   </Field>
                   <Field label="Default permission mode">
@@ -416,6 +416,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           {tab === 'about' && (
             <Section title={`ClaudeGUI ${appInfo?.version ?? ''}`}>
               <div className="kv" style={{ fontSize: 12.5 }}>
+                <span className="k">Claude Code</span><span className="v">{appInfo?.claudeVersion || 'unknown'}</span>
                 <span className="k">Claude Agent SDK</span><span className="v">{appInfo?.sdkVersion}</span>
                 <span className="k">Claude executable</span><span className="v">{appInfo?.claudeExecutable || '(bundled)'}</span>
                 <span className="k">Electron</span><span className="v">{appInfo?.electron}</span>
