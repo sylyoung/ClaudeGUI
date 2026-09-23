@@ -192,6 +192,8 @@ export function registerIpc(ctx: IpcContext): void {
   handle('sessions:setActive', (id: string | undefined) => host.setActive(id))
   handle('sessions:stopTask', (id: string, taskId: string) => host.stopTask(id, taskId))
   handle('sessions:backgroundTasks', (id: string, toolUseId?: string) => host.backgroundTasks(id, toolUseId))
+  handle('sessions:clearHandoffNote', (id: string) => host.clearHandoffNote(id))
+  handle('sessions:setDraft', (id: string, text: string) => host.setDraft(id, text))
   handle('sessions:commands', (id: string) => host.commands(id))
   handle('sessions:models', (id: string) => host.models(id))
   handle('sessions:contextUsage', (id: string, full?: boolean) => host.contextUsage(id, full))

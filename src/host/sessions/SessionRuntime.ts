@@ -37,6 +37,7 @@ import type {
   TextBlockView
 } from '@shared/types'
 import { TranscriptState, looksSynthetic, recapText } from './transcript'
+import { handoffNote, hasUnfinishedWork, mergeHandoffNote, type HandoffSnapshot } from './handoffNote'
 import { readSessionHistory, readSubagentHistory } from './history'
 import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
 import { splitList } from '@shared/util'
@@ -232,6 +233,8 @@ export class SessionRuntime {
   private lastTurnEndedAt = 0
   /** A recap is being asked for; a second request would pay for the same sentence twice. */
   private recapInFlight = false
+  /** What the chat had in hand when a stop began, taken before the process is torn down. */
+  private handoff: HandoffSnapshot | null = null
 
   constructor(
     public record: SessionRecord,
@@ -625,6 +628,10 @@ export class SessionRuntime {
         )
       }
     } finally {
+      // Read before the state below is cleared: the queue, the tools in flight and the background
+      // tasks are what the note is written from. A stop has usually taken it already.
+      const handoff = this.handoff ?? this.captureHandoff()
+      this.handoff = null
       if (this.q === q) {
         this.q = null
         this.queue = null
@@ -659,12 +666,83 @@ export class SessionRuntime {
       } else {
         this.setStatus('stopped')
       }
+      this.writeHandoffNote(handoff)
       this.scheduleFlush()
       this.deps.onExit(this, this.stopping ? undefined : error)
     }
   }
 
+  /**
+   * What this chat still has in hand right now (see handoffNote.ts). Only work that would be lost
+   * counts: a turn being answered, background shells, monitors and subagents, a command started
+   * from the input box, a tool waiting for permission, and prompts Claude Code never answered.
+   */
+  private captureHandoff(): HandoffSnapshot {
+    const promptText = (id: string): string => {
+      const m = this.transcript.messages.find((x) => x.id === id)
+      return m?.kind === 'user' && !m.synthetic ? m.text : ''
+    }
+    const shellCommand = (id: string): string => {
+      const m = this.transcript.messages.find((x) => x.id === id)
+      const text = m && 'text' in m ? m.text : ''
+      return /<bash-input>([\s\S]*?)<\/bash-input>/.exec(text)?.[1] ?? ''
+    }
+    return {
+      stoppedAt: Date.now(),
+      tasks: [...this.tasks.values()].filter((t) => !t.ambient && (t.status === 'running' || t.status === 'pending' || t.status === 'paused')),
+      tools: this.live.activeTools.map((t) => ({ toolName: t.toolName, toolUseId: t.toolUseId, elapsedSeconds: t.elapsedSeconds })),
+      working: Object.entries(this.live.promptDelivery)
+        .filter(([, state]) => state === 'working')
+        .map(([id]) => promptText(id))
+        .filter(Boolean),
+      queued: this.live.queuedIds.map(promptText).filter(Boolean),
+      shells: (this.live.runningShellIds ?? []).map(shellCommand).filter(Boolean),
+      permissions: this.live.pendingPermissions.map((p) => ({
+        toolName: p.displayName || p.toolName,
+        detail: typeof p.input.command === 'string' ? p.input.command : typeof p.input.file_path === 'string' ? p.input.file_path : p.description
+      })),
+      turnInFlight:
+        this.live.status === 'running' ||
+        this.live.activity === 'requesting' ||
+        this.live.activity === 'compacting' ||
+        this.live.activeTools.length > 0,
+      recap: this.live.lastRecap ?? this.record.lastRecap
+    }
+  }
+
+  /**
+   * Leave the note on the record, where it survives the app being closed and waits until the chat
+   * is opened again; the input box is where it is read (Composer). A chat that was only sitting
+   * idle loses nothing and gets no note.
+   */
+  private writeHandoffNote(snap: HandoffSnapshot): void {
+    if (!hasUnfinishedWork(snap)) return
+    const note = handoffNote(snap, this.transcript.messages)
+    this.record.draft = mergeHandoffNote(this.record.draft, this.record.handoffNote, note)
+    this.record.handoffNote = note
+    this.record.handoffNoteAt = snap.stoppedAt
+    this.deps.saveRecord(this.record)
+    this.deps.log(`[session ${this.id}] unfinished work noted for the input box`)
+  }
+
+  /** The unsent text of this chat's input box, kept with the chat so a quit cannot lose it. */
+  setDraft(text: string): void {
+    const draft = text || undefined
+    if (this.record.draft === draft) return
+    this.record.draft = draft
+    this.deps.saveRecord(this.record)
+  }
+
+  /** The user has taken the note out of the box; their own words in it stay where they are. */
+  clearHandoffNote(): void {
+    if (this.record.handoffNote === undefined && this.record.handoffNoteAt === undefined) return
+    this.record.handoffNote = undefined
+    this.record.handoffNoteAt = undefined
+    this.deps.saveRecord(this.record)
+  }
+
   async stop(graceful = true): Promise<void> {
+    if (this.q) this.handoff = this.captureHandoff()
     for (const [id, child] of this.shellRuns) {
       this.shellStopReasons.set(id, 'stopped')
       killShell(child)

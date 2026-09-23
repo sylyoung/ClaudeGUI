@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.0.45 — 2026-09-23
+
+### A chat that is stopped mid-work leaves a note in its input box, and a draft is no longer lost
+
+- Request: "I want that regardless of whether I use the update and restart button, or use command +
+  Q, the running chats with monitors/shells/subagents would all generate text in the chat box that
+  explains the unfinished things and let the chat be able to pick up when the app is reopened. such
+  text would not be automatically inputted, waiting for me to input, and stays there no matter
+  regardless of whether there are more closes/restarts, i.e., only gets deleted from the input box
+  when I delete them."
+- When a chat's process ends with work still in hand, the session host writes a note into that
+  chat's input box: the turn that was cut off (and what it was running), the background shells,
+  monitors and subagents that died with the process (with the command behind each), a command
+  started from the input box, a tool that was waiting for permission, prompts that were never
+  answered, and Claude Code's own last recap of where the chat stood. It ends with what to do about
+  it, so sending it as it stands is a sensible instruction. Nothing is sent: the note waits in the
+  box until the user decides.
+- It is written on every path that ends a chat's process: quitting the app (⌘Q), restarting the
+  session host, a Stop, a provider or model switch that replaces the process, and a process that
+  ends by itself. A chat that was only sitting idle loses nothing and gets no note.
+- The note lives with the chat, in sessions.json, not in the window. It is put back into an empty
+  input box every time the chat is opened, however many times the app is closed in between, and it
+  goes away only when the user edits it out of the box, clears the box or sends it. A newer note
+  takes the place of the one before it while that one is still exactly as the app wrote it; words
+  the user typed themselves are never overwritten — the note goes below them.
+- Found while testing this and fixed with it: an unsent draft did not survive a quit at all. The
+  input box was kept in the window's own storage, which is not written out when the app closes, so
+  anything typed and left unsent was gone on the next start (measured: the stored value was there
+  six seconds after typing and missing after the restart). Drafts are now kept with the chat like
+  the note, saved a moment after the typing stops; a draft still lying in the old storage is taken
+  over the first time that chat is opened.
+- Checked in a running app, with the app quit and reopened between each step: a chat with a command
+  still running left its note and showed it on reopening; a typed draft survived the quit; a second
+  stop replaced the note and kept the typed words above it; deleting the note kept it deleted; a
+  chat stopped with nothing running left no note; and a chat stopped while it was on screen showed
+  its note immediately.
+- What this cannot cover: a session host that is killed outright or crashes has no chance to write
+  anything, and the note is only written by a host of this version — chats stopped by an older one
+  leave nothing behind.
+
 ## 1.0.44 — 2026-09-23
 
 ### The model list offers only models that can be chosen

@@ -141,6 +141,9 @@ const api = {
     setActive: (id: string | undefined) => invoke<void>('sessions:setActive', id),
     stopTask: (id: string, taskId: string) => invoke<void>('sessions:stopTask', id, taskId),
     backgroundTasks: (id: string, toolUseId?: string) => invoke<boolean>('sessions:backgroundTasks', id, toolUseId),
+    clearHandoffNote: (id: string) => invoke<void>('sessions:clearHandoffNote', id),
+    /** The unsent text of the chat's input box, kept with the chat. */
+    setDraft: (id: string, text: string) => invoke<void>('sessions:setDraft', id, text),
     commands: (id: string) => invoke<SlashCommandView[]>('sessions:commands', id),
     models: (id: string) => invoke<ModelInfoView[]>('sessions:models', id),
     contextUsage: (id: string, full?: boolean) => invoke<SessionLiveState['contextUsage'] | null>('sessions:contextUsage', id, full),

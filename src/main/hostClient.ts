@@ -465,6 +465,16 @@ export class HostClient extends EventEmitter {
   backgroundTasks(id: string, toolUseId?: string): Promise<boolean> {
     return this.call('backgroundTasks', id, toolUseId)
   }
+
+  /** The user has taken the chat's note about unfinished work out of its input box. */
+  clearHandoffNote(id: string): Promise<void> {
+    return this.call('clearHandoffNote', id)
+  }
+
+  /** Keep the unsent text of a chat's input box with the chat, so quitting cannot lose it. */
+  setDraft(id: string, text: string): Promise<void> {
+    return this.call('setDraft', id, text)
+  }
   commands(id: string): Promise<SlashCommandView[]> {
     return this.call('commands', id)
   }

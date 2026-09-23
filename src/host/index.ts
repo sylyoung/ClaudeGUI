@@ -182,6 +182,10 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.get(a[0]).stopTask(a[1])
     case 'backgroundTasks':
       return manager.get(a[0]).backgroundTasks(a[1])
+    case 'clearHandoffNote':
+      return manager.get(a[0]).clearHandoffNote()
+    case 'setDraft':
+      return manager.get(a[0]).setDraft(a[1])
     case 'commands':
       return manager.get(a[0]).getCommands()
     case 'models':

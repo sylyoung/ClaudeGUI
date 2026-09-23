@@ -3,7 +3,6 @@ import type {
   AuthState,
   AppInfo,
   AppSettings,
-  BackgroundTaskView,
   ChatMessage,
   GitCommitInfo,
   GitDiffResult,
@@ -97,12 +96,6 @@ interface State {
   sentQueue: Record<string, { id?: string; text: string; images: ImageAttachment[] }[]>
   /** Text to put back into the composer of a session (set by interruptSession). */
   composerRestore: Record<string, { text: string; images: ImageAttachment[]; nonce: number }>
-  /**
-   * Notes the app wrote for a chat's input box but has not placed there yet (see
-   * backgroundWorkNote). They wait until that box is empty so no words of the user are overwritten.
-   */
-  pendingDrafts: Record<string, string>
-  clearPendingDraft: (sessionId: string) => void
   historyLoaded: Record<string, boolean>
   activeId?: string
   dialog: DialogKind
@@ -207,50 +200,6 @@ function upsertMessage(list: ChatMessage[], msg: ChatMessage): ChatMessage[] {
 export const defaultFiles = (): FilesState => ({ open: [], expanded: [], tab: 'files' })
 const defaultGit = (): GitState => ({ loading: false })
 
-/** True while the app itself is closing: every chat's process ends with it, which is not news. */
-let appQuitting = false
-if (typeof window !== 'undefined') window.addEventListener('beforeunload', () => (appQuitting = true))
-
-/** Which process of a chat has already had its lost background work written into the input box. */
-const handledLoss = new Map<string, number>()
-
-/** Background tasks that were still working when a chat's process ended. */
-function stillRunning(tasks: BackgroundTaskView[] | undefined): BackgroundTaskView[] {
-  return (tasks ?? []).filter((t) => !t.ambient && (t.status === 'running' || t.status === 'pending' || t.status === 'paused'))
-}
-
-/**
- * The note the app leaves in the input box when a chat's process was replaced or stopped while
- * background work was running. A background shell, monitor or subagent is a child of that chat's
- * process: it dies with it and its output pipes close, so a new process cannot reattach to it
- * (measured 2026-09-13 — the shell's pid was gone the moment the chat was stopped). The only way
- * such work comes back is to start it again, which is the user's decision, so this is written into
- * the input box unsent rather than sent.
- */
-function backgroundWorkNote(tasks: BackgroundTaskView[], messages: ChatMessage[]): string {
-  /** The command behind a task, read from the tool call that started it. */
-  const commands = new Map<string, string>()
-  for (const m of messages) {
-    if (m.kind !== 'assistant') continue
-    for (const b of m.blocks) {
-      if (b.type !== 'tool_use') continue
-      const text = typeof b.input.command === 'string' ? b.input.command : typeof b.input.prompt === 'string' ? b.input.prompt : ''
-      if (text) commands.set(b.id, text)
-    }
-  }
-  const lines = tasks.map((t) => {
-    const kind = /agent|teammate/i.test(t.taskType) ? 'subagent' : t.taskType === 'local_bash' ? 'background shell' : t.taskType.replace(/^local_/, '').replace(/_/g, ' ')
-    const what = t.description || 'no description'
-    const command = t.toolUseId ? commands.get(t.toolUseId) : undefined
-    return `- ${kind}: ${what}${command && command !== what ? `\n  \`${command.replace(/\s+/g, ' ').slice(0, 300)}\`` : ''}`
-  })
-  return [
-    'This chat was stopped or restarted, and these went down with its old process (a background shell, monitor or subagent cannot be resumed — the work has to be started again):',
-    ...lines,
-    'Start again the ones that are still needed.'
-  ].join('\n')
-}
-
 export const useStore = create<State>((set, get) => ({
   ready: false,
   theme: { systemDark: localStorage.getItem('theme-dark') !== '0', accent: '#007aff' },
@@ -265,14 +214,6 @@ export const useStore = create<State>((set, get) => ({
   messages: {},
   sentQueue: {},
   composerRestore: {},
-  pendingDrafts: {},
-  clearPendingDraft: (sessionId) =>
-    set((s) => {
-      if (!(sessionId in s.pendingDrafts)) return {}
-      const pendingDrafts = { ...s.pendingDrafts }
-      delete pendingDrafts[sessionId]
-      return { pendingDrafts }
-    }),
   historyLoaded: {},
   dialog: null,
   settingsTab: null,
@@ -364,17 +305,6 @@ export const useStore = create<State>((set, get) => ({
           const nowQuiet = e.state.status === 'idle' || e.state.status === 'stopped' || e.state.status === 'error'
           const patch: Partial<State> = { live: { ...s.live, [e.state.id]: e.state } }
           if (wasBusy && nowQuiet && s.sentQueue[e.state.id]?.length) patch.sentQueue = { ...s.sentQueue, [e.state.id]: [] }
-          // Background work that ended with this chat's process (a stop, or a provider switch that
-          // replaced it) becomes a note in that chat's input box. Keyed by the process that died so
-          // the stop and the start that follows it do not write the note twice.
-          const lost = stillRunning(prev?.backgroundTasks)
-          const replaced = prev?.processStartedAt !== undefined && e.state.processStartedAt !== undefined && prev.processStartedAt !== e.state.processStartedAt
-          const ended = Boolean(prev?.processAlive) && !e.state.processAlive
-          const episode = prev?.processStartedAt ?? 0
-          if (!appQuitting && lost.length && (replaced || ended) && !s.pendingDrafts[e.state.id] && handledLoss.get(e.state.id) !== episode) {
-            handledLoss.set(e.state.id, episode)
-            patch.pendingDrafts = { ...s.pendingDrafts, [e.state.id]: backgroundWorkNote(lost, s.messages[e.state.id] ?? []) }
-          }
           return patch
         })
         break

@@ -3,6 +3,7 @@ import { ArrowUp, ImagePlus, Keyboard, Square, X } from 'lucide-react'
 import type { ImageAttachment, SessionLiveState, SlashCommandView } from '@shared/types'
 import { useStore } from '@/store'
 import { isComposing } from '@/lib/keys'
+import { mergeHandoffNote } from '@shared/handoffNote'
 
 interface Props {
   sessionId: string
@@ -104,28 +105,70 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     ref.current?.focus()
   }, [sessionId, focusNonce])
 
-  // Restore draft per session
+  /** The note the app last put into this box, so that the user taking it out again is noticed. */
+  const noteInBox = useRef<string | null>(null)
+  /** The chat the text in the box belongs to, and what of it the chat's record already has. */
+  const draftOf = useRef(sessionId)
+  const draftSaved = useRef('')
+  /** True once this chat's record has arrived, which is where its unsent text is kept. */
+  const recordHere = useStore((s) => Boolean(s.records[sessionId]))
+
+  // The draft of the chat being opened. Drafts used to live in the window's own storage, which does
+  // not survive a quit, so one left there is taken over by the chat's record the first time it is
+  // opened and then removed.
   useEffect(() => {
-    setText(localStorage.getItem(`draft:${sessionId}`) ?? '')
+    if (!recordHere) return
+    const record = useStore.getState().records[sessionId]
+    const carriedOver = localStorage.getItem(`draft:${sessionId}`)
+    const stored = record?.draft ?? carriedOver ?? ''
+    if (carriedOver !== null) {
+      localStorage.removeItem(`draft:${sessionId}`)
+      localStorage.removeItem(`draftNote:${sessionId}`)
+      if (!record?.draft && carriedOver) void window.api.sessions.setDraft(sessionId, carriedOver)
+    }
+    setText(stored)
     setImages([])
-  }, [sessionId])
+    noteInBox.current = record?.handoffNote && stored.includes(record.handoffNote) ? record.handoffNote : null
+    draftOf.current = sessionId
+    draftSaved.current = stored
+  }, [sessionId, recordHere])
+
+  // Keep the record's copy up to date, a moment after the typing stops. The guard is for the commit
+  // in which the chat has already changed but the box still holds the text of the one before it.
   useEffect(() => {
-    if (text) localStorage.setItem(`draft:${sessionId}`, text)
-    else localStorage.removeItem(`draft:${sessionId}`)
+    if (draftOf.current !== sessionId || text === draftSaved.current) return
+    const timer = setTimeout(() => {
+      draftSaved.current = text
+      void window.api.sessions.setDraft(sessionId, text)
+    }, 300)
+    return () => clearTimeout(timer)
   }, [text, sessionId])
 
   /**
-   * A note the app wrote for this chat (background work that died with its process) is placed in the
-   * input box, not sent: the user reads it and decides. It is never put over words they have written
-   * themselves — it waits in the store until the box is empty.
+   * The note the session host leaves for a chat whose process was stopped with work still in hand
+   * (host/sessions/handoffNote.ts) is placed in the input box, not sent: the user reads it and
+   * decides what to do. Words they wrote themselves are never overwritten — the note goes below
+   * them — and a newer note takes the place of the one before it while that one is still exactly as
+   * the app wrote it, so the box holds one note that is up to date instead of a pile of stale ones.
    */
-  const pendingDraft = useStore((s) => s.pendingDrafts[sessionId])
-  const clearPendingDraft = useStore((s) => s.clearPendingDraft)
+  const handoffNote = useStore((s) => s.records[sessionId]?.handoffNote)
   useEffect(() => {
-    if (!pendingDraft || text.trim()) return
-    setText(pendingDraft)
-    clearPendingDraft(sessionId)
-  }, [pendingDraft, text, sessionId, clearPendingDraft])
+    if (!handoffNote) return
+    setText((t) => mergeHandoffNote(t, noteInBox.current ?? undefined, handoffNote))
+    noteInBox.current = handoffNote
+  }, [handoffNote, sessionId])
+
+  /**
+   * The chat remembers its note (in sessions.json) until the user has taken it out of the box
+   * themselves — edited it away, cleared the box or sent it. Until then the note is put back into
+   * an empty box every time the chat is opened, however often the app is closed in between; what
+   * the user does with it is their decision alone.
+   */
+  const forgetHandoffNote = useCallback(() => {
+    if (!noteInBox.current) return
+    noteInBox.current = null
+    void window.api.sessions.clearHandoffNote(sessionId)
+  }, [sessionId])
 
   // auto-grow
   useEffect(() => {
@@ -208,8 +251,10 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     setImages([])
     setHistoryIndex(-1)
     draftBeforeHistory.current = ''
-    localStorage.removeItem(`draft:${sessionId}`)
-  }, [text, images, onSend, sessionId])
+    draftSaved.current = ''
+    void window.api.sessions.setDraft(sessionId, '')
+    forgetHandoffNote()
+  }, [text, images, onSend, sessionId, forgetHandoffNote])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // A key the input method is using to build a character (pinyin candidates and the like) belongs
@@ -327,7 +372,9 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
             onClick={() => {
               setText('')
               setImages([])
-              localStorage.removeItem(`draft:${sessionId}`)
+              draftSaved.current = ''
+              void window.api.sessions.setDraft(sessionId, '')
+              forgetHandoffNote()
               ref.current?.focus()
             }}
           >
@@ -352,6 +399,8 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
           placeholder={busy ? 'Queue a message… (sent after the current turn)' : 'Message Claude…  ( / for commands, ! for a shell command, ↑ for an earlier prompt, drop files or paste images )'}
           onChange={(e) => {
             noMenu.current = false
+            // Typing the note away is how the user says they are done with it.
+            if (noteInBox.current && text.includes(noteInBox.current) && !e.target.value.includes(noteInBox.current)) forgetHandoffNote()
             setText(e.target.value)
             syncSlash(e.target)
             if (historyIndex >= 0) setHistoryIndex(-1)

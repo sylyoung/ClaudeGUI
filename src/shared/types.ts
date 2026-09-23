@@ -36,6 +36,21 @@ export interface SessionRecord {
   lastRecap?: string
   /** When that recap was written (epoch ms). A turn finishing afterwards clears both. */
   lastRecapAt?: number
+  /**
+   * The unsent text of the chat's input box. It is kept with the chat rather than in the window,
+   * because the window's own storage does not survive the app being closed: a draft only there is
+   * lost on every quit (measured 2026-09-23), and the note below has to outlive exactly that.
+   */
+  draft?: string
+  /**
+   * What the chat still had in hand when its process was stopped (background shells, monitors and
+   * subagents that died with it, prompts never answered, a tool waiting for permission), written by
+   * the session host at that moment and merged into the draft above, so the input box shows it when
+   * the chat is next opened. It stays until the user takes it out of the box, sends it or clears it.
+   */
+  handoffNote?: string
+  /** When that note was written (epoch ms). */
+  handoffNoteAt?: number
   pinned?: boolean
   archived?: boolean
   source: 'gui' | 'cli-import'
