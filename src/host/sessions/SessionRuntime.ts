@@ -242,8 +242,8 @@ export class SessionRuntime {
   private lastTurnEndedAt = 0
   /** A recap is being asked for; a second request would pay for the same sentence twice. */
   private recapInFlight = false
-  /** What the chat had in hand when a stop began, taken before the process is torn down. */
-  private handoff: HandoffSnapshot | null = null
+  /** A stop has already left the note for this process (see stop). */
+  private handoffNoted = false
 
   constructor(
     public record: SessionRecord,
@@ -699,9 +699,9 @@ export class SessionRuntime {
       }
     } finally {
       // Read before the state below is cleared: the queue, the tools in flight and the background
-      // tasks are what the note is written from. A stop has usually taken it already.
-      const handoff = this.handoff ?? this.captureHandoff()
-      this.handoff = null
+      // tasks are what the note is written from. A stop has written it already.
+      const handoff = this.handoffNoted ? null : this.captureHandoff()
+      this.handoffNoted = false
       if (this.q === q) {
         this.q = null
         this.queue = null
@@ -736,7 +736,7 @@ export class SessionRuntime {
       } else {
         this.setStatus('stopped')
       }
-      this.writeHandoffNote(handoff)
+      if (handoff) this.writeHandoffNote(handoff)
       this.scheduleFlush()
       this.deps.onExit(this, this.stopping ? undefined : error)
     }
@@ -812,7 +812,13 @@ export class SessionRuntime {
   }
 
   async stop(graceful = true): Promise<void> {
-    if (this.q) this.handoff = this.captureHandoff()
+    // The note is written as the stop begins, not once the process has ended: a chat in the middle
+    // of work can take longer to end than a quitting session host waits for it, and those are the
+    // chats the note is for (five of 41 were still ending when the host exited on 23 Sep).
+    if (this.q && !this.handoffNoted) {
+      this.writeHandoffNote(this.captureHandoff())
+      this.handoffNoted = true
+    }
     for (const [id, child] of this.shellRuns) {
       this.shellStopReasons.set(id, 'stopped')
       killShell(child)

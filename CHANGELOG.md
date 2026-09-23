@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.50 — 2026-09-23
+
+### A chat that was busy when you quit keeps its note
+
+- Reported: "Idk about quitting but leaving text" — after quitting with chats at work, no chat had a
+  note in its input box. None of the 41 chats had one saved. When the app was quit at 15:22 UTC,
+  the Interview chat was in the middle of a turn with subagents running and VLMEEG had a monitor
+  running; both came back without a note.
+- Since 1.0.45 the note was written only once a chat's Claude process had ended. A quitting
+  session host waits at most about five and a half seconds for that, and a chat in the middle of
+  work is the slowest to end: at that quit five of the 41 chats were still ending when the host
+  exited (its log: "client disconnected; 5 live session(s)"), so their notes were never written.
+  The chats with the most to lose were the likeliest to lose the note.
+- The note is now written the moment the stop begins, from what the chat has in hand at that
+  moment, and saved before the host exits. Tested in a test copy of the app: a chat running a
+  two-and-a-half-minute command was still ending when the host exited (the same situation as that
+  quit); its note was saved 7 ms after the stop began and was in the chat's input box when the app
+  was opened again.
+
+### Not changed in the app: why GPT chats are slow
+
+- Measured, for the record. Each GPT request carries the whole conversation, and the bridge's
+  log shows an average of 5.6 MB per request over two minutes. The Interview chat alone holds 36 PDF
+  page pictures (7.2 MB) since its last compaction. Upload through the 8118 proxy measured about
+  0.2 MB/s (5 MB in 25–27 s), against about 1 MB/s direct. ChatGPT's first byte came after a median
+  of 35 s. About a third of the requests since 07:00 UTC failed with "Network error: error sending
+  request", after a median of 40 s each, and were sent again. The bridge is running with
+  `CCP_CODEX_TRANSPORT=http` and without continuing from ChatGPT's previous response, so every
+  step sends everything again.
+
 ## 1.0.49 — 2026-09-23
 
 ### Opening a chat that read PDFs no longer freezes the app
