@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.51 — 2026-09-24
+
+### Switching a chat to GPT, DeepSeek or Kimi works right after an update
+
+- Reported: after updating in the app, picking a model of another provider showed "Using a model of
+  another provider needs the session host of this ClaudeGUI version… quit ClaudeGUI completely
+  (Cmd-Q) and open it again", and the chat stayed on its model.
+- An update restarts only the window. The session host keeps running, with every chat in it, until
+  the next ⌘Q, so for that time it is one version older than the window. The window refused a
+  switch to another provider whenever the two versions differed. That check was written in 1.0.23,
+  when provider switching was new, to keep out hosts that did not know how to switch. Every host
+  from 1.0.23 on switches providers the same way, so after each update the check refused a switch
+  that would have worked.
+- Now the window refuses only a session host from before 1.0.23, and then says which version is
+  running. Any later host, however many versions behind the window, switches providers.
+- Tested in a separate test copy of the app: a window of this version attached to a session host
+  started by 1.0.49 with a chat running in it, as after an update. With the old check, switching a
+  second chat to a DeepSeek model failed with the reported message; with the new one the same
+  switch went through, and the chat was saved with DeepSeek as its provider.
+
 ## 1.0.50 — 2026-09-23
 
 ### A chat that was busy when you quit keeps its note

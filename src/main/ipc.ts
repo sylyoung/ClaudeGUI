@@ -4,7 +4,7 @@ import path from 'path'
 import fs from 'fs'
 import { execFile } from 'child_process'
 import type { AppInfo, AppSettings, DirInfo, EffortLevel, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, SessionMove, StartupNotice, ThemeInfo } from '@shared/types'
-import { splitList } from '@shared/util'
+import { compareVersions, parseVersion, splitList } from '@shared/util'
 import type { SettingsStore } from './store'
 import type { HostClient } from './hostClient'
 import type { UsageService } from './usageService'
@@ -69,6 +69,16 @@ async function needsCurrentHost<T>(call: Promise<T>, what: string): Promise<T> {
     }
     throw err
   }
+}
+
+/**
+ * Whether the running session host starts a chat in another provider's environment when its model
+ * is switched to one. Every host from 1.0.23 on does it the same way, so a host that is only a few
+ * versions behind this window (the usual case after an update, until the next ⌘Q) switches fine;
+ * only a host from before 1.0.23 would set the model name alone and the chat would fail.
+ */
+function hostSwitchesProviders(version: string | undefined): boolean {
+  return !version || !parseVersion(version) || compareVersions(version, '1.0.23') >= 0
 }
 
 export function registerIpc(ctx: IpcContext): void {
@@ -205,8 +215,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle('sessions:rewind', (id: string, messageId: string, restoreFiles: boolean) => host.rewind(id, messageId, restoreFiles))
   handle('sessions:answerPermission', (id: string, requestId: string, decision: PermissionDecision) => host.answerPermission(id, requestId, decision))
   handle('sessions:setModel', (id: string, model: string, provider?: string) => {
-    // An older host would set the model name without the provider's environment, and the chat would fail.
-    if (provider && host.status.stale) throw new Error('Using a model of another provider needs the session host of this ClaudeGUI version. The one running was started by an older version and keeps your chats alive; quit ClaudeGUI completely (Cmd-Q) and open it again to start the new one.')
+    if (provider && !hostSwitchesProviders(host.status.version)) throw new Error(`Using a model of another provider needs a session host from ClaudeGUI 1.0.23 or later. The one running was started by ClaudeGUI ${host.status.version} and keeps your chats alive; quit ClaudeGUI completely (⌘Q) and open it again to start the new one.`)
     return host.setModel(id, model, provider)
   })
   handle('providers:list', (refresh?: boolean) => needsCurrentHost(host.providers(refresh), 'Listing the model providers'))
