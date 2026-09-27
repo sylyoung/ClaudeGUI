@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.52 — 2026-09-27
+
+### A chat whose answer is finished no longer shows "working" while a background subagent works
+
+- Reported: a chat had finished its answer but kept showing "working" for more than 30 minutes, and
+  a message typed into it was taken and answered at once, so nothing was actually running in it.
+- Claude Code passes on the messages of the chat's subagents (the host asks it to, so they can be
+  shown in the chat). A background subagent keeps working after the turn that started it has
+  ended, and the session host took each of its messages as the chat itself answering, which set
+  the chat to "working" again. It stayed there until the subagent was done and Claude had replied
+  to its result. In the VLMEEG chat on 26 September a background subagent worked for 36 minutes
+  after the answer it was started from had finished, and in MMBCI on 25 September one worked for 24.
+- Now only the chat's own answer sets it to "working". While a background subagent works in an idle
+  chat, the chat shows "idle · tasks" (↻), as it already did for background commands and monitors.
+  A subagent the chat waits for (not in the background) still shows as "working", because the chat's
+  own turn is running.
+- Measured with Claude Code before the change: background commands, monitors and the recap the app
+  asks for each leave the chat idle once their short follow-up turn ends; only a background
+  subagent's messages set it back to "working".
+- Tested in a separate test copy of the app with a background subagent that worked for about a
+  minute after the chat's answer: with the old host the chat showed "working" for all 66 seconds;
+  with the new one it showed "idle · tasks" for that time, then "working" for the 8 seconds Claude
+  took to reply to the subagent's result, then idle.
+- This is in the session host, so it starts working after a full quit (⌘Q) and reopen.
+
 ## 1.0.51 — 2026-09-24
 
 ### Switching a chat to GPT, DeepSeek or Kimi works right after an update

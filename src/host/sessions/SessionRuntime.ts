@@ -1612,7 +1612,7 @@ export class SessionRuntime {
       case 'stream_event': {
         this.takePrompts(msg)
         this.transcript.apply(msg, ts)
-        if (msg.event.type === 'message_start' && this.live.status !== 'requires_action') this.setStatus('running')
+        if (msg.event.type === 'message_start' && !msg.parent_tool_use_id && this.live.status !== 'requires_action') this.setStatus('running')
         break
       }
       case 'assistant': {
@@ -1632,7 +1632,12 @@ export class SessionRuntime {
             this.live.authError = undefined
           }
         }
-        if (this.live.status === 'idle' || this.live.status === 'starting') this.setStatus('running')
+        // Only the chat's own answer makes it working. A subagent's messages come in while the
+        // chat is idle too: a background subagent keeps working after the turn that started it has
+        // ended (measured: messages from 0.2 s after that turn's result until it finishes, which in
+        // real chats was 24 and 36 minutes later), and the chat takes a new prompt at once all the
+        // while. Such a chat is "idle · tasks", from the background task Claude Code reports.
+        if (!msg.parent_tool_use_id && (this.live.status === 'idle' || this.live.status === 'starting')) this.setStatus('running')
         const usage = msg.message.usage as unknown as Record<string, number> | undefined
         if (usage && !msg.parent_tool_use_id) {
           const ctx = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0)
@@ -1745,6 +1750,9 @@ export class SessionRuntime {
       }
       case 'tool_progress': {
         this.transcript.apply(msg, ts)
+        // A background subagent's tool running while the chat is idle is not the chat at work
+        // (see 'assistant' above); the subagent itself is listed with the background tasks.
+        if (msg.parent_tool_use_id && this.live.status !== 'running' && this.live.status !== 'requires_action') break
         const idx = this.live.activeTools.findIndex((t) => t.toolUseId === msg.tool_use_id)
         const view = { toolUseId: msg.tool_use_id, toolName: msg.tool_name, elapsedSeconds: msg.elapsed_time_seconds, parentToolUseId: msg.parent_tool_use_id }
         if (idx >= 0) this.live.activeTools[idx] = view
