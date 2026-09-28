@@ -115,7 +115,7 @@ function FileBody({ tab }: { tab: FileTab }) {
           </div>
         )}
         {content?.kind === 'image' && <img src={`data:${content.mimeType};base64,${content.base64}`} alt={tab.path} />}
-        {content?.kind === 'text' && isMarkdown && preview && <Markdown text={content.text ?? ''} />}
+        {content?.kind === 'text' && isMarkdown && preview && <Markdown text={content.text ?? ''} baseDir={tab.path.slice(0, tab.path.lastIndexOf('/')) || '/'} />}
         {content?.kind === 'text' && !(isMarkdown && preview) && (
           <div className="code-view hljs" style={{ background: 'transparent', padding: '8px 0' }}>
             {lines.map((l, i) => (

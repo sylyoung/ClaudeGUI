@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.54 — 2026-09-28
+
+### Pictures in Claude's replies are shown
+
+- Reported: "image could not be properly shown in the chat." A reply that showed a figure the way
+  Markdown writes one, `![what](folder/figure.png)`, drew a broken picture: the path was read
+  against the app's own files instead of the chat's folder.
+- Such a picture is now found the way a file link in a reply is found (against the chat's folder,
+  or as written when it is a full path), read from disk and drawn in the reply at the width of the
+  chat. A click opens it the way a file link opens; right-click has the usual file options. When the
+  chat was at its end, it stays there once the picture has loaded.
+- A picture that is not there shows as "<name> (picture not found)"; one over 20 MB as a link to
+  open it. A picture on the internet is shown as a link, because the window loads nothing from the
+  internet. A Markdown file previewed in the viewer shows its pictures too, found against the file's
+  own folder.
+
 ## 1.0.53 — 2026-09-28
 
 ### Find in a chat (⌘F)

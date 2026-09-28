@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { CodeBlock } from '../common/CodeBlock'
@@ -17,11 +17,97 @@ const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
 
 /**
  * react-markdown drops the address of any link whose protocol it does not know, which silently
- * emptied every file link this file creates. Our own protocol is let through; everything else is
- * still checked the way react-markdown checks it.
+ * emptied every file link this file creates. Our own protocol is let through, and so is `file:` for
+ * a picture, which is read from disk by MarkdownPicture; everything else is still checked the way
+ * react-markdown checks it.
  */
-function urlTransform(url: string): string {
-  return url.startsWith(FILE_PROTO) ? url : defaultUrlTransform(url)
+function urlTransform(url: string, key: string): string {
+  if (url.startsWith(FILE_PROTO)) return url
+  if (key === 'src' && /^file:/i.test(url)) return url
+  return defaultUrlTransform(url)
+}
+
+/** The files `![…](…)` can show; any other file named that way is shown as a link to it. */
+const PICTURE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i
+
+/** The path a picture's address names: `file://` taken off, and `%20` and the like read back. */
+function picturePath(src: string): string {
+  const p = src.replace(/^file:\/\//i, '')
+  if (!/%[0-9a-f]{2}/i.test(p)) return p
+  try {
+    return decodeURI(p)
+  } catch {
+    return p
+  }
+}
+
+/**
+ * A picture written into a reply as `![what](path)`. Left to the browser, a path is read against
+ * the window's own address rather than the chat's folder, so it showed as a broken picture; it is
+ * found the way a file link is (against the chat's folder, or the folder of the Markdown file being
+ * previewed) and read from disk. A click opens it in the viewer.
+ */
+function MarkdownPicture({ src, alt, baseDir }: { src: string; alt: string; baseDir?: string }) {
+  const ctx = useChatCtx()
+  const toast = useStore((s) => s.toast)
+  const written = picturePath(src)
+  const dir = ctx?.cwd ?? baseDir
+  const [shown, setShown] = useState<{ path: string; url?: string; problem?: string } | null>(null)
+  const box = useRef<HTMLSpanElement>(null)
+  // Whether the chat was at its end when the picture arrived: the picture then keeps it there.
+  const atEnd = useRef(false)
+
+  useEffect(() => {
+    if (!dir && !written.startsWith('/')) return
+    let live = true
+    void (async () => {
+      const path = await window.api.fs.locate(written, dir ?? '/')
+      const content = await window.api.fs.read(path)
+      if (!live) return
+      const scroller = box.current?.closest('.messages')
+      atEnd.current = Boolean(scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80)
+      if (content.kind === 'image') setShown({ path, url: `data:${content.mimeType};base64,${content.base64}` })
+      else if (content.kind === 'missing') setShown({ path, problem: 'not found' })
+      else if (content.kind === 'too-large') setShown({ path, problem: 'too large to show here' })
+      else setShown({ path, problem: 'not a picture' })
+    })().catch((err: Error) => live && setShown({ path: written, problem: err.message }))
+    return () => {
+      live = false
+    }
+  }, [written, dir])
+
+  const label = alt || written.split('/').pop() || written
+  if (!dir && !written.startsWith('/')) return <span data-tip={written}>{label}</span>
+  const open = (e: React.MouseEvent) => {
+    if (ctx) ctx.openPath(written, undefined, { inEditor: e.metaKey || e.altKey })
+    else if (shown) void window.api.shell.openPath(shown.path).then((err) => err && toast(err, 'error'))
+  }
+  const menu = (e: React.MouseEvent) => {
+    if (!ctx) return
+    e.preventDefault()
+    ctx.showPathMenu(written, undefined, e.clientX, e.clientY)
+  }
+  return (
+    <span className="md-picture" ref={box}>
+      {shown?.url ? (
+        <img
+          src={shown.url}
+          alt={alt}
+          onClick={open}
+          onContextMenu={menu}
+          onLoad={() => {
+            const scroller = box.current?.closest('.messages')
+            if (atEnd.current && scroller) scroller.scrollTop = scroller.scrollHeight
+          }}
+          data-tip={`${shown.path}\nClick to open · right-click for options`}
+        />
+      ) : shown?.problem ? (
+        <span className="file-link" onClick={open} onContextMenu={menu} data-tip={shown.path}>
+          {label} (picture {shown.problem})
+        </span>
+      ) : null}
+    </span>
+  )
 }
 
 type MdNode = { type: string; value?: string; url?: string; children?: MdNode[] }
@@ -57,11 +143,41 @@ function remarkFilePaths() {
   }
 }
 
-export function Markdown({ text }: { text: string }) {
+/** `baseDir`: where a relative path in the text starts when there is no chat around it — the folder of a Markdown file being previewed. */
+export function Markdown({ text, baseDir }: { text: string; baseDir?: string }) {
   const ctx = useChatCtx()
   const toast = useStore((s) => s.toast)
   const components = useMemo<Components>(
     () => ({
+      img: ({ src, alt }) => {
+        const s = typeof src === 'string' ? src : ''
+        if (!s) return alt ? <span>{alt}</span> : null
+        if (SCHEME.test(s) && !/^file:/i.test(s)) {
+          // The window loads nothing from the internet: a picture there is offered as a link.
+          return (
+            <a
+              href={s}
+              onClick={(e) => {
+                e.preventDefault()
+                void window.api.shell.openExternal(s).catch((err) => toast(`Could not open ${s}: ${(err as Error).message}`, 'error'))
+              }}
+              data-tip={s}
+            >
+              {alt || s}
+            </a>
+          )
+        }
+        const path = picturePath(s)
+        if (!PICTURE.test(path)) {
+          if (!ctx) return <span data-tip={path}>{alt || path}</span>
+          return (
+            <span className="file-link" onClick={(e) => ctx.openPath(path, undefined, { inEditor: e.metaKey || e.altKey })} data-tip={path}>
+              {alt || path}
+            </span>
+          )
+        }
+        return <MarkdownPicture src={s} alt={alt ?? ''} baseDir={baseDir} />
+      },
       a: ({ href, children }) => {
         const h = href ?? ''
         // The links this file makes itself carry our own protocol; a markdown link that names a
@@ -147,7 +263,7 @@ export function Markdown({ text }: { text: string }) {
       ),
       input: ({ checked, ...rest }) => <input type="checkbox" checked={Boolean(checked)} readOnly {...(rest as object)} />
     }),
-    [ctx, toast]
+    [ctx, toast, baseDir]
   )
   return (
     <div className="md">
