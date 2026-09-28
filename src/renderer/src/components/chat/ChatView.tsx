@@ -48,32 +48,52 @@ const FALLBACK_MODELS = [
  * in front of it give way instead, in the order they carry `data-row-drop`, and the reader loses
  * the least useful thing first. Nothing is hidden while the row still fits.
  */
+function fitRow(el: HTMLElement): void {
+  const drops = Array.from(el.querySelectorAll<HTMLElement>('[data-row-drop]')).sort((a, b) => Number(a.dataset.rowDrop) - Number(b.dataset.rowDrop))
+  // Dropping a class React does not know about, so a re-render puts the element back and this
+  // runs again right after it — the row is measured against whatever is on screen now.
+  el.classList.remove('cs-tight')
+  for (const d of drops) d.classList.remove('cs-dropped')
+  for (const d of drops) {
+    if (el.scrollWidth <= el.clientWidth) return
+    d.classList.add('cs-dropped')
+  }
+  // Even with every decoration gone the row is too narrow (a chat column squeezed beside a wide
+  // sidebar and the file panel). Only then does the meter itself make room, its label giving way
+  // with an ellipsis — the sweep of a running compaction and the pill's shape stay.
+  if (el.scrollWidth > el.clientWidth) el.classList.add('cs-tight')
+}
+
+/** What the row shows, as far as its width goes: its text and its elements' classes. */
+function rowLook(el: HTMLElement): string {
+  let look = el.className + '|' + el.textContent
+  for (const d of el.querySelectorAll<HTMLElement>('[class]')) look += '|' + d.className
+  return look
+}
+
 function useRowFit(ref: React.RefObject<HTMLDivElement | null>): void {
+  const look = React.useRef('')
+  // After a render, only when the row looks different: measuring it lays out the whole window, and
+  // the chat renders with every update of the chat — several times a second while it works — when
+  // this used to measure every time (2026-09-28).
   React.useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    const fit = () => {
-      const drops = Array.from(el.querySelectorAll<HTMLElement>('[data-row-drop]')).sort(
-        (a, b) => Number(a.dataset.rowDrop) - Number(b.dataset.rowDrop)
-      )
-      // Dropping a class React does not know about, so a re-render puts the element back and this
-      // runs again right after it — the row is measured against whatever is on screen now.
-      el.classList.remove('cs-tight')
-      for (const d of drops) d.classList.remove('cs-dropped')
-      for (const d of drops) {
-        if (el.scrollWidth <= el.clientWidth) return
-        d.classList.add('cs-dropped')
-      }
-      // Even with every decoration gone the row is too narrow (a chat column squeezed beside a wide
-      // sidebar and the file panel). Only then does the meter itself make room, its label giving way
-      // with an ellipsis — the sweep of a running compaction and the pill's shape stay.
-      if (el.scrollWidth > el.clientWidth) el.classList.add('cs-tight')
-    }
-    fit()
-    const ro = new ResizeObserver(fit)
+    if (rowLook(el) === look.current) return
+    fitRow(el)
+    look.current = rowLook(el)
+  })
+  // A change of size: the window, the sidebar or the file panel.
+  React.useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      fitRow(el)
+      look.current = rowLook(el)
+    })
     ro.observe(el)
     return () => ro.disconnect()
-  })
+  }, [ref])
 }
 
 /** Size of the working directory (du), refreshed when a turn ends and every five minutes. */
@@ -100,8 +120,10 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const messages = useStore((s) => s.messages[record.id] ?? EMPTY_MESSAGES)
   const loaded = useStore((s) => Boolean(s.historyLoaded[record.id]))
   // A chat is loaded from the end of its transcript; anything above 0 means there is more of it
-  // in the file, which is read when the chat is scrolled to the top.
-  const earlierAvailable = (live?.historyFrom ?? 0) > 0
+  // in the file, which is read when the chat is scrolled to the top. Where the window's rows begin
+  // is its own (store.rowsFrom); a session host of 1.0.54 or older keeps it in the live state.
+  const rowsFrom = useStore((s) => s.rowsFrom[record.id])
+  const earlierAvailable = (rowsFrom ?? live?.historyFrom ?? 0) > 0
   const earlierBusy = useStore((s) => Boolean(s.earlierBusy[record.id]))
   const loadEarlier = useStore((s) => s.loadEarlier)
   const appInfo = useStore((s) => s.appInfo)
@@ -221,10 +243,12 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     (messageId) => void useStore.getState().takeBackQueued(record.id, messageId, true),
     [record.id]
   )
-  const waitingIds = live?.queuedIds
+
   const showPromptMenu = useCallback<ChatCtx['showPromptMenu']>(
     (messageId, text, x, y) => {
-      const waiting = (waitingIds ?? []).includes(messageId)
+      // Read when the menu opens: the chat's live state is a new object with every update, and a
+      // context depending on it drew every row of the chat again each time (2026-09-28).
+      const waiting = (useStore.getState().live[record.id]?.queuedIds ?? []).includes(messageId)
       setMenu({
         x,
         y,
@@ -238,7 +262,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
         ]
       })
     },
-    [record.id, toast, waitingIds, takeBackPrompt]
+    [record.id, toast, takeBackPrompt]
   )
   const ctx = useMemo<ChatCtx>(
     () => ({ sessionId: record.id, cwd: record.cwd, openPath, showPathMenu, rewindTo, showPromptMenu, takeBackPrompt }),

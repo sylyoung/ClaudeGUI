@@ -15,6 +15,7 @@ import type {
   CliSessionSummary,
   EarlierMessages,
   EffortLevel,
+  HistoryPage,
   HostStatus,
   ImageAttachment,
   ModelInfoView,
@@ -34,6 +35,7 @@ import type {
   ContextUsageView
 } from '@shared/types'
 import { HOST_PROTOCOL, LineParser, writeFrame, type Frame, type HostEvent, type HostFile } from '../host/protocol'
+import type { RowPlace } from '@shared/rows'
 
 export interface HostClientDeps {
   userDataPath: string
@@ -381,8 +383,19 @@ export class HostClient extends EventEmitter {
   history(id: string): Promise<ChatMessage[]> {
     return this.call('history', id)
   }
-  earlier(id: string): Promise<EarlierMessages> {
-    return this.call('earlier', id)
+  /** Hosts of 1.0.55 on (see ipc.ts, hostKeepsRecentRows). */
+  historyPage(id: string): Promise<HistoryPage> {
+    return this.call('historyPage', id)
+  }
+  /** `to`: where the window's part of the chat begins in the file; a host of 1.0.54 or older ignores it. */
+  earlier(id: string, to?: number): Promise<EarlierMessages> {
+    return this.call('earlier', id, to ?? null)
+  }
+  row(id: string, rowId: string): Promise<ChatMessage | null> {
+    return this.call('row', id, rowId)
+  }
+  cutPoint(id: string, places: RowPlace[], from: number): Promise<{ index: number; offset: number } | null> {
+    return this.call('cutPoint', id, places, from)
   }
   toolImages(id: string, toolUseId: string): Promise<ImageAttachment[]> {
     return this.call('toolImages', id, toolUseId)

@@ -1,5 +1,73 @@
 # Changelog
 
+## 1.0.55 — 2026-09-28
+
+### Long-running chats no longer pile up in the app, and a busy chat no longer freezes the window
+
+- Reported: every chat felt stuck, with the suspicion that long-running chats were the cause, and the
+  question whether older history is let go of and only read back when scrolling up or rewinding. It
+  was not: a chat was opened on its recent part only, but from then on nothing was let go of. The
+  window measured 736 MB → 1.2 GB in 25 minutes while the session host held the same chats in 158 MB.
+- Measured on a replay of the user's own chats in a test copy of the app (the session host's real
+  code on copies of the transcripts: 14 chats working over three hours, nine chats opened, the two
+  full of PDF pages and MMBCI scrolled back), 1.0.54 against 1.0.55:
+
+  | | 1.0.54 | 1.0.55 |
+  |---|---:|---:|
+  | JavaScript memory of the window, highest | 193 MB | 65 MB |
+  | the same after a clean-up at the end | 159 MB | 32 MB |
+  | memory of the window process, highest | 1480 MB | 953 MB |
+  | the same at the end | 789 MB | 486 MB |
+  | sent by the session host to the window | 635 MB | 101 MB |
+  | of it, updates of chats’ state | 192 MB | 2 MB |
+  | largest single update | 1262 KB | 573 KB |
+  | stalls of the window of 50 ms or more | 20 | 7 |
+  | time the window was stalled | 1.42 s | 0.53 s |
+
+- What was wrong, and what the app does now:
+  - Every chat the session host started at launch (all 43) sent its whole opening part to the window,
+    which kept it although the chat was never opened: 73 MB. The host now sends a chat's rows only
+    to a window that asked for that chat, and the window holds the rows of the chat on screen and of
+    the three opened before it, and no others.
+  - Nothing was ever let go of. Now past 600 rows the oldest go, down to about 300 (the chat on
+    screen only while it shows its end); a chat left behind keeps about 300, which also lets go of
+    what was read in while scrolling up in it. The session host does the same past 600, down to
+    about 400. Scrolling up reads them back from the transcript, as for a chat just opened; rewind
+    and "Search whole chat" read the transcript as before.
+  - A subagent's whole run is one row, and every step it took sent that row again, whole: up to
+    1.26 MB a time. Steps that did not change are now sent as references to the window's own copies
+    (for a 414-step run in MMBCI: 5.2 MB instead of 150 MB, the largest update 58 KB instead of
+    704 KB; for one in VLMEEG 2.9 MB instead of 188 MB). A subagent started by a subagent still
+    re-sends the step of the outer one it belongs to, whole — the 573 KB in the table.
+  - Every update of a chat's state — about 20 a second while it writes — carried Claude Code's list
+    of commands, 47 KB with the user's skills and plugins (192 MB of the 635 MB the host sent). It is
+    now sent only when it changes, and an update that changes nothing but the time of the last
+    message goes at most once a second.
+  - The window froze while a busy chat was on screen: in MMBCI scrolled back with its subagent at
+    work, 1.0.54 was stuck for 5.4 of 15 seconds, in 53 stalls of up to 119 ms. Every update made
+    the chat measure its whole height (a layout of everything drawn) and redrew every row drawn —
+    all their Markdown parsed again — because the chat's shared settings changed with each update
+    of its state. Now only the changed row is drawn again and the chat is measured only when rows
+    come in above; the same situation had no stall at all.
+  - Earlier parts arrived with their PDF pages as pictures, and pictures opened in cards stayed for
+    as long as the window was open. Earlier parts now come without them, like the part a chat opens
+    on; a card fetches them when opened (from the transcript if the host no longer holds the row),
+    and only the last eight cards' pictures are kept.
+  - When older rows come in above, the row at the top now stays exactly where it was on screen
+    (0 px in three tests where 38 to 202 rows came in; 1.0.54 moved it by up to 11 px).
+- Found while testing that nothing is lost, in reading earlier parts (1.0.54 has them too): each
+  "show earlier messages" dropped the line at its edge; a part could separate a tool call from its
+  result, so the card showed none; and a part ending on Claude Code's note about a picture
+  ("[Image: …]") lost its last minutes of conversation (38 of 173 messages in one part of WuTsai).
+  All three are fixed. Tested on ten of the user's chats with rows let go of 4 to 20 times each and
+  the chat scrolled back to its beginning: every line of the conversation shown, none twice.
+- The window's part works right after the update. The session host's part — references for
+  subagent steps, letting go of rows in the host, lighter state updates, not sending unopened chats
+  — starts after a full quit (⌘Q) and reopen; until then the window works with the old host as
+  before, holding only the chats it opened, and without the stalls. Tested that way too (this
+  window with a 1.0.54 host, one hour of the replay): 118 MB of JavaScript memory at most, 5 stalls
+  (0.4 s), and chats opened, scrolled back and switched as before.
+
 ## 1.0.54 — 2026-09-28
 
 ### Pictures in Claude's replies are shown

@@ -132,8 +132,14 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.list()
     case 'history':
       return manager.history(a[0])
+    case 'historyPage':
+      return manager.historyPage(a[0])
     case 'earlier':
-      return manager.earlier(a[0])
+      return manager.earlier(a[0], a[1] ?? undefined)
+    case 'row':
+      return manager.row(a[0], a[1])
+    case 'cutPoint':
+      return manager.cutPoint(a[0], a[1], a[2])
     case 'toolImages':
       return manager.toolImages(a[0], a[1])
     case 'create':
@@ -275,6 +281,7 @@ function handleConnection(sock: net.Socket): void {
           client.destroy()
         }
         client = sock
+        manager.windowAttached()
         cancelExit()
         applySettings(f.settings, undefined)
         focused = Boolean(f.focused)

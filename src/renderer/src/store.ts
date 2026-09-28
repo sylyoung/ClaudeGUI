@@ -23,6 +23,7 @@ import type {
 import { applyTheme } from './lib/theme'
 import { comparatorFor } from '@shared/util'
 import { emptyUsageState } from '@shared/defaults'
+import { rowPlace, trimLimit, withKeptChildren } from '@shared/rows'
 
 export type DialogKind = null | 'new-session' | 'import-session' | 'settings' | 'shortcuts' | 'sign-in'
 export type SettingsTab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
@@ -97,6 +98,18 @@ interface State {
   /** Text to put back into the composer of a session (set by interruptSession). */
   composerRestore: Record<string, { text: string; images: ImageAttachment[]; nonce: number }>
   historyLoaded: Record<string, boolean>
+  /**
+   * Where the rows the window holds of a chat begin in its transcript file. Scrolling up reads the
+   * part before this; a find searches the file before it and the rows from it on. Unknown with a
+   * session host of 1.0.54 or older, which keeps that place itself (live.historyFrom).
+   */
+  rowsFrom: Record<string, number | undefined>
+  /** The session host can find a row's line in the file, so the window may let go of this chat's older rows. */
+  trimmable: Record<string, boolean>
+  /** The chat on screen shows its end and follows new output (reported by the chat's list). */
+  following: Record<string, boolean>
+  /** Chats opened lately, the one on screen first: the window keeps the rows of these and of no others. */
+  recentChats: string[]
   /** A chat is being read further back right now (the user scrolled to the top of it). */
   earlierBusy: Record<string, boolean>
   activeId?: string
@@ -155,6 +168,8 @@ interface State {
    * opened on its recent messages only; this is what scrolling to the top asks for.
    */
   loadEarlier: (id: string) => Promise<boolean>
+  /** The chat's list says whether it shows the chat's end (only then may its older rows be let go of). */
+  setFollowing: (id: string, following: boolean) => void
   toast: (text: string, kind?: Toast['kind']) => void
   dismissToast: (id: number) => void
   setSettings: (patch: Partial<AppSettings>) => Promise<void>
@@ -200,6 +215,21 @@ let toastSeq = 0
 /** History requests on their way, by chat: a second request for the same chat waits for the first. */
 const historyRequests = new Map<string, Promise<void>>()
 
+/**
+ * How much of a chat the window holds. A chat keeps adding rows while it runs — over a thousand an
+ * hour in the busiest chats measured — and the window used to hold every one of them for every chat,
+ * including all 43 chats' opening rows (70 MB) whether they were ever looked at or not. Now it holds
+ * only the chat on screen and the few opened before it; past ROWS_MAX rows the oldest go, down to
+ * about ROWS_KEEP (see shared/rows.ts), and a chat left behind keeps about ROWS_KEEP as well —
+ * which also lets go of everything read in while scrolling up in it. Scrolling up reads them back
+ * from the chat's transcript. The chat on screen loses rows only while it shows its end.
+ */
+const ROWS_MAX = 600
+const ROWS_KEEP = 300
+/** Chats besides the one on screen whose rows are kept, so going back to them is immediate. */
+const RECENT_CHATS_KEPT = 3
+
+/** A row whose update came in: the window's copy put in its place (or at the end, for a new row). */
 function upsertMessage(list: ChatMessage[], msg: ChatMessage): ChatMessage[] {
   const idx = list.findIndex((m) => m.id === msg.id)
   if (idx >= 0) {
@@ -207,8 +237,24 @@ function upsertMessage(list: ChatMessage[], msg: ChatMessage): ChatMessage[] {
     next[idx] = msg
     return next
   }
+  // A row the window does not have that is older than the first one it has: the window let go of
+  // that part of the chat, and the row belongs there, not at the end.
+  if (list.length && msg.ts < list[0].ts) return list
   return [...list, msg]
 }
+
+/** A background task Claude Code still reports as running, by the chat's live state. */
+function taskRunningIn(live: SessionLiveState | undefined): (taskId: string) => boolean {
+  const ids = new Set((live?.backgroundTasks ?? []).map((t) => t.taskId))
+  return (taskId) => ids.has(taskId)
+}
+
+/** Chats whose older rows are being let go of right now. */
+const trimming = new Set<string>()
+/** When letting go of a chat's rows last found no line to cut at: not tried again for a minute. */
+const trimFailedAt = new Map<string, number>()
+/** Rows asked for whole (an update named a subagent step the window lacks), so each is asked once. */
+const rowRequests = new Set<string>()
 
 export const defaultFiles = (): FilesState => ({ open: [], expanded: [], tab: 'files' })
 const defaultGit = (): GitState => ({ loading: false })
@@ -228,6 +274,10 @@ export const useStore = create<State>((set, get) => ({
   sentQueue: {},
   composerRestore: {},
   historyLoaded: {},
+  rowsFrom: {},
+  trimmable: {},
+  following: {},
+  recentChats: [],
   earlierBusy: {},
   dialog: null,
   settingsTab: null,
@@ -310,7 +360,7 @@ export const useStore = create<State>((set, get) => ({
     // an update), and emptying every chat here is what used to make a chat that had been open for
     // hours say "Loading history…" again. Only the "already read" marks go, so that each chat is
     // read again — from its own record, in milliseconds — the next time it is opened.
-    set((s) => ({ records, live, groups: list.groups ?? [], messages: s.messages, historyLoaded: {} }))
+    set((s) => ({ records, live, groups: list.groups ?? [], messages: s.messages, historyLoaded: {}, rowsFrom: {}, trimmable: {} }))
     const id = get().activeId
     if (id && records[id]) await get().ensureHistory(id)
     else if (id) set({ activeId: undefined })
@@ -323,7 +373,9 @@ export const useStore = create<State>((set, get) => ({
           const prev = s.live[e.state.id]
           const wasBusy = prev && (prev.status === 'running' || prev.status === 'requires_action' || prev.status === 'starting')
           const nowQuiet = e.state.status === 'idle' || e.state.status === 'stopped' || e.state.status === 'error'
-          const patch: Partial<State> = { live: { ...s.live, [e.state.id]: e.state } }
+          // The command and model lists come only when they changed; otherwise the window's own stay.
+          const state = e.keeps ? { ...e.state, ...Object.fromEntries(e.keeps.map((k) => [k, prev?.[k]])) } : e.state
+          const patch: Partial<State> = { live: { ...s.live, [e.state.id]: state } }
           if (wasBusy && nowQuiet && s.sentQueue[e.state.id]?.length) patch.sentQueue = { ...s.sentQueue, [e.state.id]: [] }
           return patch
         })
@@ -345,14 +397,35 @@ export const useStore = create<State>((set, get) => ({
           return { records, live, messages, activeId: s.activeId === e.id ? undefined : s.activeId, selectedIds: s.selectedIds.filter((x) => x !== e.id) }
         })
         break
-      case 'message':
-        set((s) => ({ messages: { ...s.messages, [e.sessionId]: upsertMessage(s.messages[e.sessionId] ?? [], e.message) } }))
+      case 'message': {
+        // Only the chats the window holds: every running chat sends its updates here, and a chat
+        // that is opened later is read whole from the session host then.
+        if (!holdsChat(get(), e.sessionId)) break
+        const list = get().messages[e.sessionId] ?? []
+        let message = e.message
+        if (e.keeps) {
+          const r = withKeptChildren(
+            list.find((m) => m.id === message.id),
+            message
+          )
+          message = r.message
+          if (r.missing) void fetchRow(e.sessionId, message.id)
+        }
+        set((s) => ({ messages: { ...s.messages, [e.sessionId]: upsertMessage(s.messages[e.sessionId] ?? [], message) } }))
+        if ((get().messages[e.sessionId]?.length ?? 0) > ROWS_MAX) void trimChat(e.sessionId, ROWS_MAX)
         break
+      }
       case 'message-removed':
+        if (!holdsChat(get(), e.sessionId)) break
         set((s) => ({ messages: { ...s.messages, [e.sessionId]: (s.messages[e.sessionId] ?? []).filter((m) => m.id !== e.messageId) } }))
         break
       case 'messages-reset':
-        set((s) => ({ messages: { ...s.messages, [e.sessionId]: e.messages }, historyLoaded: { ...s.historyLoaded, [e.sessionId]: true } }))
+        if (!holdsChat(get(), e.sessionId)) break
+        set((s) => ({
+          messages: { ...s.messages, [e.sessionId]: e.messages },
+          historyLoaded: { ...s.historyLoaded, [e.sessionId]: true },
+          rowsFrom: { ...s.rowsFrom, [e.sessionId]: e.from }
+        }))
         break
       case 'focus':
         void get().selectSession(e.sessionId)
@@ -361,7 +434,12 @@ export const useStore = create<State>((set, get) => ({
   },
 
   selectSession: async (id) => {
+    const left = get().activeId
     set((s) => ({ activeId: id, filesOpen: id ? (s.files[id]?.panelOpen ?? true) : s.filesOpen }))
+    if (id) keepRecent(id)
+    // The chat left behind keeps only its newest rows: what was read in while scrolling up in it
+    // (its pictures included) goes, and is read again from the file if it is scrolled up once more.
+    if (left && left !== id && get().historyLoaded[left]) void trimChat(left, ROWS_KEEP)
     if (id) localStorage.setItem('activeId', id)
     await window.api.sessions.setActive(id)
     if (id) {
@@ -378,13 +456,22 @@ export const useStore = create<State>((set, get) => ({
     if (pending) return pending
     const request = (async () => {
       try {
-        const msgs = await window.api.sessions.history(id)
+        const page = await window.api.sessions.history(id)
+        const msgs = page.messages
         set((s) => {
-          // Live messages may have arrived while loading; merge by id.
+          // Live messages may have arrived while loading; merge by id. Rows the window read from
+          // further back than the page begins go (only a host of 1.0.55 on says where it begins):
+          // the chat now begins where the page does, and scrolling up reads them again from there.
           const existing = s.messages[id] ?? []
           const byId = new Map(msgs.map((m) => [m.id, m]))
-          for (const m of existing) if (!byId.has(m.id)) byId.set(m.id, m)
-          return { messages: { ...s.messages, [id]: [...byId.values()] }, historyLoaded: { ...s.historyLoaded, [id]: true } }
+          const first = typeof page.from === 'number' ? msgs[0] : undefined
+          for (const m of existing) if (!byId.has(m.id) && (!first || m.ts >= first.ts)) byId.set(m.id, m)
+          return {
+            messages: { ...s.messages, [id]: [...byId.values()] },
+            historyLoaded: { ...s.historyLoaded, [id]: true },
+            rowsFrom: { ...s.rowsFrom, [id]: page.from },
+            trimmable: { ...s.trimmable, [id]: page.trimmable }
+          }
         })
       } catch (err) {
         get().toast(`Failed to load history: ${(err as Error).message}`, 'error')
@@ -400,7 +487,9 @@ export const useStore = create<State>((set, get) => ({
     if (get().earlierBusy[id]) return false
     set((s) => ({ earlierBusy: { ...s.earlierBusy, [id]: true } }))
     try {
-      const { messages } = await window.api.sessions.earlier(id)
+      const { messages, from } = await window.api.sessions.earlier(id, get().rowsFrom[id])
+      // Where the chat now begins in the file (a host of 1.0.54 or older keeps that place itself).
+      if (typeof from === 'number') set((s) => ({ rowsFrom: { ...s.rowsFrom, [id]: from } }))
       if (!messages.length) return false
       let added = 0
       set((s) => {
@@ -519,6 +608,12 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setDialog: (dialog) => set({ dialog, settingsTab: dialog === 'settings' ? get().settingsTab : null }),
+  setFollowing: (id, following) => {
+    if (get().following[id] === following) return
+    set((s) => ({ following: { ...s.following, [id]: following } }))
+    // Back at the end of a chat that grew while it was scrolled up in.
+    if (following && (get().messages[id]?.length ?? 0) > ROWS_MAX) void trimChat(id, ROWS_MAX)
+  },
   openSettings: (tab) => set({ dialog: 'settings', settingsTab: tab ?? null }),
   setUpdate: (update) => set({ update }),
 
@@ -749,6 +844,93 @@ export const useStore = create<State>((set, get) => ({
     get().toast(`Stopped ${targets.length - failed} of ${targets.length} session${targets.length === 1 ? '' : 's'}.`, failed ? 'error' : 'success')
   }
 }))
+
+// ---------------------------------------------------------------------------
+// Which chats the window holds, and how much of each (see ROWS_MAX).
+// ---------------------------------------------------------------------------
+
+type StoreState = ReturnType<typeof useStore.getState>
+
+function holdsChat(s: StoreState, id: string): boolean {
+  return Boolean(s.historyLoaded[id]) || historyRequests.has(id)
+}
+
+/** The chat just opened goes first; the chats beyond the few kept are let go of whole. */
+function keepRecent(id: string): void {
+  const s = useStore.getState()
+  const recent = [id, ...s.recentChats.filter((x) => x !== id)]
+  const kept = recent.slice(0, RECENT_CHATS_KEPT + 1)
+  const dropped = recent.slice(RECENT_CHATS_KEPT + 1).filter((x) => !historyRequests.has(x))
+  if (!dropped.length) {
+    useStore.setState({ recentChats: kept })
+    return
+  }
+  useStore.setState((st) => {
+    const messages = { ...st.messages }
+    const historyLoaded = { ...st.historyLoaded }
+    const rowsFrom = { ...st.rowsFrom }
+    for (const x of dropped) {
+      delete messages[x]
+      delete historyLoaded[x]
+      delete rowsFrom[x]
+    }
+    return { recentChats: kept, messages, historyLoaded, rowsFrom }
+  })
+}
+
+/**
+ * Let go of the older rows of a chat holding more than `max`, down to about ROWS_KEEP, where the
+ * session host finds that everything let go of lies before the line the kept part begins at
+ * (shared/rows.ts). Not while the chat is on screen and scrolled up (the rows being read would
+ * vanish), nor while it is being read further back, nor with a session host that cannot say where.
+ */
+async function trimChat(id: string, max: number): Promise<void> {
+  const s = useStore.getState()
+  const from = s.rowsFrom[id]
+  if (trimming.has(id) || !s.trimmable[id] || s.earlierBusy[id] || typeof from !== 'number') return
+  if (Date.now() - (trimFailedAt.get(id) ?? 0) < 60_000) return
+  if (s.activeId === id && !s.following[id]) return
+  const rows = s.messages[id] ?? []
+  const limit = trimLimit(rows, ROWS_KEEP, max, taskRunningIn(s.live[id]))
+  if (limit <= 0) return
+  trimming.add(id)
+  try {
+    const places = rows.slice(0, limit + 1).map(rowPlace)
+    const cut = await window.api.sessions.cutPoint(id, places, from).catch(() => null)
+    if (!cut) {
+      trimFailedAt.set(id, Date.now())
+      return
+    }
+    const now = useStore.getState()
+    if (now.rowsFrom[id] !== from || now.earlierBusy[id]) return
+    if (now.activeId === id && !now.following[id]) return
+    const list = now.messages[id] ?? []
+    // The rows above the cut must be the ones the host was asked about (nothing read in above them since).
+    if (list[cut.index]?.id !== places[cut.index].id) return
+    useStore.setState((st) => ({ messages: { ...st.messages, [id]: list.slice(cut.index) }, rowsFrom: { ...st.rowsFrom, [id]: cut.offset } }))
+  } finally {
+    trimming.delete(id)
+  }
+}
+
+/** A row asked for whole, when an update of it named a subagent step the window does not have. */
+async function fetchRow(id: string, rowId: string): Promise<void> {
+  const key = `${id}:${rowId}`
+  if (rowRequests.has(key)) return
+  rowRequests.add(key)
+  try {
+    const row = await window.api.sessions.row(id, rowId)
+    if (!row || !holdsChat(useStore.getState(), id)) return
+    useStore.setState((st) => {
+      const list = st.messages[id] ?? []
+      return list.some((m) => m.id === rowId) ? { messages: { ...st.messages, [id]: upsertMessage(list, row) } } : {}
+    })
+  } catch {
+    /* the next update of the row brings it */
+  } finally {
+    rowRequests.delete(key)
+  }
+}
 
 export interface SidebarSection {
   /** 'group' / 'ungrouped' in the groups view, 'pinned' / 'recent' in the recent view. */

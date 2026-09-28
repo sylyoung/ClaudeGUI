@@ -49,6 +49,43 @@ export function startDebugServer(opts: { getWindow(): BrowserWindow | null; host
           const value = await win.webContents.executeJavaScript(code, true)
           return send(200, { value })
         }
+        case '/heap': {
+          // The window's JavaScript heap, and with ?gc=1 the same after a full garbage collection:
+          // the part that survives it is what the window really holds, the rest is waiting to be freed.
+          if (!win) return send(500, { error: 'no window' })
+          const dbg = win.webContents.debugger
+          if (!dbg.isAttached()) dbg.attach('1.3')
+          const usage = async () => (await dbg.sendCommand('Runtime.getHeapUsage')) as { usedSize: number; totalSize: number }
+          const before = await usage()
+          let after: { usedSize: number; totalSize: number } | null = null
+          if (url.searchParams.get('gc') === '1') {
+            await dbg.sendCommand('HeapProfiler.collectGarbage')
+            after = await usage()
+          }
+          const metric = (await import('electron')).app.getAppMetrics().find((m) => m.pid === win.webContents.getOSProcessId())
+          return send(200, { pid: win.webContents.getOSProcessId(), before, after, workingSetKB: metric?.memory.workingSetSize })
+        }
+        case '/profile': {
+          // A CPU profile of the window for ?ms= milliseconds, written to ?out= (.cpuprofile).
+          if (!win) return send(500, { error: 'no window' })
+          const dbg = win.webContents.debugger
+          if (!dbg.isAttached()) dbg.attach('1.3')
+          const ms = Math.min(60_000, Number(url.searchParams.get('ms') || 10_000))
+          const out = url.searchParams.get('out') || '/tmp/claudegui.cpuprofile'
+          await dbg.sendCommand('Profiler.enable')
+          await dbg.sendCommand('Profiler.setSamplingInterval', { interval: 200 })
+          await dbg.sendCommand('Profiler.start')
+          await new Promise((r) => setTimeout(r, ms))
+          const { profile } = (await dbg.sendCommand('Profiler.stop')) as { profile: unknown }
+          fs.writeFileSync(out, JSON.stringify(profile))
+          return send(200, { ok: true, out, ms })
+        }
+        case '/heapsnapshot': {
+          if (!win) return send(500, { error: 'no window' })
+          const out = url.searchParams.get('out') || '/tmp/claudegui.heapsnapshot'
+          await win.webContents.takeHeapSnapshot(out)
+          return send(200, { ok: true, out, bytes: fs.statSync(out).size })
+        }
         default:
           return send(404, { error: 'unknown endpoint' })
       }

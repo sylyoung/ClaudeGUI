@@ -365,6 +365,15 @@ export interface ResultChatMessage {
 }
 export type ChatMessage = UserChatMessage | AssistantChatMessage | SystemChatMessage | ResultChatMessage
 
+/**
+ * In an update of a row (a `message` event with `keeps`), a subagent step that did not change: the
+ * window keeps its own copy of the child with this id. Never stored or drawn; see updateForWindow.
+ */
+export interface KeptChild {
+  kind: 'kept'
+  id: string
+}
+
 /** The outcome of taking a still-waiting prompt back out of Claude Code's queue. */
 export interface QueuedPromptTakeBack {
   /** False when Claude Code had already taken the prompt, so it is being answered after all. */
@@ -414,6 +423,23 @@ export interface RewindPreview {
 export interface EarlierMessages {
   messages: ChatMessage[]
   more: boolean
+  /**
+   * Where in the transcript file these messages begin: the window reads further back from here the
+   * next time. Missing from a session host of 1.0.54 or older, which keeps that place itself.
+   */
+  from?: number
+}
+
+/** A chat's rows as the window opens it on, and where in the transcript file they begin. */
+export interface HistoryPage {
+  messages: ChatMessage[]
+  /** Offset of the first row in the transcript file; missing from a session host of 1.0.54 or older. */
+  from?: number
+  /**
+   * The session host can find a row's line in the transcript file, so the window may let go of the
+   * older rows of this chat and read them back from the file later (shared/rows.ts).
+   */
+  trimmable: boolean
 }
 
 /** Which chat's file a find reads: the app reads it itself, the session host is not involved. */
@@ -485,12 +511,15 @@ export interface RewindResult {
 // ---------------------------------------------------------------------------
 
 export type SessionEvent =
-  | { type: 'state'; state: SessionLiveState }
+  /** `keeps`: fields left out because they did not change; the window keeps its own (1.0.55 on). */
+  | { type: 'state'; state: SessionLiveState; keeps?: Array<'slashCommands' | 'models'> }
   | { type: 'record'; record: SessionRecord }
   | { type: 'groups'; groups: SessionGroup[] }
   | { type: 'record-removed'; id: string }
-  | { type: 'message'; sessionId: string; message: ChatMessage }
-  | { type: 'messages-reset'; sessionId: string; messages: ChatMessage[] }
+  /** `keeps`: some subagent steps in the row are KeptChild references to the window's own copies. */
+  | { type: 'message'; sessionId: string; message: ChatMessage; keeps?: boolean }
+  /** `from`: where in the transcript file the rows begin (not sent by hosts of 1.0.54 and older). */
+  | { type: 'messages-reset'; sessionId: string; messages: ChatMessage[]; from?: number }
   | { type: 'message-removed'; sessionId: string; messageId: string }
   | { type: 'focus'; sessionId: string }
 

@@ -8,6 +8,8 @@ src/
     defaults.ts            DEFAULT_SETTINGS (shared by the window and the session host)
     util.ts                splitList, version comparison, compareRecords / compareByLastPrompt
     colors.ts              Group colour palette (macOS system colours), next free colour
+    rows.ts                How much of a chat is held: busy rows, where a chat may be cut
+                           (cutAt), subagent steps sent as references (withKeptChildren)
   main/                    Electron window process
     index.ts               App lifecycle, window (+ saved bounds), menu, theme, notifications,
                            session-host connection and replacement, quit / restart-for-update
@@ -224,6 +226,37 @@ answered instead of the one still waiting below it.
    the chat; the renderer answers through `sessions.answerPermission`.
 5. After `init` and after every `result`, the runtime asks the CLI for its context usage and
    publishes it in the live state.
+
+## How much of a chat each process holds (1.0.55)
+- A subagent's whole run is one row (its steps are the `children` of the Agent call). An update of
+  such a row sends only the steps that changed since the last update; the others travel as
+  `{kind:'kept', id}` and the event carries `keeps: true` (`updateForWindow`, host). The window puts
+  its own copies back (`withKeptChildren`, shared/rows.ts) and asks for the row whole
+  (`sessions.row`) when it lacks one. Measured on a 414-step run: 5.2 MB sent instead of 150 MB.
+- The window holds rows only for the chat on screen and the 3 opened before it; updates and
+  `messages-reset` of other chats are ignored (they are read from the host when opened). Past 600
+  rows it lets go of the oldest, down to about 300 — the chat on screen only while it shows its end
+  — and a chat left behind keeps about 300. The host does the same past 600, down to about 400.
+- Rows go only down to a row where everything above lies wholly before that row's first line in the
+  transcript (its own lines and its tool results): row order is not always line order after a
+  compaction. The host finds this with one pass over the part held (`readLineIndex`, then `cutAt`,
+  shared/rows.ts) — for its own rows, and for the window's (`sessions.cutPoint`). Never at or after
+  a row still being written to (`firstBusyRow`). That line's offset is where the part held begins:
+  `HistoryPage.from` / `messages-reset.from` / `EarlierMessages.from` for the window
+  (`store.rowsFrom`), `historyFrom` for the host. Scrolling up reads the file before it
+  (`earlier(id, to)`), and find searches the file before it and the rows from it on.
+- Reading a part of a transcript (history.ts): parts begin and end on whole lines and begin at the
+  start of a step (a prompt or note, or an answer's first line), so no line is lost at an edge and
+  no call is parted from its result; a part that ends on Claude Code's own note (`isMeta`, e.g. the
+  "[Image: …]" line) is handed to the reader without it, because the reader will not begin its walk
+  at a note and would begin at a side branch further up.
+- The host sends a chat's rows whole (`messages-reset`) only to a window that asked for that chat
+  (`windowHolds`), and a chat's live state without the command and model lists when they did not
+  change (`keeps`), at most once a second when only the time of its last message moved.
+- Pictures stay out of the window's rows, the earlier parts included; a card asks for them and the
+  host reads them from its rows or, for a row it no longer holds, from the transcript.
+- A host of 1.0.54 or older gets the old calls (`history`, `earlier` without `to`); the window then
+  keeps all rows of the chats it holds, as before, because it cannot read back rows it let go of.
 
 ## Session host
 - Started by the window with `<helper> host.mjs --data <userData> --log … --version …`,

@@ -21,6 +21,7 @@ import type {
   ContextUsageView,
   EarlierMessages,
   EffortLevel,
+  HistoryPage,
   ImageAttachment,
   ModelInfoView,
   PendingPermission,
@@ -37,10 +38,11 @@ import type {
   SlashCommandView,
   TextBlockView
 } from '@shared/types'
-import { TranscriptState, looksSynthetic, recapText } from './transcript'
+import { TranscriptState, flattenToolResultContent, looksSynthetic, recapText } from './transcript'
 import { handoffNote, hasUnfinishedWork, mergeHandoffNote, type HandoffSnapshot } from './handoffNote'
-import { readSessionHistory, readSessionSlice, readSubagentHistory } from './history'
-import { findToolImages, messageForWindow, messagesForWindow } from './forWindow'
+import { readLineIndex, readSessionHistory, readSessionSlice, readSubagentHistory, readToolResultLine } from './history'
+import { findToolImages, messageForWindow, messagesForWindow, updateForWindow } from './forWindow'
+import { cutAt, rowPlace, trimLimit, type RowPlace } from '@shared/rows'
 import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
 import { readTranscriptIndex } from './transcriptIndex'
 import { projectDirFor } from './paths'
@@ -140,6 +142,21 @@ interface SideQuestionQuery {
 }
 
 const FLUSH_MS = 45
+/**
+ * How many rows of a running chat the session host holds: past `max` it lets go of the oldest, down
+ * to about `keep` (see shared/rows.ts). A chat is opened on a few hundred rows, so this is also what
+ * the window is handed when a long-running chat is opened, instead of every row since the host
+ * started.
+ */
+const HOST_ROW_LIMITS = { max: 600, keep: 400 }
+/**
+ * A chat's live state went to the window with every flush — about 20 times a second while it
+ * streams — whole, with Claude Code's list of commands (47 KB with the user's skills and plugins,
+ * measured 2026-09-28) and every chat's sidebar row drawn again each time. Now an update in which
+ * only the time of the last message changed goes at most once per STATE_QUIET_MS, anything else at
+ * once, and the command and model lists only when they changed.
+ */
+const STATE_QUIET_MS = 1000
 /** How long a chat may stay quiet before a prompt still marked as being answered is let go. */
 const DELIVERY_QUIET_MS = 10_000
 /** A shell command typed after "!" is stopped after this long. */
@@ -196,6 +213,8 @@ class ShellOutput {
 }
 
 export class SessionRuntime {
+  /** HOST_ROW_LIMITS; a test lowers them to see rows let go of within a short replay. */
+  static rowLimits = { ...HOST_ROW_LIMITS }
   readonly transcript = new TranscriptState()
   live: SessionLiveState
   private q: Query | null = null
@@ -246,6 +265,20 @@ export class SessionRuntime {
   private recapInFlight = false
   /** A stop has already left the note for this process (see stop). */
   private handoffNoted = false
+  /** Older rows are being let go of right now (trimRows). */
+  private trimming = false
+  /**
+   * The window has asked for this chat's rows since it attached, so it holds them and wants the chat
+   * whole again when it is read again (messages-reset). A window of 1.0.55 on keeps rows only of the
+   * chats it opened; starting every chat at launch used to send all of them — 73 MB for the user's
+   * 43 chats, which the window now ignores.
+   */
+  windowHolds = false
+  /** No line to cut at was found then: not looked for again for a minute (each look reads the file). */
+  private trimFailedAt = 0
+  /** The live state last sent to the window (see STATE_QUIET_MS). */
+  private sentState: { sig: string; at: number; commands?: unknown; models?: unknown } = { sig: '', at: 0 }
+  private stateTimer: NodeJS.Timeout | null = null
 
   constructor(
     public record: SessionRecord,
@@ -338,8 +371,29 @@ export class SessionRuntime {
     this.historyLoaded = true
     this.live.historyFrom = this.historyFrom
     this.stateDirty = true
-    this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: messagesForWindow(this.transcript.messages) })
+    if (this.windowHolds) this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: messagesForWindow(this.transcript.messages), from: this.historyFrom })
     this.scheduleFlush()
+  }
+
+  /** The rows the window opens the chat on, and where in the transcript file they begin. */
+  async historyPage(): Promise<HistoryPage> {
+    const messages = messagesForWindow(await this.ensureHistory())
+    return { messages, from: this.historyFrom, trimmable: true }
+  }
+
+  /** One row whole, for a window that got an update of it with a subagent step it does not have. */
+  row(rowId: string): ChatMessage | null {
+    const m = this.transcript.messages.find((x) => x.id === rowId)
+    return m ? messageForWindow(m) : null
+  }
+
+  /**
+   * Where a window holding these rows (its part of the chat beginning at `from` in the file) may let
+   * go of the older ones: the index of the first row it keeps and that row's line (shared/rows.ts).
+   */
+  async cutPoint(places: RowPlace[], from: number): Promise<{ index: number; offset: number } | null> {
+    if (!places.length) return null
+    return cutAt(places, places.length - 1, from, await readLineIndex(this.transcriptPath(), from))
   }
 
   /**
@@ -348,7 +402,25 @@ export class SessionRuntime {
    */
   async toolImages(toolUseId: string): Promise<ImageAttachment[]> {
     await this.ensureHistory()
-    return findToolImages(this.transcript.messages, toolUseId) ?? []
+    const held = findToolImages(this.transcript.messages, toolUseId)
+    if (held) return held
+    // A row the host has let go of (trimRows), or one read from further back: the pictures are in
+    // the tool's result in the transcript — the chat's own, or one of its subagents'.
+    const files = [this.transcriptPath()]
+    const subDir = path.join(projectDirFor(this.record.cwd), this.record.claudeSessionId, 'subagents')
+    try {
+      for (const f of fs.readdirSync(subDir)) if (f.endsWith('.jsonl')) files.push(path.join(subDir, f))
+    } catch {
+      /* no subagents */
+    }
+    for (const file of files) {
+      const entry = await readToolResultLine(file, toolUseId).catch(() => null)
+      const content = (entry?.message as { content?: unknown } | undefined)?.content
+      if (!Array.isArray(content)) continue
+      const block = content.find((b: { type?: string; tool_use_id?: string }) => b?.type === 'tool_result' && b.tool_use_id === toolUseId) as { content?: unknown } | undefined
+      if (block) return flattenToolResultContent(block.content).images ?? []
+    }
+    return []
   }
 
   /**
@@ -357,20 +429,25 @@ export class SessionRuntime {
    * The range before the loaded one is read and folded on its own, and the messages are handed
    * straight to the window rather than added to the chat's own state: the running conversation is
    * not disturbed by it, and the session host does not end up holding a whole transcript again for
-   * a chat somebody scrolled through once. The window keeps them for as long as the chat is open.
-   * For the same reason they keep the pictures tools returned: the host has nowhere else to fetch
-   * them from later, and a slice read on request is not what holds up opening a chat.
+   * a chat somebody scrolled through once. They come without the pictures tools returned, like the
+   * rows a chat is opened on; a card asks for them when it is opened (toolImages).
    */
-  async earlier(): Promise<EarlierMessages> {
+  async earlier(to?: number): Promise<EarlierMessages> {
     if (this.earlierPromise) return this.earlierPromise
-    this.earlierPromise = this.readEarlier().finally(() => (this.earlierPromise = null))
+    this.earlierPromise = this.readEarlier(to).finally(() => (this.earlierPromise = null))
     return this.earlierPromise
   }
 
-  private async readEarlier(): Promise<EarlierMessages> {
+  /**
+   * `to` is where the window's part of the chat begins in the file, when it has read further back
+   * than the host holds or has let go of rows itself; without it, the part before the host's own.
+   * The host's own place is left as it is: what the window has read back is the window's, and the
+   * host keeps only the newest part of a running chat (trimRows).
+   */
+  private async readEarlier(before?: number): Promise<EarlierMessages> {
     await this.ensureHistory()
-    const to = this.historyFrom
-    if (to <= 0) return { messages: [], more: false }
+    const to = typeof before === 'number' && before >= 0 ? before : this.historyFrom
+    if (to <= 0) return { messages: [], more: false, from: 0 }
     const file = this.transcriptPath()
     const state = new TranscriptState()
     try {
@@ -385,14 +462,12 @@ export class SessionRuntime {
       }
       state.settleReplayOrder()
       state.insertRecaps(recaps)
-      this.historyFrom = from
-      this.live.historyFrom = from
-      this.stateDirty = true
-      this.scheduleFlush()
       this.deps.log(
         `[session ${this.id}] earlier messages: ${state.messages.length} rows from ${Math.round(from / 1048576)}–${Math.round(to / 1048576)} MB of the transcript`
       )
-      return { messages: state.messages, more: from > 0 }
+      // The pictures stay here like those of the rows the chat was opened on: the card asks for
+      // them when it is opened (toolImages reads them from the transcript).
+      return { messages: messagesForWindow(state.messages), more: from > 0, from }
     } catch (err) {
       this.deps.log(`[session ${this.id}] earlier messages failed: ${(err as Error).message}`)
       throw err
@@ -1775,7 +1850,7 @@ export class SessionRuntime {
         this.historyFrom = 0
         this.live.historyFrom = 0
         this.deps.saveRecord(this.record)
-        this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: [] })
+        if (this.windowHolds) this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: [] })
         break
       }
       case 'system': {
@@ -1965,14 +2040,87 @@ export class SessionRuntime {
   }
 
   flush(): void {
-    const { changed, removed } = this.transcript.takeChanges()
+    const { changed, removed, rowChanges } = this.transcript.takeChanges()
     for (const id of removed) this.deps.emit({ type: 'message-removed', sessionId: this.id, messageId: id })
-    for (const m of changed) this.deps.emit({ type: 'message', sessionId: this.id, message: messageForWindow(m) })
+    for (const m of changed) {
+      const { message, keeps } = updateForWindow(m, rowChanges.get(m.id))
+      this.deps.emit(keeps ? { type: 'message', sessionId: this.id, message, keeps } : { type: 'message', sessionId: this.id, message })
+    }
     if (this.stateDirty) {
       this.stateDirty = false
-      this.deps.emit({ type: 'state', state: { ...this.live } })
+      this.sendState()
+    }
+    if (this.transcript.messages.length > SessionRuntime.rowLimits.max && !this.trimming && Date.now() - this.trimFailedAt > 60_000) void this.trimRows()
+  }
+
+  /** The live state to the window, as STATE_QUIET_MS describes. */
+  private sendState(): void {
+    const { lastActivityAt: _at, slashCommands, models, ...rest } = this.live
+    const sig = JSON.stringify(rest)
+    const now = Date.now()
+    const same = sig === this.sentState.sig && slashCommands === this.sentState.commands && models === this.sentState.models
+    if (same && now - this.sentState.at < STATE_QUIET_MS) {
+      // Only the time of the last message moved: it goes with the next update, or in a moment.
+      if (!this.stateTimer) {
+        this.stateTimer = setTimeout(() => {
+          this.stateTimer = null
+          this.sendState()
+        }, STATE_QUIET_MS - (now - this.sentState.at))
+      }
+      return
+    }
+    if (this.stateTimer) {
+      clearTimeout(this.stateTimer)
+      this.stateTimer = null
+    }
+    const state: SessionLiveState = { ...this.live }
+    const keeps: Array<'slashCommands' | 'models'> = []
+    if (slashCommands && slashCommands === this.sentState.commands) {
+      delete state.slashCommands
+      keeps.push('slashCommands')
+    }
+    if (models && models === this.sentState.models) {
+      delete state.models
+      keeps.push('models')
+    }
+    this.sentState = { sig, at: now, commands: slashCommands, models }
+    this.deps.emit(keeps.length ? { type: 'state', state, keeps } : { type: 'state', state })
+  }
+
+  /**
+   * Let go of the oldest rows of a chat that has grown past HOST_ROW_LIMITS.max while running (see
+   * shared/rows.ts): down to the newest row, keeping about HOST_ROW_LIMITS.keep and nothing busy
+   * above it, where everything above lies before that row's first line in the transcript. The chat
+   * then begins at that line, as if it had been opened there, and scrolling up reads the rest back
+   * from the file.
+   */
+  private async trimRows(): Promise<void> {
+    const rows = this.transcript.messages
+    const limit = trimLimit(rows, SessionRuntime.rowLimits.keep, SessionRuntime.rowLimits.max, (taskId) => this.tasks.has(taskId))
+    if (limit <= 0) return
+    this.trimming = true
+    try {
+      const places = rows.slice(0, limit + 1).map(rowPlace)
+      const cut = cutAt(places, limit, this.historyFrom, await readLineIndex(this.transcriptPath(), this.historyFrom))
+      if (!cut) {
+        this.trimFailedAt = Date.now()
+        this.deps.log(`[session ${this.id}] ${rows.length} rows held; no place to let go of older ones at (held from ${this.historyFrom})`)
+        return
+      }
+      // The rows may have moved while the file was read (a reset, a rewind): cut by the row itself.
+      const idx = this.transcript.messages.findIndex((m) => m.id === places[cut.index].id)
+      if (idx !== cut.index) return
+      this.transcript.dropFirst(idx)
+      this.historyFrom = cut.offset
+      this.live.historyFrom = cut.offset
+      this.stateDirty = true
+      this.scheduleFlush()
+      this.deps.log(`[session ${this.id}] let go of ${idx} older rows; ${this.transcript.messages.length} kept, from ${Math.round(cut.offset / 1048576)} MB of the transcript on`)
+    } finally {
+      this.trimming = false
     }
   }
+
 }
 
 /** Sidebar-friendly wording for non-success result subtypes ("error_during_execution" → "interrupted"…). */

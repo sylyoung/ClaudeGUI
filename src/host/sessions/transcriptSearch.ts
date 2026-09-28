@@ -203,10 +203,11 @@ export async function readRowsAfter(file: string, ref: { cwd: string; claudeSess
 }
 
 /**
- * Where the loaded part of a chat really begins. The session host reads the loaded part from a byte
- * that usually falls inside a line, and drops that line; the part read for a find runs up to the end
- * of it, so no row falls between the two.
+ * Where the loaded part of a chat really begins: the first whole line at or after `historyFrom`.
+ * From 1.0.55 on that is a line start already; a session host of 1.0.54 or older read the loaded
+ * part from a byte inside a line, and dropped that line, so the part read for a find runs up to the
+ * end of it and no row falls between the two.
  */
 export function loadedPartStart(file: string, historyFrom: number): Promise<number> {
-  return historyFrom > 0 ? lineEndAt(file, historyFrom) : Promise.resolve(0)
+  return historyFrom > 0 ? lineEndAt(file, historyFrom - 1) : Promise.resolve(0)
 }

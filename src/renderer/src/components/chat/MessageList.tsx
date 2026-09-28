@@ -5,11 +5,17 @@ import { MessageItem, type PromptState } from './MessageItem'
 import { PermissionPrompt } from './PermissionPrompt'
 import { WorkingStrip } from './WorkingStrip'
 import { clearMatches, collectRanges, firstInView, paintMatches, revealRange } from '@/lib/findHighlight'
+import { useStore } from '@/store'
 
 const PAGE = 120
 /** Rows drawn around a match the find moved to, when it lies above what is drawn. */
 const AROUND_BEFORE = 30
 const AROUND_AFTER = 60
+
+/** A row of the list by its message id (rows carry it as data-mid). */
+function rowElement(root: HTMLElement, id: string): HTMLElement | null {
+  return root.querySelector<HTMLElement>(`[data-mid="${CSS.escape(id)}"]`)
+}
 
 /** What a find in the chat asks of the list: what to mark, and which match is the current one. */
 export interface ListFind {
@@ -67,6 +73,11 @@ export function MessageList({
   older?: ListOlderPart
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  /**
+   * A row at the top and where it stood when rows were asked for above it (see the scroll keeping
+   * below): the first one that carries its id in the page — prompts and answers do, notices not.
+   */
+  const anchor = useRef<{ id: string; top: number } | null>(null)
   const [stick, setStick] = useState(!older)
   const [limit, setLimit] = useState(PAGE)
   /**
@@ -99,6 +110,12 @@ export function MessageList({
   const below = windowed ? messages.length - 1 - winEnd : 0
   // The chat follows new output only while it shows its own end and is scrolled there.
   const follow = stick && !windowed && !older
+  // Only then may the window let go of the chat's older rows (store.ts, trimChat): above the end
+  // they may be the rows being read.
+  const setFollowing = useStore((s) => s.setFollowing)
+  useEffect(() => {
+    if (!older) setFollowing(sessionId, follow)
+  }, [sessionId, follow, older, setFollowing])
 
   /**
    * Reach further back: first through what the window already holds, then — when that is all on
@@ -107,6 +124,17 @@ export function MessageList({
    */
   const showEarlier = useCallback(() => {
     setPaged(true)
+    // Where the top rows stand now, for keeping them under the eye once rows come in above them.
+    const el = ref.current
+    if (el && !anchor.current) {
+      for (const m of visible.slice(0, 12)) {
+        const e = rowElement(el, m.id)
+        if (e) {
+          anchor.current = { id: m.id, top: e.offsetTop }
+          break
+        }
+      }
+    }
     if (windowed && winStart > 0) {
       setWin({ startId: messages[Math.max(0, winStart - PAGE * 2)].id, endId: messages[winEnd].id })
       return
@@ -118,6 +146,7 @@ export function MessageList({
     if (!earlierAvailable || earlierBusy || Date.now() - loadedAt.current < 400) return
     loadedAt.current = Date.now()
     onLoadEarlier()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, limit, windowed, winStart, winEnd, earlierAvailable, earlierBusy, onLoadEarlier])
 
   /** Reach further on from rows drawn around a match, back to the chat's end. */
@@ -148,18 +177,39 @@ export function MessageList({
   }, [showEarlier, showLater, below, older?.laterAvailable])
 
   // Following the newest message, and — when reading further back instead — keeping the row that
-  // was under the eye where it was: rows added above would otherwise push the chat down.
+  // was under the eye where it was: rows added above would otherwise push the chat down. The list is
+  // measured only for these: measuring it after every update made the browser lay out the whole
+  // chat each time, and with a few hundred rows drawn and a subagent at work that was the window
+  // busy for about 100 ms, several times a second (measured 2026-09-28).
   const firstShown = useRef<string | undefined>(undefined)
-  const lastHeight = useRef(0)
+  const followRef = useRef(follow)
+  followRef.current = follow
+  const stickFrame = useRef(0)
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
     const first = visible[0]?.id
-    if (follow) el.scrollTop = el.scrollHeight
-    else if (first !== firstShown.current && el.scrollHeight > lastHeight.current) el.scrollTop += el.scrollHeight - lastHeight.current
+    const before = firstShown.current
     firstShown.current = first
-    lastHeight.current = el.scrollHeight
+    if (follow) {
+      anchor.current = null
+      // Once per frame, however many updates came in during it.
+      if (!stickFrame.current) {
+        stickFrame.current = requestAnimationFrame(() => {
+          stickFrame.current = 0
+          const e = ref.current
+          if (e && followRef.current) e.scrollTop = e.scrollHeight
+        })
+      }
+      return
+    }
+    if (!before || first === before || !anchor.current) return
+    // Rows came in above: the rows that were at the top are pushed down by their height.
+    const row = rowElement(el, anchor.current.id)
+    if (row) el.scrollTop += row.offsetTop - anchor.current.top
+    anchor.current = null
   })
+  useEffect(() => () => cancelAnimationFrame(stickFrame.current), [])
 
   // A find that moved to a match above the rows drawn: draw the rows around it instead.
   const target = find?.target

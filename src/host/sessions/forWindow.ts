@@ -1,4 +1,5 @@
-import type { AssistantBlockView, ChatMessage, ImageAttachment, ToolUseBlockView } from '@shared/types'
+import type { AssistantBlockView, ChatMessage, ImageAttachment, KeptChild, ToolUseBlockView } from '@shared/types'
+import type { RowChanges } from './transcript'
 
 /**
  * A chat's rows as the window gets them: the pictures tools returned stay in the session host.
@@ -18,6 +19,33 @@ export function messageForWindow(m: ChatMessage): ChatMessage {
   return { ...m, blocks: m.blocks.map(blockForWindow) }
 }
 
+/**
+ * A row as an update to the window: like messageForWindow, but the subagent steps (the children of
+ * its tool calls) that did not change since the last update are sent as references to the copy the
+ * window already has. A subagent's whole run is one row, re-sent on each of its steps; without this
+ * a run of 700 steps sent all of them again 700 times, each time as new objects the window had to
+ * build and draw again (up to 950 KB a time measured on the user's chats, 2026-09-28).
+ *
+ * `keeps` is set when there is at least one reference; the window puts its own copies back in (and
+ * asks for the whole row when it has not got one of them).
+ */
+export function updateForWindow(m: ChatMessage, changes: RowChanges | undefined): { message: ChatMessage; keeps: boolean } {
+  if (!changes || changes === 'all' || m.kind !== 'assistant' || !m.blocks.some((b) => b.type === 'tool_use' && b.children?.length)) {
+    return { message: messageForWindow(m), keeps: false }
+  }
+  let keeps = false
+  const blocks = m.blocks.map((b): AssistantBlockView => {
+    if (b.type !== 'tool_use' || !b.children?.length) return blockForWindow(b)
+    const children = b.children.map((c): ChatMessage => {
+      if (changes.has(c.id)) return messageForWindow(c)
+      keeps = true
+      return { kind: 'kept', id: c.id } satisfies KeptChild as unknown as ChatMessage
+    })
+    return { ...b, result: resultForWindow(b.result), children }
+  })
+  return { message: { ...m, blocks }, keeps }
+}
+
 function holdsPictures(b: AssistantBlockView): boolean {
   if (b.type !== 'tool_use') return false
   if (b.result?.images?.some((i) => i.data)) return true
@@ -27,11 +55,11 @@ function holdsPictures(b: AssistantBlockView): boolean {
 function blockForWindow(b: AssistantBlockView): AssistantBlockView {
   if (!holdsPictures(b)) return b
   const t = b as ToolUseBlockView
-  return {
-    ...t,
-    result: t.result?.images ? { ...t.result, images: t.result.images.map(placeholder) } : t.result,
-    children: t.children?.map(messageForWindow)
-  }
+  return { ...t, result: resultForWindow(t.result), children: t.children?.map(messageForWindow) }
+}
+
+function resultForWindow(r: ToolUseBlockView['result']): ToolUseBlockView['result'] {
+  return r?.images?.some((i) => i.data) ? { ...r, images: r.images.map(placeholder) } : r
 }
 
 function placeholder(i: ImageAttachment): ImageAttachment {

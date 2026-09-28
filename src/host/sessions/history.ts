@@ -29,6 +29,7 @@
  */
 import fs from 'fs'
 import { getSessionMessages, getSubagentMessages, type SessionMessage, type SessionStore, type SessionStoreEntry } from '@anthropic-ai/claude-agent-sdk'
+import type { LineIndex } from '@shared/rows'
 
 /** What a chat is opened on. A range this size holds hundreds of messages in every chat measured. */
 const FIRST_WINDOW = 2 * 1024 * 1024
@@ -142,6 +143,37 @@ function piecesOf(entries: SessionStoreEntry[]): SessionStoreEntry[][] {
 }
 
 /**
+ * A piece without the note it ends on, when it ends on one. Claude Code begins its walk back through
+ * a conversation at the latest message that is not a note of its own (`isMeta`) — the line it writes
+ * after a tool returned a picture ("[Image: original 2800x1424 …]") is one — and a piece that ends on
+ * such a note has no message after it to begin at: the walk began at a side branch further up
+ * instead, and the last minutes of the piece were missing (found 2026-09-28: 38 of 173 messages of a
+ * piece of the WuTsai chat, read as the part before a cut). Notes are not shown in any case.
+ */
+const WALKED = new Set(['user', 'assistant', 'progress', 'system', 'attachment'])
+
+function withoutTrailingNote(piece: SessionStoreEntry[]): SessionStoreEntry[] {
+  let p = piece
+  for (;;) {
+    let last = -1
+    for (let i = p.length - 1; i >= 0 && last < 0; i--) {
+      const e = p[i] as { type?: string; isSidechain?: boolean }
+      if ((e.type === 'user' || e.type === 'assistant') && !e.isSidechain) last = i
+    }
+    const note = p[last] as { isMeta?: boolean; uuid?: string; parentUuid?: string | null } | undefined
+    if (!note?.isMeta) return p
+    // What hangs off the note (an attachment, say) hangs off the message before it instead, so the
+    // walk that begins there comes to that message; the note itself goes.
+    p = p
+      .filter((_, i) => i !== last)
+      .map((x) => {
+        const e = x as { type?: string; parentUuid?: string | null }
+        return WALKED.has(e.type ?? '') && e.parentUuid === note.uuid ? ({ ...x, parentUuid: note.parentUuid ?? null } as SessionStoreEntry) : x
+      })
+  }
+}
+
+/**
  * One byte range of a transcript, read as the conversation it holds: every piece folded by Claude
  * Code and put back in the order of the file. An entry that appears in two pieces — a transcript
  * written twice over the same conversation — is kept once, where it first stands.
@@ -151,7 +183,7 @@ async function foldRange(sessionId: string, dir: string, file: string, from: num
   const messages: SessionMessage[] = []
   const seen = new Set<string>()
   for (const piece of piecesOf(entries)) {
-    const folded = await getSessionMessages(sessionId, { dir, includeSystemMessages: true, sessionStore: storeOf(piece) })
+    const folded = await getSessionMessages(sessionId, { dir, includeSystemMessages: true, sessionStore: storeOf(withoutTrailingNote(piece)) })
     for (const m of folded) {
       const uuid = (m as { uuid?: string }).uuid
       if (uuid) {
@@ -181,15 +213,84 @@ export function readSessionHistory(sessionId: string, dir: string, file: string)
   const size = sizeOf(file)
   return oneAtATime(async () => {
     let window = FIRST_WINDOW
-    let from = Math.max(0, size - window)
-    let messages = await foldRange(sessionId, dir, file, from, size)
+    let from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, Math.max(0, size - window)))
+    let messages = await foldLines(sessionId, dir, file, from, size)
     while (from > 0 && window < MAX_WINDOW && messages.length < ENOUGH_MESSAGES) {
       window = Math.min(window * 2, MAX_WINDOW)
-      from = Math.max(0, size - window)
-      messages = await foldRange(sessionId, dir, file, from, size)
+      from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, Math.max(0, size - window)))
+      messages = await foldLines(sessionId, dir, file, from, size)
     }
     return { messages, fileMB: Math.round(size / 1048576), from }
   })
+}
+
+/**
+ * The start of the first whole line at or after `pos`. Every part of a chat that is read begins and
+ * ends on one: a part that began wherever a window of bytes happened to begin dropped the line cut
+ * in two there as a broken one, and the part before it — which ended at the same place — dropped it
+ * too, so each "show earlier messages" lost the line at its edge (found 2026-09-28: three task
+ * notifications gone in twelve reads of one chat).
+ */
+async function lineAtOrAfter(file: string, pos: number): Promise<number> {
+  return pos <= 0 ? 0 : lineEndAt(file, pos - 1)
+}
+
+/** How far back from a read's edge a step start is looked for. */
+const STEP_SCAN = 4 * 1024 * 1024
+
+/**
+ * Where a part of the chat to read should begin, at or before line start `pos`: the start of a step
+ * of the conversation — a prompt or note (a user entry that is not a tool result), or the first
+ * line of an answer (Claude Code writes each block of an answer as a line of its own, and may write
+ * a tool's result between two of them). A part that
+ * began between a tool call and its result had the call without its result and the result without
+ * its call, so the card showed no result (found 2026-09-28 in one of twelve reads of a chat). Looked
+ * for in the STEP_SCAN bytes before `pos`; where there is none, `pos` itself.
+ */
+async function stepStartAtOrBefore(file: string, pos: number): Promise<number> {
+  if (pos <= 0) return 0
+  const start = Math.max(0, pos - STEP_SCAN)
+  const fh = await fs.promises.open(file, 'r')
+  let text: string
+  try {
+    const buf = Buffer.alloc(pos - start)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, start)
+    text = buf.subarray(0, bytesRead).toString('latin1')
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+  // Whole lines only; latin1 keeps one character per byte, so positions are file offsets.
+  const lines: Array<{ at: number; line: string }> = []
+  let i = start === 0 ? 0 : text.indexOf('\n') + 1
+  if (start > 0 && i === 0) return pos
+  while (i < text.length) {
+    const nl = text.indexOf('\n', i)
+    const end = nl === -1 ? text.length : nl
+    lines.push({ at: start + i, line: text.slice(i, end) })
+    i = end + 1
+  }
+  const answerId = (line: string) => (line.includes('"type":"assistant"') ? /"message":\{[^]*?"id":"([^"]+)"/.exec(line)?.[1] : undefined)
+  for (let k = lines.length - 1; k >= 0; k--) {
+    const { at, line } = lines[k]
+    if (line.includes('"isSidechain":true')) continue
+    if (line.includes('"type":"user"') && !line.includes('"tool_result"')) return at
+    const id = answerId(line)
+    if (!id) continue
+    // The first line of an answer: the answer line before it is another answer's. Tool results can
+    // stand between two lines of the same answer (a tool runs while the answer goes on), so they do
+    // not count as the answer's start.
+    let prev: string | undefined
+    for (let j = k - 1; j >= 0 && prev === undefined; j--) prev = answerId(lines[j].line)
+    if (prev !== undefined && prev !== id) return at
+  }
+  return pos
+}
+
+/** The conversation held by the whole lines from line start `from` to line start `to`. */
+function foldLines(sessionId: string, dir: string, file: string, from: number, to: number): Promise<SessionMessage[]> {
+  // entriesInRange drops everything up to the first newline of a range that does not start the
+  // file; starting one byte early makes that the newline ending the line before.
+  return foldRange(sessionId, dir, file, from > 0 ? from - 1 : 0, to)
 }
 
 export interface SliceRead {
@@ -203,15 +304,18 @@ export interface SliceRead {
  * further back in the same way while that brings back less than a screenful — so that one "show
  * earlier messages" is always worth a click, even where a few messages fill a whole window.
  */
-export function readSessionSlice(sessionId: string, dir: string, file: string, to: number): Promise<SliceRead> {
+export function readSessionSlice(sessionId: string, dir: string, file: string, before: number): Promise<SliceRead> {
   return oneAtATime(async () => {
+    // A place that is not a line start (kept by a session host of 1.0.54 or older) has the line cut
+    // there on neither side yet: it belongs here.
+    const to = await lineAtOrAfter(file, before)
     let window = EARLIER_WINDOW
-    let from = Math.max(0, to - window)
-    let messages = await foldRange(sessionId, dir, file, from, to)
+    let from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, Math.max(0, to - window)))
+    let messages = await foldLines(sessionId, dir, file, from, to)
     while (from > 0 && window < MAX_WINDOW && messages.length < ENOUGH_MESSAGES) {
       window = Math.min(window * 2, MAX_WINDOW)
-      from = Math.max(0, to - window)
-      messages = await foldRange(sessionId, dir, file, from, to)
+      from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, Math.max(0, to - window)))
+      messages = await foldLines(sessionId, dir, file, from, to)
     }
     return { messages, from }
   })
@@ -270,6 +374,135 @@ export function readSessionLines(sessionId: string, dir: string, file: string, f
   // entriesInRange drops everything up to the first newline of a range that does not start the
   // file; starting one byte early makes that the newline ending the line before.
   return oneAtATime(() => foldRange(sessionId, dir, file, from > 0 ? from - 1 : 0, to))
+}
+
+/**
+ * Where the last occurrence of `needle` is in the file, read backwards from its end in blocks, or
+ * null when it is not in the last `maxScan` bytes.
+ */
+async function findBackwards(file: string, needle: string, maxScan = Number.POSITIVE_INFINITY): Promise<number | null> {
+  const size = sizeOf(file)
+  const pattern = Buffer.from(needle, 'utf8')
+  const fh = await fs.promises.open(file, 'r')
+  try {
+    const block = Buffer.allocUnsafe(4 * 1024 * 1024)
+    // Blocks overlap by the length of the needle, so one lying across two blocks is still found.
+    for (let end = size; end > 0 && size - end < maxScan; ) {
+      const start = Math.max(0, end - block.length)
+      const { bytesRead } = await fh.read(block, 0, end - start, start)
+      const at = block.subarray(0, bytesRead).lastIndexOf(pattern)
+      if (at !== -1) return start + at
+      if (start === 0) break
+      end = start + pattern.length - 1
+    }
+    return null
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
+/**
+ * Where the lines of a transcript are from byte `from` (a line start) to its end: each entry by its
+ * uuid, each answer's first and last line by its message id, each tool result by its call. One pass
+ * over the part of a chat that is held, when older rows are about to be let go of (shared/rows.ts).
+ * Lines are not parsed: a line can be megabytes of pictures, and the fields are found by their
+ * unescaped keys, which is how the entry's own fields are told from text inside it.
+ */
+export async function readLineIndex(file: string, from: number): Promise<LineIndex> {
+  const idx: LineIndex = { uuid: new Map(), answerFirst: new Map(), answerLast: new Map(), result: new Map() }
+  const size = sizeOf(file)
+  const fh = await fs.promises.open(file, 'r')
+  try {
+    const block = Buffer.allocUnsafe(8 * 1024 * 1024)
+    let carry: Buffer = Buffer.alloc(0)
+    let carryAt = from
+    for (let pos = from; pos < size; ) {
+      const { bytesRead } = await fh.read(block, 0, Math.min(block.length, size - pos), pos)
+      if (!bytesRead) break
+      const buf = carry.length ? Buffer.concat([carry, block.subarray(0, bytesRead)]) : block.subarray(0, bytesRead)
+      let lineStart = 0
+      for (let nl = buf.indexOf(10); nl !== -1; nl = buf.indexOf(10, lineStart)) {
+        indexLine(buf.subarray(lineStart, nl), carryAt + lineStart, idx)
+        lineStart = nl + 1
+      }
+      carry = Buffer.from(buf.subarray(lineStart))
+      carryAt += lineStart
+      pos += bytesRead
+    }
+    // The last line is left out while it has no newline: it may be being written.
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+  return idx
+}
+
+const UUID_KEY = Buffer.from('"uuid":"')
+const TIMESTAMP_NEXT = Buffer.from('","timestamp":"')
+const RESULT_KEY = Buffer.from('"tool_use_id":"')
+const ANSWER_ID = /"message":\{[^]*?"id":"([^"]+)"/
+const UUID_RE = /^[0-9a-f-]{36}$/
+
+/**
+ * The entry's own uuid: the one followed by its timestamp (prompts, answers, tool results, notes),
+ * or else the first one (a compaction notice has other fields after it). Keys inside the text of a
+ * message are escaped (\"uuid\"), so they are not mistaken for it.
+ */
+function entryUuid(line: Buffer): string | undefined {
+  let first: string | undefined
+  for (let i = line.indexOf(UUID_KEY); i !== -1; i = line.indexOf(UUID_KEY, i + 1)) {
+    const v = line.subarray(i + 8, i + 44).toString('latin1')
+    if (!UUID_RE.test(v)) continue
+    if (line.subarray(i + 44, i + 44 + TIMESTAMP_NEXT.length).equals(TIMESTAMP_NEXT)) return v
+    first ??= v
+  }
+  return first
+}
+
+function indexLine(line: Buffer, at: number, idx: LineIndex): void {
+  if (line.includes('"isSidechain":true')) return
+  const uuid = entryUuid(line)
+  if (uuid) idx.uuid.set(uuid, at)
+  // Who wrote the message is said at its start ("role"); structured tool output further on may hold
+  // anything, so it is not looked at for this.
+  const head = line.subarray(0, 8192).toString('latin1')
+  if (head.includes('"role":"assistant"')) {
+    const id = ANSWER_ID.exec(head)?.[1]
+    if (id) {
+      if (!idx.answerFirst.has(id)) idx.answerFirst.set(id, at)
+      idx.answerLast.set(id, at)
+    }
+    return
+  }
+  // Every call named in a result line; one named that is not its own only makes the line count as
+  // later than it is, which makes a cut more careful, never less.
+  for (let i = line.indexOf(RESULT_KEY); i !== -1; i = line.indexOf(RESULT_KEY, i + 1)) {
+    const end = line.indexOf(34, i + RESULT_KEY.length)
+    if (end !== -1) idx.result.set(line.subarray(i + RESULT_KEY.length, end).toString('latin1'), at)
+  }
+}
+
+/**
+ * The transcript line holding the result of one tool call, parsed, or null. For the pictures of a
+ * row the session host no longer holds: the window leaves them out of its rows and asks for them
+ * when a card is opened, which may be long after the host let go of the row, and the row may be
+ * from anywhere in the chat (scrolled back to), so the whole file is searched if need be — about a
+ * second for the largest transcripts here, once, when the card is opened.
+ */
+export async function readToolResultLine(file: string, toolUseId: string): Promise<Record<string, unknown> | null> {
+  const at = await findBackwards(file, `"tool_use_id":"${toolUseId}"`)
+  if (at === null) return null
+  const from = await lineStartAt(file, at)
+  const to = await lineEndAt(file, at)
+  const fh = await fs.promises.open(file, 'r')
+  try {
+    const buf = Buffer.alloc(to - from)
+    await fh.read(buf, 0, buf.length, from)
+    return JSON.parse(buf.toString('utf8')) as Record<string, unknown>
+  } catch {
+    return null
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
 }
 
 /** One subagent's messages. Their files are small, but the end is read first here as well. */

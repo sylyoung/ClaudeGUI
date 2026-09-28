@@ -47,18 +47,39 @@ interface ToolRef {
   block: ToolUseBlockView
   /** Top-level chat message that must be re-sent when this block changes. */
   top: ChatMessage
+  /** The subagent step (a child of `top`) the block is part of; undefined for a block of `top` itself. */
+  unit?: ChatMessage
 }
+
+/** An assistant message, the top-level row it is shown in, and the subagent step it belongs to. */
+interface AssistantRef {
+  msg: AssistantChatMessage
+  top: ChatMessage
+  /** The child of `top` that holds `msg` (msg itself for a direct child); undefined when msg is `top`. */
+  unit?: ChatMessage
+}
+
+/**
+ * What changed in one top-level row since the last flush: 'all' for a row that is new, else the
+ * ids of the subagent steps (children of its tool calls) that changed — the others are unchanged,
+ * and the window already has them.
+ */
+export type RowChanges = Set<string> | 'all'
 
 export class TranscriptState {
   messages: ChatMessage[] = []
   /** ids of top-level messages changed since the last flush */
   changed = new Set<string>()
   removed = new Set<string>()
+  /** Top-level id -> ids of the subagent steps in it that changed since the last flush. */
+  private units = new Map<string, Set<string>>()
+  /** Top-level rows added since the last flush: the window has nothing of them yet. */
+  private fresh = new Set<string>()
 
   private topById = new Map<string, ChatMessage>()
   private tools = new Map<string, ToolRef>()
   /** assistant message id -> the (possibly nested) assistant message + its top-level owner */
-  private assistants = new Map<string, { msg: AssistantChatMessage; top: ChatMessage }>()
+  private assistants = new Map<string, AssistantRef>()
   private finalized = new Map<string, number>()
   /** uuids of user messages the GUI itself inserted (so replays are not duplicated) */
   private localUserUuids = new Set<string>()
@@ -71,6 +92,8 @@ export class TranscriptState {
     this.messages = []
     this.changed.clear()
     this.removed.clear()
+    this.units.clear()
+    this.fresh.clear()
     this.topById.clear()
     this.tools.clear()
     this.assistants.clear()
@@ -79,25 +102,44 @@ export class TranscriptState {
     this.outOfOrder = []
   }
 
-  takeChanges(): { changed: ChatMessage[]; removed: string[] } {
+  takeChanges(): { changed: ChatMessage[]; removed: string[]; rowChanges: Map<string, RowChanges> } {
     const changed: ChatMessage[] = []
+    const rowChanges = new Map<string, RowChanges>()
     for (const id of this.changed) {
       const m = this.topById.get(id)
-      if (m) changed.push(m)
+      if (!m) continue
+      changed.push(m)
+      rowChanges.set(id, this.fresh.has(id) ? 'all' : (this.units.get(id) ?? new Set()))
     }
     const removed = [...this.removed]
     this.changed.clear()
     this.removed.clear()
-    return { changed, removed }
+    this.units.clear()
+    this.fresh.clear()
+    return { changed, removed, rowChanges }
   }
 
   private touch(top: ChatMessage): void {
     this.changed.add(top.id)
   }
 
+  /**
+   * A change to row `top`: to its own content, or — with `unit` — to one step of a subagent inside
+   * it. A subagent's run is one row holding every step it took, and a long run is megabytes, so the
+   * steps that did not change are sent to the window as references to the copy it already has.
+   */
+  private touchAt(top: ChatMessage, unit: ChatMessage | undefined): void {
+    this.changed.add(top.id)
+    if (!unit) return
+    let set = this.units.get(top.id)
+    if (!set) this.units.set(top.id, (set = new Set()))
+    set.add(unit.id)
+  }
+
   private addTop(msg: ChatMessage): void {
     this.messages.push(msg)
     this.topById.set(msg.id, msg)
+    this.fresh.add(msg.id)
     this.touch(msg)
   }
 
@@ -222,6 +264,7 @@ export class TranscriptState {
   private insertTop(msg: ChatMessage, index: number): void {
     this.messages.splice(index, 0, msg)
     this.topById.set(msg.id, msg)
+    this.fresh.add(msg.id)
     this.touch(msg)
   }
 
@@ -255,6 +298,8 @@ export class TranscriptState {
     this.messages.splice(idx, 1)
     this.topById.delete(id)
     this.changed.delete(id)
+    this.units.delete(id)
+    this.fresh.delete(id)
     this.removed.add(id)
   }
 
@@ -273,6 +318,31 @@ export class TranscriptState {
     this.messages.push(msg)
     this.removed.add(id)
     this.changed.add(id)
+    this.fresh.add(id)
+  }
+
+  /**
+   * Let go of the oldest `count` rows, and of everything that leads into them (their tool calls,
+   * their messages). They stay in Claude Code's transcript, from where scrolling up reads them again;
+   * see SessionRuntime.trimRows for which rows may go.
+   */
+  dropFirst(count: number): void {
+    if (count <= 0) return
+    const gone = new Set(this.messages.splice(0, count).map((m) => m.id))
+    for (const id of gone) {
+      this.topById.delete(id)
+      this.changed.delete(id)
+      this.units.delete(id)
+      this.fresh.delete(id)
+    }
+    for (const [id, ref] of this.tools) if (gone.has(ref.top.id)) this.tools.delete(id)
+    for (const [id, e] of this.assistants) {
+      if (!gone.has(e.top.id)) continue
+      this.assistants.delete(id)
+      this.finalized.delete(id)
+    }
+    for (const [key, id] of this.streamingByParent) if (!this.assistants.has(id)) this.streamingByParent.delete(key)
+    this.outOfOrder = this.outOfOrder.filter((id) => !gone.has(id))
   }
 
   // ---------------------------------------------------------------- SDK entry
@@ -315,7 +385,7 @@ export class TranscriptState {
         const entry = this.getOrCreateAssistant(m.id, sdk.parent_tool_use_id, ts, m.model)
         entry.msg.streaming = true
         this.streamingByParent.set(parentKey, m.id)
-        this.touch(entry.top)
+        this.touchAt(entry.top, entry.unit)
         break
       }
       case 'content_block_start': {
@@ -327,8 +397,8 @@ export class TranscriptState {
         // Keep block positions aligned with the API index when possible.
         while (entry.msg.blocks.length < ev.index) entry.msg.blocks.push({ type: 'text', text: '' })
         entry.msg.blocks[ev.index] = block
-        if (block.type === 'tool_use') this.tools.set(block.id, { block, top: entry.top })
-        this.touch(entry.top)
+        if (block.type === 'tool_use') this.tools.set(block.id, { block, top: entry.top, unit: entry.unit })
+        this.touchAt(entry.top, entry.unit)
         break
       }
       case 'content_block_delta': {
@@ -341,7 +411,7 @@ export class TranscriptState {
         else if (delta.type === 'thinking_delta' && block.type === 'thinking') block.text += String(delta.thinking ?? '')
         else if (delta.type === 'input_json_delta' && block.type === 'tool_use') block.partialJson = (block.partialJson ?? '') + String(delta.partial_json ?? '')
         else return
-        this.touch(entry.top)
+        this.touchAt(entry.top, entry.unit)
         break
       }
       case 'content_block_stop': {
@@ -352,7 +422,7 @@ export class TranscriptState {
           block.input = safeParseJson(block.partialJson) ?? block.input
           block.partialJson = undefined
           block.status = 'pending'
-          this.touch(entry.top)
+          this.touchAt(entry.top, entry.unit)
         }
         break
       }
@@ -368,13 +438,13 @@ export class TranscriptState {
         if (!entry) return
         entry.msg.streaming = false
         this.streamingByParent.delete(parentKey)
-        this.touch(entry.top)
+        this.touchAt(entry.top, entry.unit)
         break
       }
     }
   }
 
-  private currentAssistant(parentKey: string, ts: number, parentToolUseId: string | null) {
+  private currentAssistant(parentKey: string, ts: number, parentToolUseId: string | null): AssistantRef {
     const id = this.streamingByParent.get(parentKey)
     if (id) {
       const e = this.assistants.get(id)
@@ -388,7 +458,7 @@ export class TranscriptState {
 
   // ------------------------------------------------------------- assistant
 
-  private getOrCreateAssistant(id: string, parentToolUseId: string | null, ts: number, model?: string) {
+  private getOrCreateAssistant(id: string, parentToolUseId: string | null, ts: number, model?: string): AssistantRef {
     const existing = this.assistants.get(id)
     if (existing) {
       if (model && !existing.msg.model) existing.msg.model = model
@@ -404,13 +474,15 @@ export class TranscriptState {
       parentToolUseId
     }
     let top: ChatMessage
+    let unit: ChatMessage | undefined
     if (parentToolUseId) {
       const ref = this.tools.get(parentToolUseId)
       if (ref) {
         ref.block.children = ref.block.children ?? []
         ref.block.children.push(msg)
         top = ref.top
-        this.touch(top)
+        unit = ref.unit ?? msg
+        this.touchAt(top, unit)
       } else {
         this.addTop(msg)
         top = msg
@@ -419,7 +491,7 @@ export class TranscriptState {
       this.addTop(msg)
       top = msg
     }
-    const entry = { msg, top }
+    const entry: AssistantRef = { msg, top, unit }
     this.assistants.set(id, entry)
     return entry
   }
@@ -491,7 +563,7 @@ export class TranscriptState {
           existing.name = view.name
           existing.partialJson = undefined
           if (existing.status === 'streaming') existing.status = 'pending'
-          this.tools.set(existing.id, { block: existing, top: entry.top })
+          this.tools.set(existing.id, { block: existing, top: entry.top, unit: entry.unit })
         } else if (view.type === 'text' && existing.type === 'text') {
           existing.text = view.text
         } else if (view.type === 'thinking' && existing.type === 'thinking') {
@@ -499,7 +571,7 @@ export class TranscriptState {
         }
       } else {
         msg.blocks.splice(pos, 0, view)
-        if (view.type === 'tool_use') this.tools.set(view.id, { block: view, top: entry.top })
+        if (view.type === 'tool_use') this.tools.set(view.id, { block: view, top: entry.top, unit: entry.unit })
       }
       pos += 1
     }
@@ -515,7 +587,7 @@ export class TranscriptState {
         b.status = r.isError ? 'error' : 'done'
       }
     }
-    this.touch(entry.top)
+    this.touchAt(entry.top, entry.unit)
   }
 
   // ------------------------------------------------------------------ user
@@ -618,7 +690,7 @@ export class TranscriptState {
       if (ref) {
         ref.block.children = ref.block.children ?? []
         ref.block.children.push(msg)
-        this.touch(ref.top)
+        this.touchAt(ref.top, ref.unit ?? msg)
         return
       }
     }
@@ -636,7 +708,7 @@ export class TranscriptState {
     ref.block.result = { content: truncateMiddle(text), images, isError, structured, receivedAt: ts }
     ref.block.status = isError ? 'error' : 'done'
     if (isError && /permission|denied|rejected|user declined/i.test(text.slice(0, 200))) ref.block.status = 'denied'
-    this.touch(ref.top)
+    this.touchAt(ref.top, ref.unit)
   }
 
   hasTool(toolUseId: string): boolean {
@@ -652,7 +724,7 @@ export class TranscriptState {
     if (!ref) return
     if (ref.block.status === 'pending' || ref.block.status === 'streaming') {
       ref.block.status = 'running'
-      this.touch(ref.top)
+      this.touchAt(ref.top, ref.unit)
     }
   }
 
@@ -660,7 +732,7 @@ export class TranscriptState {
     const ref = this.tools.get(toolUseId)
     if (!ref) return
     ref.block.status = 'denied'
-    this.touch(ref.top)
+    this.touchAt(ref.top, ref.unit)
   }
 
   updateTask(
@@ -671,7 +743,7 @@ export class TranscriptState {
     const ref = this.tools.get(toolUseId)
     if (!ref) return
     ref.block.task = { ...(ref.block.task ?? { taskId: patch.taskId }), ...patch }
-    this.touch(ref.top)
+    this.touchAt(ref.top, ref.unit)
   }
 
   // ---------------------------------------------------------------- result
@@ -681,7 +753,7 @@ export class TranscriptState {
     for (const e of this.assistants.values()) {
       if (e.msg.streaming) {
         e.msg.streaming = false
-        this.touch(e.top)
+        this.touchAt(e.top, e.unit)
       }
     }
     this.streamingByParent.clear()

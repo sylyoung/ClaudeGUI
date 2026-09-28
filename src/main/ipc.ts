@@ -3,8 +3,9 @@ import os from 'os'
 import path from 'path'
 import fs from 'fs'
 import { execFile } from 'child_process'
-import type { AppInfo, AppSettings, ChatFileRef, ChatRowsRequest, DirInfo, EffortLevel, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, SessionMove, StartupNotice, ThemeInfo } from '@shared/types'
+import type { AppInfo, AppSettings, ChatFileRef, ChatRowsRequest, DirInfo, EffortLevel, HistoryPage, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, SessionMove, StartupNotice, ThemeInfo } from '@shared/types'
 import { compareVersions, parseVersion, splitList } from '@shared/util'
+import type { RowPlace } from '@shared/rows'
 import type { SettingsStore } from './store'
 import type { HostClient } from './hostClient'
 import type { UsageService } from './usageService'
@@ -80,6 +81,15 @@ async function needsCurrentHost<T>(call: Promise<T>, what: string): Promise<T> {
  */
 function hostSwitchesProviders(version: string | undefined): boolean {
   return !version || !parseVersion(version) || compareVersions(version, '1.0.23') >= 0
+}
+
+/**
+ * Whether the running session host keeps only the newest rows of a chat and can find a row's line in
+ * the transcript (1.0.55 on). With an older host the window opens a chat on everything that host
+ * holds, as before, and keeps all of it: it has no way to read back rows it let go of.
+ */
+function hostKeepsRecentRows(version: string | undefined): boolean {
+  return Boolean(version && parseVersion(version) && compareVersions(version, '1.0.55') >= 0)
 }
 
 export function registerIpc(ctx: IpcContext): void {
@@ -189,8 +199,12 @@ export function registerIpc(ctx: IpcContext): void {
 
   // ---- sessions (all forwarded to the session host process)
   handle('sessions:list', () => host.list())
-  handle('sessions:history', (id: string) => host.history(id))
-  handle('sessions:earlier', (id: string) => host.earlier(id))
+  handle('sessions:history', async (id: string): Promise<HistoryPage> =>
+    hostKeepsRecentRows(host.status.version) ? host.historyPage(id) : { messages: await host.history(id), trimmable: false }
+  )
+  handle('sessions:earlier', (id: string, to?: number) => host.earlier(id, to))
+  handle('sessions:row', (id: string, rowId: string) => (hostKeepsRecentRows(host.status.version) ? host.row(id, rowId) : null))
+  handle('sessions:cutPoint', (id: string, places: RowPlace[], from: number) => (hostKeepsRecentRows(host.status.version) ? host.cutPoint(id, places, from) : null))
   handle('sessions:toolImages', (id: string, toolUseId: string) => needsCurrentHost(host.toolImages(id, toolUseId), 'Showing the pictures a tool returned'))
   // Finding text in the part of a chat that is not loaded: read here from the chat's file, so it does
   // not depend on the version of the session host.

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { compareRecords, lastPromptOf } from '@shared/util'
+import type { RowPlace } from '@shared/rows'
 import { nextGroupColor } from '@shared/colors'
 import { deleteSession, forkSession, getSessionInfo, listSessions } from '@anthropic-ai/claude-agent-sdk'
 import type {
@@ -9,6 +10,7 @@ import type {
   ChatMessage,
   EarlierMessages,
   CliSessionSummary,
+  HistoryPage,
   EffortLevel,
   ImageAttachment,
   PendingPermission,
@@ -292,7 +294,31 @@ export class SessionManager {
   }
 
   async history(id: string): Promise<ChatMessage[]> {
-    return messagesForWindow(await this.get(id).ensureHistory())
+    const rt = this.get(id)
+    rt.windowHolds = true
+    return messagesForWindow(await rt.ensureHistory())
+  }
+
+  /** The rows a chat is opened on and where in its transcript they begin (windows of 1.0.55 on). */
+  historyPage(id: string): Promise<HistoryPage> {
+    const rt = this.get(id)
+    rt.windowHolds = true
+    return rt.historyPage()
+  }
+
+  /** A window attached: it holds no chat's rows until it asks for them. */
+  windowAttached(): void {
+    for (const rt of this.runtimes.values()) rt.windowHolds = false
+  }
+
+  /** One row whole: for a window that got an update of it naming a subagent step it lacks. */
+  row(id: string, rowId: string): ChatMessage | null {
+    return this.get(id).row(rowId)
+  }
+
+  /** Where a window may let go of a chat's older rows (shared/rows.ts). */
+  cutPoint(id: string, places: RowPlace[], from: number): Promise<{ index: number; offset: number } | null> {
+    return this.get(id).cutPoint(places, from)
   }
 
   /** The pictures one tool call returned, which the rows handed to the window leave out. */
@@ -301,8 +327,8 @@ export class SessionManager {
   }
 
   /** The part of a chat before the part that is loaded, read when the user scrolls to the top. */
-  async earlier(id: string): Promise<EarlierMessages> {
-    return this.get(id).earlier()
+  async earlier(id: string, to?: number): Promise<EarlierMessages> {
+    return this.get(id).earlier(to)
   }
 
   // --------------------------------------------------------------- mutations

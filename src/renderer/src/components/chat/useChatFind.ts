@@ -83,7 +83,9 @@ export function useChatFind(record: SessionRecord, live: SessionLiveState | unde
   const searched = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const ref = useMemo(() => ({ cwd: record.cwd, claudeSessionId: record.claudeSessionId }), [record.cwd, record.claudeSessionId])
-  const historyFrom = live?.historyFrom ?? 0
+  // Where the rows the window holds begin in the file: the file is searched before it, the rows from it on.
+  const rowsFrom = useStore((s) => s.rowsFrom[record.id])
+  const historyFrom = rowsFrom ?? live?.historyFrom ?? 0
 
   useEffect(() => {
     remembered.set(record.id, { open, query, whole: wholeWanted })

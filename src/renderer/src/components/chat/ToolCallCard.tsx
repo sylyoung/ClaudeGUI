@@ -82,8 +82,19 @@ export function toolSummary(block: ToolUseBlockView): string {
   }
 }
 
-/** Pictures fetched for opened cards, kept while the window is open so a card scrolled away and back does not ask again. */
+/**
+ * Pictures fetched for opened cards, so a card scrolled away and back does not ask again. Only the
+ * last few cards' are kept: one PDF read is several megabytes of pages, and they used to stay for as
+ * long as the window was open, card after card.
+ */
 const fetchedImages = new Map<string, ImageAttachment[]>()
+const FETCHED_CARDS_KEPT = 8
+
+function keepFetched(key: string, images: ImageAttachment[]): void {
+  fetchedImages.delete(key)
+  fetchedImages.set(key, images)
+  while (fetchedImages.size > FETCHED_CARDS_KEPT) fetchedImages.delete(fetchedImages.keys().next().value!)
+}
 
 /**
  * A tool's pictures, once its card is open. The chat's rows arrive without them (a PDF read returns
@@ -100,7 +111,7 @@ function useToolImages(sessionId: string | undefined, block: ToolUseBlockView, s
     let live = true
     window.api.sessions.toolImages(sessionId, block.id).then(
       (images) => {
-        fetchedImages.set(key, images)
+        keepFetched(key, images)
         if (live) setState({ images })
       },
       (err: Error) => live && setState({ error: err.message })

@@ -11,6 +11,7 @@ import type {
   ChatMessage,
   CliSessionSummary,
   EarlierMessages,
+  HistoryPage,
   EffortLevel,
   FileContent,
   FileProbe,
@@ -43,6 +44,7 @@ import type {
   PermissionInfo,
   UsageState
 } from '@shared/types'
+import type { RowPlace } from '@shared/rows'
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -115,9 +117,17 @@ const api = {
   },
   sessions: {
     list: () => invoke<{ records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] }>('sessions:list'),
-    history: (id: string) => invoke<ChatMessage[]>('sessions:history', id),
-    /** The part of the chat before what is loaded — what scrolling to the top of the chat asks for. */
-    earlier: (id: string) => invoke<EarlierMessages>('sessions:earlier', id),
+    /** The rows a chat is opened on, where in its transcript they begin, and whether older ones may be let go of. */
+    history: (id: string) => invoke<HistoryPage>('sessions:history', id),
+    /**
+     * The part of the chat before what is loaded — what scrolling to the top of the chat asks for.
+     * `to`: where the loaded part begins in the transcript file, when the window knows it.
+     */
+    earlier: (id: string, to?: number) => invoke<EarlierMessages>('sessions:earlier', id, to),
+    /** One row whole (an update named a subagent step the window does not have); null from an old host. */
+    row: (id: string, rowId: string) => invoke<ChatMessage | null>('sessions:row', id, rowId),
+    /** Where the window may let go of a chat's older rows (shared/rows.ts); null when nowhere, or an old host. */
+    cutPoint: (id: string, places: RowPlace[], from: number) => invoke<{ index: number; offset: number } | null>('sessions:cutPoint', id, places, from),
     /** The pictures one tool call returned: the chat's rows leave them out until its card is opened. */
     toolImages: (id: string, toolUseId: string) => invoke<ImageAttachment[]>('sessions:toolImages', id, toolUseId),
     /** Find text in the part of a chat that is not loaded, by reading the chat's file. */
