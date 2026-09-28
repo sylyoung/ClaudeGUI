@@ -3,7 +3,7 @@ import os from 'os'
 import path from 'path'
 import fs from 'fs'
 import { execFile } from 'child_process'
-import type { AppInfo, AppSettings, DirInfo, EffortLevel, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, SessionMove, StartupNotice, ThemeInfo } from '@shared/types'
+import type { AppInfo, AppSettings, ChatFileRef, ChatRowsRequest, DirInfo, EffortLevel, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, SessionMove, StartupNotice, ThemeInfo } from '@shared/types'
 import { compareVersions, parseVersion, splitList } from '@shared/util'
 import type { SettingsStore } from './store'
 import type { HostClient } from './hostClient'
@@ -15,6 +15,7 @@ import { DirWatcher, listDir, locatePath, pathExists, probeFile, readFileContent
 import { openExternal, openInEditor, openPath, openTerminal, openWithApp, showItemInFolder } from './shellService'
 import { getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache, getLoginShellEnv } from './env'
 import * as gitSvc from './gitService'
+import { readChatRows, searchChatFile, stopChatSearch } from './chatSearch'
 
 /**
  * The Claude Code version inside an executable. The SDK's own package version (0.3.x) is what the
@@ -191,6 +192,13 @@ export function registerIpc(ctx: IpcContext): void {
   handle('sessions:history', (id: string) => host.history(id))
   handle('sessions:earlier', (id: string) => host.earlier(id))
   handle('sessions:toolImages', (id: string, toolUseId: string) => needsCurrentHost(host.toolImages(id, toolUseId), 'Showing the pictures a tool returned'))
+  // Finding text in the part of a chat that is not loaded: read here from the chat's file, so it does
+  // not depend on the version of the session host.
+  handle('chat:searchFile', (req: ChatFileRef & { searchId: number; query: string; historyFrom: number }) =>
+    searchChatFile(req, (p) => ctx.getWindow()?.webContents.send('chat:searchProgress', p))
+  )
+  handle('chat:stopSearch', (ref: ChatFileRef) => stopChatSearch(ref))
+  handle('chat:rows', (ref: ChatFileRef, req: ChatRowsRequest) => readChatRows(ref, req, settings().toolResultMaxChars))
   handle('sessions:create', async (opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }) => {
     const record = await host.create(opts)
     store.addRecentDirectory(record.cwd)

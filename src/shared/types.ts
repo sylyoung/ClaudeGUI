@@ -416,6 +416,55 @@ export interface EarlierMessages {
   more: boolean
 }
 
+/** Which chat's file a find reads: the app reads it itself, the session host is not involved. */
+export interface ChatFileRef {
+  cwd: string
+  claudeSessionId: string
+}
+
+/** One entry of a chat's file that holds the text a find looks for, in the part that is not loaded. */
+export interface ChatFileHit {
+  /** Where the entry's line starts and ends in the file, in bytes. */
+  offset: number
+  end: number
+  /** The chat row it becomes: the entry's uuid for a prompt, the API message id for a reply. */
+  rowId: string
+  role: 'user' | 'assistant'
+  ts: number
+  /** How many times the text occurs in this entry. */
+  count: number
+  snippet: { before: string; match: string; after: string }
+}
+
+export interface ChatFileSearch {
+  searchId: number
+  hits: ChatFileHit[]
+  /** More entries matched than are listed. */
+  truncated: boolean
+  /** A newer search replaced this one before it finished. */
+  cancelled: boolean
+}
+
+export interface ChatSearchProgress {
+  searchId: number
+  done: number
+  total: number
+}
+
+/** Which rows of a part of a chat that is not loaded to read: around a match, or next to rows already read. */
+export type ChatRowsRequest =
+  | { kind: 'around'; offset: number; end: number; historyFrom: number }
+  | { kind: 'before'; to: number }
+  | { kind: 'after'; from: number; historyFrom: number }
+
+/** Rows of a part of a chat that is not loaded, read from its file for a find. */
+export interface ChatFileRows {
+  rows: ChatMessage[]
+  /** The stretch of the file they came from; both ends are line starts. */
+  from: number
+  to: number
+}
+
 export interface RewindResult {
   /** The prompt text that was cut away, for the input box. */
   text: string

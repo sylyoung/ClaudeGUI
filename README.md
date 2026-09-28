@@ -206,6 +206,7 @@ transcript as well. `CLAUDEGUI_USER_DATA=<dir>` moves the settings/session index
 | `⌘1` … `⌘9` | Switch to the n-th session (sidebar order) |
 | `⌘⇧[` / `⌘⇧]` | Previous / next session |
 | `⌘K` | Search sessions |
+| `⌘F` / `⌘G` | Find in the chat (prompts and replies) / next match; ⇧⏎ in the box goes to the previous one |
 | `⌘L` | Focus the composer |
 | `⌘B` / `⌘⇧E` / `⌘⇧G` / `⌘⇧S` | Toggle sidebar / files panel / Git panel / status board |
 | `⌘.` | Interrupt the current turn (the prompt returns to the input box) |

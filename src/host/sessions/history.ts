@@ -217,6 +217,61 @@ export function readSessionSlice(sessionId: string, dir: string, file: string, t
   })
 }
 
+/**
+ * Where the line holding byte `pos` begins: just past the newline before it, or 0. Lines of a
+ * transcript can be megabytes long (a tool that returned pictures), so the file is read backwards
+ * in blocks rather than guessed at.
+ */
+export async function lineStartAt(file: string, pos: number): Promise<number> {
+  if (pos <= 0) return 0
+  const fh = await fs.promises.open(file, 'r')
+  try {
+    const block = Buffer.allocUnsafe(64 * 1024)
+    for (let end = pos; end > 0; ) {
+      const start = Math.max(0, end - block.length)
+      const { bytesRead } = await fh.read(block, 0, end - start, start)
+      const nl = block.subarray(0, bytesRead).lastIndexOf(0x0a)
+      if (nl !== -1) return start + nl + 1
+      end = start
+    }
+    return 0
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
+/** Where the line holding byte `pos` ends: just past its newline, or the end of the file. */
+export async function lineEndAt(file: string, pos: number): Promise<number> {
+  const size = sizeOf(file)
+  if (pos >= size) return size
+  const fh = await fs.promises.open(file, 'r')
+  try {
+    const block = Buffer.allocUnsafe(64 * 1024)
+    for (let start = Math.max(0, pos); start < size; ) {
+      const { bytesRead } = await fh.read(block, 0, Math.min(block.length, size - start), start)
+      if (!bytesRead) break
+      const nl = block.subarray(0, bytesRead).indexOf(0x0a)
+      if (nl !== -1) return start + nl + 1
+      start += bytesRead
+    }
+    return size
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
+/**
+ * The conversation held by the whole lines from `from` to `to`, both of which are line starts (or
+ * the ends of the file). Unlike a slice below the loaded part, which begins wherever a window of
+ * bytes happens to begin, nothing is cut here: the range starts on a line of its own, so the first
+ * line is kept rather than dropped as the tail of the one before it.
+ */
+export function readSessionLines(sessionId: string, dir: string, file: string, from: number, to: number): Promise<SessionMessage[]> {
+  // entriesInRange drops everything up to the first newline of a range that does not start the
+  // file; starting one byte early makes that the newline ending the line before.
+  return oneAtATime(() => foldRange(sessionId, dir, file, from > 0 ? from - 1 : 0, to))
+}
+
 /** One subagent's messages. Their files are small, but the end is read first here as well. */
 export function readSubagentHistory(sessionId: string, agentId: string, dir: string, file: string): Promise<SessionMessage[]> {
   const size = sizeOf(file)

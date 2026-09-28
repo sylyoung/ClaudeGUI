@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, AlertTriangle, Bot, ChevronDown, ChevronsDownUp, ChevronsUpDown, Code, Ellipsis, FileDiff, FolderOpen, GitBranch, Github, HardDrive, MessageSquare, PanelRight, Pin, PinOff, Play, Power, Square, TerminalSquare, Upload } from 'lucide-react'
+import { Activity, AlertTriangle, Bot, ChevronDown, ChevronsDownUp, ChevronsUpDown, Code, Ellipsis, FileDiff, FolderOpen, GitBranch, Github, HardDrive, History, MessageSquare, PanelRight, Pin, PinOff, Play, Power, Search, Square, TerminalSquare, Upload } from 'lucide-react'
 import type { DirInfo, EffortLevel, PermissionDecision, PermissionMode, SessionLiveState, SessionRecord } from '@shared/types'
 import { groupColorFor } from '@shared/colors'
 import { lastPromptOf } from '@shared/util'
@@ -11,6 +11,8 @@ import { isComposing } from '@/lib/keys'
 import { openFileFromClick } from '@/lib/openFiles'
 import { decodeModelChoice, encodeModelChoice, providerModelLabel, providerModelOptions } from '@/lib/providers'
 import { MessageList } from './MessageList'
+import { FindBox } from './FindBox'
+import { useChatFind } from './useChatFind'
 import { StateMark } from '../common/StateMark'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
@@ -243,7 +245,28 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
     [record.id, record.cwd, openPath, showPathMenu, rewindTo, showPromptMenu, takeBackPrompt]
   )
 
-  const onSend = useCallback((text: string, images: { mediaType: string; data: string; name?: string }[]) => void send(record.id, text, images), [record.id, send])
+  // Finding text in this chat (⌘F). A prompt sent while an older part of the chat is on screen
+  // brings the chat back to its latest messages, where the answer is written.
+  const find = useChatFind(record, live, messages)
+  const { backToLatest } = find
+  const onSend = useCallback(
+    (text: string, images: { mediaType: string; data: string; name?: string }[]) => {
+      backToLatest()
+      void send(record.id, text, images)
+    },
+    [record.id, send, backToLatest]
+  )
+  // ⌘F, ⌘G and the Edit menu's Find items reach the chat on screen through the store. A chat opened
+  // after such a command must not act on it, so the count it starts from is the one at that moment.
+  const findRequest = useStore((s) => s.findRequest)
+  const findHandled = useRef(findRequest.nonce)
+  const { open: findOpen, openBox: openFind, step: findStep } = find
+  useEffect(() => {
+    if (findRequest.nonce === findHandled.current) return
+    findHandled.current = findRequest.nonce
+    if (findRequest.cmd === 'open' || !findOpen) openFind()
+    else findStep(findRequest.cmd === 'next' ? 1 : -1)
+  }, [findRequest, findOpen, openFind, findStep])
   const onInterrupt = useCallback(() => void interruptSession(record.id), [record.id, interruptSession])
   const onAnswer = useCallback((requestId: string, d: PermissionDecision) => void answer(record.id, requestId, d), [record.id, answer])
 
@@ -434,6 +457,9 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <span className="spacer" />
           {!filesOpen && <UsageStatus compact />}
           <span className="hdr-actions no-drag">
+            <button className={`btn ghost icon ${find.open ? 'on' : ''}`} data-tip="Find in this chat: your prompts and Claude's replies (⌘F)" onClick={find.open ? find.close : find.openBox}>
+              <Search size={15} />
+            </button>
             <button className="btn ghost icon" data-tip="Fork this chat: copy the conversation into a new chat in the same folder, as Claude Code's /branch does (you can also type /branch). The original chat is not changed." onClick={() => void useStore.getState().forkSession(record.id)}>
               <GitBranch size={15} />
             </button>
@@ -548,19 +574,56 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <span className="spacer" />
           <ContextBar sessionId={record.id} live={live} />
         </div>
-        <MessageList
-          sessionId={record.id}
-          messages={messages}
-          live={live}
-          pending={live?.pendingPermissions ?? []}
-          onAnswer={onAnswer}
-          loaded={loaded}
-          working={working}
-          turnStartedAt={lastTurnStart}
-          earlierAvailable={earlierAvailable}
-          earlierBusy={earlierBusy}
-          onLoadEarlier={() => void loadEarlier(record.id)}
-        />
+        <div className="messages-wrap">
+          {find.olderView ? (
+            <MessageList
+              key="older"
+              sessionId={record.id}
+              messages={find.olderView.rows}
+              live={live}
+              pending={EMPTY_MESSAGES}
+              onAnswer={onAnswer}
+              loaded
+              working={false}
+              turnStartedAt={0}
+              earlierAvailable={find.olderView.from > 0}
+              earlierBusy={find.olderView.busy === 'before'}
+              onLoadEarlier={find.readOlderBefore}
+              find={find.olderFind}
+              older={find.olderPart ?? undefined}
+            />
+          ) : (
+            <MessageList
+              key="live"
+              sessionId={record.id}
+              messages={messages}
+              live={live}
+              pending={live?.pendingPermissions ?? []}
+              onAnswer={onAnswer}
+              loaded={loaded}
+              working={working}
+              turnStartedAt={lastTurnStart}
+              earlierAvailable={earlierAvailable}
+              earlierBusy={earlierBusy}
+              onLoadEarlier={() => void loadEarlier(record.id)}
+              find={find.liveFind}
+            />
+          )}
+          {find.open && <FindBox find={find} />}
+        </div>
+        {find.olderView && (
+          <div className="older-banner">
+            <History size={14} />
+            <span className="body">
+              Showing an older part of this chat
+              {find.olderView.rows.length > 0 && ` (${formatDateTime(find.olderView.rows[0].ts)} – ${formatDateTime(find.olderView.rows[find.olderView.rows.length - 1].ts)})`}
+              , found by the search. New messages are written at the end of the chat.
+            </span>
+            <button className="btn sm primary" data-tip="Show the chat's latest messages again" onClick={find.backToLatest}>
+              Back to latest
+            </button>
+          </div>
+        )}
         {live?.error && status === 'error' && (
           <div className="msg-system error" style={{ margin: '0 20px 8px' }}>
             <ChevronDown size={14} />

@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.0.53 — 2026-09-28
+
+### Find in a chat (⌘F)
+
+- Reported: "I cannot search inside the chat." The app had no way to find text in a chat, and
+  Claude Code has none of its own to reuse: its transcript view has no search, and Ctrl+R searches
+  only your earlier prompts.
+- ⌘F (Edit → Find → Find in Chat…, or the magnifier in the chat header) opens a small box over the
+  chat's top-right corner; the chat does not move. It finds text in your prompts and in Claude's
+  replies, not in tool details or thinking, whatever the case, Chinese included. Every match is
+  marked yellow and the one you are on orange, and the box says where you are ("3 of 17").
+  ⏎ or ⌘G goes to the next (newer) match, ⇧⏎ to the previous one (also the ↓ / ↑ buttons in the
+  box), Esc closes the box.
+- The part of the chat that is loaded is searched as you type. A match in rows further up that are
+  loaded but not drawn yet is shown by drawing the rows around it, with "Show later messages" below
+  and "latest" to return to the end.
+- "Search whole chat" also searches the older part of a long chat that is not loaded, by reading the
+  chat's file on disk, and lists the messages found there with their date. Measured on real chats:
+  1.3–2.2 seconds for 1.1–1.2 GB, 0.05 seconds for 42 MB. Once it is on it runs again by itself for
+  new words until the box is closed.
+- Opening a match in the older part shows the part of the chat around it, read from the file (about
+  half a second), with a bar saying so and "Back to latest". Scrolling up or down there reads further
+  back or on. It does not load everything between that point and the end: in one 1.1 GB chat 639 MB
+  of the file are pictures tools returned, and a chat is only ever loaded from its end for that
+  reason. Sending a prompt from there returns to the latest messages.
+- Tested in a separate test copy of the app on the 1.1 GB MSCA chat, opened read-only: finding in
+  the loaded part (English and Chinese), stepping through 694 matches including rows not yet drawn,
+  searching the whole chat (1.5 s, 56 messages in the older part), stepping from the older part into
+  the loaded part and around, Esc, "Back to latest", and ⌘F / ⌘G from the keyboard.
+- The search of the older part runs in the app itself, not in the session host, so all of this works
+  right after the update; no ⌘Q is needed.
+
+### Session → Keyboard Shortcuts (⌘/) opens the list again
+
+- The menu item sent its command, but the window never listened for it, so it did nothing; the
+  keyboard button in the input box was the only way to the list. ⌘F is in that list now.
+
 ## 1.0.52 — 2026-09-27
 
 ### A chat whose answer is finished no longer shows "working" while a background subagent works

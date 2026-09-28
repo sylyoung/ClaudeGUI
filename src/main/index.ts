@@ -232,7 +232,33 @@ function buildMenu(): void {
         { label: 'Refresh Usage Limits', click: () => void usage?.refresh('menu') }
       ]
     },
-    { role: 'editMenu' },
+    {
+      // The standard Edit menu, plus finding text in the chat on screen.
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'pasteAndMatchStyle' },
+        { role: 'delete' },
+        { role: 'selectAll' },
+        { type: 'separator' },
+        {
+          label: 'Find',
+          submenu: [
+            { label: 'Find in Chat…', accelerator: 'Cmd+F', click: () => send('menu:find') },
+            { label: 'Find Next', accelerator: 'Cmd+G', click: () => send('menu:find-next') },
+            // ⇧⌘G is the Git panel's; the find box takes ⇧⏎ for this.
+            { label: 'Find Previous', click: () => send('menu:find-previous') }
+          ]
+        },
+        { type: 'separator' },
+        { label: 'Speech', submenu: [{ role: 'startSpeaking' }, { role: 'stopSpeaking' }] }
+      ]
+    },
     {
       label: 'View',
       submenu: [

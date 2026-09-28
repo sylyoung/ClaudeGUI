@@ -109,6 +109,7 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0, state
       return (
         <div
           className={`msg msg-user ${state ? 'st-' + state : ''}`}
+          data-mid={depth === 0 ? message.id : undefined}
           onContextMenu={(e) => {
             if (!chat) return
             e.preventDefault()
@@ -143,7 +144,7 @@ export const MessageItem = memo(function MessageItem({ message, depth = 0, state
                   </button>
                 )
               )}
-              <div className="bubble">
+              <div className="bubble" data-find={depth === 0 ? '' : undefined}>
                 <LinkifiedText text={message.text} />
               </div>
             </div>
@@ -228,7 +229,7 @@ function AssistantMessage({ message, depth }: { message: AssistantChatMessage; d
   })()
   const renderChild = (m: ChatMessage, d: number) => <MessageItem key={m.id} message={m} depth={d} />
   return (
-    <div className="msg msg-assistant">
+    <div className="msg msg-assistant" data-mid={depth === 0 ? message.id : undefined}>
       {depth === 0 && (
         <div className="msg-meta">
           <span className="avatar">C</span>
@@ -243,7 +244,7 @@ function AssistantMessage({ message, depth }: { message: AssistantChatMessage; d
           if (b.type === 'text') {
             if (!b.text.trim() && !(message.streaming && i === lastTextIdx)) return null
             return (
-              <div className={`content ${message.streaming && i === lastTextIdx ? 'streaming-cursor' : ''}`} key={i}>
+              <div className={`content ${message.streaming && i === lastTextIdx ? 'streaming-cursor' : ''}`} key={i} data-find={depth === 0 ? '' : undefined}>
                 <Markdown text={b.text} />
               </div>
             )

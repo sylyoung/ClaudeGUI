@@ -119,6 +119,8 @@ interface State {
   /** Expand-all / collapse-all chosen in the chat header; overrides what a card shows by default. */
   toolDetails: 'expand' | 'collapse' | null
   searchFocusNonce: number
+  /** The last find command for the chat on screen (⌘F, ⌘G, the menu); the chat acts on each new nonce. */
+  findRequest: { cmd: 'open' | 'next' | 'previous'; nonce: number }
   /** Multi-selection in the sidebar (⌘-click / ⇧-click); bulk actions apply to these ids. */
   selectedIds: string[]
   /** Ids whose process is being started / stopped by a bulk action (for progress display). */
@@ -184,6 +186,7 @@ interface State {
   /** Expand or collapse the details of every tool operation in the chat. */
   setToolDetails: (expanded: boolean) => void
   focusSearch: () => void
+  requestFind: (cmd: 'open' | 'next' | 'previous') => void
   setWidths: (patch: { sidebarWidth?: number; filesWidth?: number }) => void
   setSelectedIds: (ids: string[]) => void
   /** Start the Claude process of several sessions, one after the other (staggered). */
@@ -241,6 +244,7 @@ export const useStore = create<State>((set, get) => ({
   toolExpandNonce: 0,
   toolDetails: null,
   searchFocusNonce: 0,
+  findRequest: { cmd: 'open', nonce: 0 },
   selectedIds: [],
   bulkBusy: {},
 
@@ -682,6 +686,7 @@ export const useStore = create<State>((set, get) => ({
     void get().setSettings({ toolCardsExpanded: expanded })
   },
   focusSearch: () => set((s) => ({ searchFocusNonce: s.searchFocusNonce + 1, sidebarOpen: true })),
+  requestFind: (cmd) => set((s) => ({ findRequest: { cmd, nonce: s.findRequest.nonce + 1 } })),
   setWidths: (patch) => {
     if (patch.sidebarWidth) localStorage.setItem('sidebarWidth', String(patch.sidebarWidth))
     if (patch.filesWidth) localStorage.setItem('filesWidth', String(patch.filesWidth))

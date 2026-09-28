@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AppInfo,
+  ChatFileRef,
+  ChatFileRows,
+  ChatFileSearch,
+  ChatRowsRequest,
+  ChatSearchProgress,
   AuthState,
   AppSettings,
   ChatMessage,
@@ -115,6 +120,11 @@ const api = {
     earlier: (id: string) => invoke<EarlierMessages>('sessions:earlier', id),
     /** The pictures one tool call returned: the chat's rows leave them out until its card is opened. */
     toolImages: (id: string, toolUseId: string) => invoke<ImageAttachment[]>('sessions:toolImages', id, toolUseId),
+    /** Find text in the part of a chat that is not loaded, by reading the chat's file. */
+    searchFile: (req: ChatFileRef & { searchId: number; query: string; historyFrom: number }) => invoke<ChatFileSearch>('chat:searchFile', req),
+    stopSearch: (ref: ChatFileRef) => invoke<void>('chat:stopSearch', ref),
+    /** Rows of a part of a chat that is not loaded: around a match, or before / after a part already read. */
+    fileRows: (ref: ChatFileRef, req: ChatRowsRequest) => invoke<ChatFileRows & { limit: number }>('chat:rows', ref, req),
     create: (opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }) =>
       invoke<SessionRecord>('sessions:create', opts),
     importCli: (sessionId: string, cwd: string, title?: string) => invoke<SessionRecord>('sessions:importCli', sessionId, cwd, title),
@@ -235,11 +245,12 @@ const api = {
     onUpdate: (cb: (s: UpdateState) => void) => on<UpdateState>('update:changed', cb),
     /** The session host was replaced or reconnected: reload the session list. */
     onSessionsReload: (cb: () => void) => on<null>('sessions:reload', () => cb()),
+    onChatSearchProgress: (cb: (p: ChatSearchProgress) => void) => on<ChatSearchProgress>('chat:searchProgress', cb),
     onMenu: (cb: (command: string) => void) => {
       const channels = [
         'menu:settings', 'menu:new-session', 'menu:import-session', 'menu:next-session', 'menu:prev-session',
         'menu:focus-composer', 'menu:toggle-sidebar', 'menu:toggle-files', 'menu:toggle-git', 'menu:search', 'menu:interrupt', 'menu:check-updates', 'menu:toggle-board',
-        'menu:toggle-view', 'menu:select-all', 'menu:start-all'
+        'menu:toggle-view', 'menu:select-all', 'menu:start-all', 'menu:shortcuts', 'menu:find', 'menu:find-next', 'menu:find-previous'
       ]
       const offs = channels.map((ch) => on<void>(ch, () => cb(ch)))
       return () => offs.forEach((off) => off())

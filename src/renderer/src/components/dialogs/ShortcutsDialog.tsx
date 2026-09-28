@@ -32,6 +32,7 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
   {
     title: 'Sessions and panels',
     rows: [
+      ['⌘F', 'Find in this chat, in your prompts and Claude\'s replies: ⏎ or ⌘G goes to the next match, ⇧⏎ to the previous one, Esc closes the box. "Search whole chat" also looks through the part of a long chat that is not loaded.'],
       ['⌘K', 'Search the sessions in the sidebar.'],
       ['⌘1 … ⌘9', 'Jump to the first nine sessions of the sidebar.'],
       ['⌘⇧] / ⌘⇧[', 'Next / previous session.'],

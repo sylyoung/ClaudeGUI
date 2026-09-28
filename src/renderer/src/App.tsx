@@ -92,6 +92,9 @@ export default function App() {
         case 'menu:toggle-files': s.toggleFiles(); break
         case 'menu:toggle-git': s.showPanelTab('git'); break
         case 'menu:search': s.focusSearch(); break
+        case 'menu:find': s.requestFind('open'); break
+        case 'menu:find-next': s.requestFind('next'); break
+        case 'menu:find-previous': s.requestFind('previous'); break
         case 'menu:interrupt': if (s.activeId) void s.interruptSession(s.activeId); break
         case 'menu:shortcuts': s.setDialog('shortcuts'); break
         case 'menu:toggle-board': void s.setSettings({ showStatusBoard: !(s.settings?.showStatusBoard ?? true) }); break
