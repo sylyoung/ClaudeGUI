@@ -247,6 +247,8 @@ export class SessionRuntime {
   private processCostSeen = 0
   /** Chain entry the next start resumes at (a rewind fork point), or null for the whole chain. */
   private resumeAt: string | null = null
+  /** The process is being replaced under the chat (a rewind, another provider): see replaceQuietly. */
+  private quietReplace = false
   /** Whether file backups were switched on for the process that is running now. */
   private checkpointing = false
   /** Clears prompts left marked as being answered when no turn ever came for them. */
@@ -659,7 +661,8 @@ export class SessionRuntime {
     }
     this.live.cwdMissing = false
     await this.ensureHistory()
-    this.setStatus('starting')
+    // Only an idle chat stays so: after an error (a provider that would not start) this start is news.
+    if (!this.quietReplace || this.live.status !== 'idle') this.setStatus('starting')
     this.live.error = undefined
     // A chat on another provider gets the environment its launcher sets (base URL, key, proxies);
     // the launcher runs first, as it would in the terminal, so its bridge and checks are in place.
@@ -811,7 +814,8 @@ export class SessionRuntime {
         this.live.error = error
         this.setStatus('error')
       } else {
-        this.setStatus('stopped')
+        // Replaced under the chat: the new process follows at once (see replaceQuietly).
+        this.setStatus(this.quietReplace ? 'idle' : 'stopped')
       }
       if (handoff) this.writeHandoffNote(handoff)
       this.scheduleFlush()
@@ -1024,9 +1028,31 @@ export class SessionRuntime {
    */
   async rewind(messageId: string, restoreFiles: boolean): Promise<RewindResult> {
     const point = await this.rewindPoint(messageId)
-    if (!point.forkAt) throw new Error(point.reason ?? this.noForkReason(messageId))
-    if (point.cut) return this.rewindByCutting(messageId, point, restoreFiles)
-    return this.rewindAtForkPoint(messageId, point.forkAt, point.text, restoreFiles)
+    const forkAt = point.forkAt
+    if (!forkAt) throw new Error(point.reason ?? this.noForkReason(messageId))
+    return this.replaceQuietly(() =>
+      point.cut ? this.rewindByCutting(messageId, point, restoreFiles) : this.rewindAtForkPoint(messageId, forkAt, point.text, restoreFiles)
+    )
+  }
+
+  /**
+   * Replace Claude Code under the chat without the chat looking busy. Claude Code's own rewind
+   * leaves the chat idle, and so must this one: in between, the chat said "not running" and then
+   * "starting" for as long as the new process took to come up, and the window draws "starting" as
+   * working — the running dots, "starting the process" timed from the last prompt, a "Queue"
+   * button beside the prompt just put back in the box. Nothing is being worked on, and a prompt
+   * sent meanwhile waits for the new process anyway (send → ensureStarted), so the chat stays idle.
+   * A replacement that fails still ends as an error or "not running".
+   */
+  private async replaceQuietly<T>(work: () => Promise<T>): Promise<T> {
+    this.quietReplace = true
+    try {
+      return await work()
+    } finally {
+      this.quietReplace = false
+      if (!this.q && this.live.status === 'idle') this.setStatus('stopped')
+      this.scheduleFlush()
+    }
   }
 
   /** Cut the transcript itself, for a prompt older than the conversation Claude Code still has. */
@@ -1547,11 +1573,13 @@ export class SessionRuntime {
 
   /** Replace the process (the conversation is resumed): needed when its environment changes. */
   private async restart(): Promise<void> {
-    await this.stop(true)
-    // The old read loop must have wound down before a new process starts (see rewind()).
-    if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
-    if (this.q) throw new Error('The old Claude process is still winding down; try again in a moment.')
-    await this.ensureStarted()
+    await this.replaceQuietly(async () => {
+      await this.stop(true)
+      // The old read loop must have wound down before a new process starts (see rewind()).
+      if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
+      if (this.q) throw new Error('The old Claude process is still winding down; try again in a moment.')
+      await this.ensureStarted()
+    })
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.56 — 2026-09-30
+
+### A rewind leaves an idle chat idle
+
+- Reported: after rewinding an idle chat it showed as running instead of idle. A rewind has to
+  replace Claude Code (it can only go back to an earlier point when it starts), and while the new
+  process came up the chat said "starting", which the window draws as working: the running dots in
+  the sidebar and in the "working" count at the top, "starting the process" under the chat timed from
+  the last prompt left (about a day, for the "Resume" chat), and "Queue" instead of "Send" beside the prompt
+  just put back in the input box. Measured on a copy of "Resume" in a test copy of 1.0.54: not
+  running, then starting for 2.2 s, then idle; on the user's machine with dozens of chats at work it
+  can last longer. Moving a chat to another provider replaces the process the same way and showed
+  "starting" for 4 s.
+- Now the chat stays idle throughout, as it does after Claude Code's own rewind: the window receives
+  nothing but idle for the chat, in both kinds of rewind (the one to a prompt Claude Code still has,
+  and the one that cuts the transcript for a prompt before the last compaction) and in a switch to
+  another provider and back. A prompt sent meanwhile waits for the new process as before. A
+  replacement that fails still ends as an error or "not running"; tested with a provider whose
+  launcher sets nothing, which the chat survives on its old model and ends idle.
+- This is a change in the session host, so it applies after a full quit (⌘Q) and reopen.
+
 ## 1.0.55 — 2026-09-28
 
 ### Long-running chats no longer pile up in the app, and a busy chat no longer freezes the window

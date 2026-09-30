@@ -95,6 +95,14 @@ the fork point is cleared once `system/init` confirms the start, and dropped wit
 chat if the CLI refuses it. File backups exist only when the session was started with
 `enableFileCheckpointing` (settings: `fileCheckpointing`).
 
+The process is replaced inside `replaceQuietly` (1.0.56), as it is when a chat moves to another
+provider (`restart`): the chat stays `idle` throughout instead of passing through `stopped` and
+`starting`, since the window draws `starting` as working (dots in the sidebar and the status bar's
+"working" count, the working strip, "Queue" in the input box) and Claude Code's own rewind leaves a
+chat idle. The old process's exit sets `idle` rather than `stopped`, and `start()` leaves an idle
+chat idle; a replacement that ends without a process sets `stopped`, and a start after an error
+still shows `starting`.
+
 ## Forking a chat
 `SessionManager.fork(id, name?)` does what the CLI's `/branch` does, through the SDK's
 `forkSession(claudeSessionId, { dir: cwd, title })`: the transcript is copied under a new session id
@@ -402,7 +410,8 @@ answered instead of the one still waiting below it.
 
 ## Session lifecycle
 - `stopped` (no process) -> `starting` -> `idle` / `running` / `requires_action`; `error` when the
-  process failed or the working directory is missing (`cwdMissing`).
+  process failed or the working directory is missing (`cwdMissing`). A process replaced under a chat
+  (a rewind, another provider) keeps the chat `idle` (see "Rewinding a chat").
 - A session is started lazily on first send, or at launch according to "Resume sessions on launch";
   history is loaded from the JSONL transcript.
 - Stopping = end the input iterator (graceful) then `query.close()` after a grace period.
