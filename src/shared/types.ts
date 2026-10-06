@@ -405,6 +405,13 @@ export interface RewindPreview {
    * session being restarted at the answer before it.
    */
   cut?: boolean
+  /**
+   * True when Claude Code is running and holds this prompt, so it is taken back in place and keeps
+   * its background tasks; otherwise the rewind replaces the process, which ends them.
+   */
+  inPlace?: boolean
+  /** Background tasks (shells, monitors, subagents) the chat's Claude Code is running now. */
+  backgroundTasks?: number
   /** Whether the files Claude changed since then can be put back, and how much would change. */
   files: {
     available: boolean
@@ -504,6 +511,8 @@ export interface RewindResult {
   filesSkipped: number
   /** Whether Claude Code was started again at the fork point (only when it was running before). */
   restarted: boolean
+  /** True when the running Claude Code was taken back without being replaced (its background tasks go on). */
+  inPlace?: boolean
 }
 
 // ---------------------------------------------------------------------------

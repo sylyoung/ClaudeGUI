@@ -44,6 +44,7 @@ export function RewindDialog({ sessionId, messageId, onClose }: { sessionId: str
   }
 
   const files = preview?.files
+  const tasks = preview?.backgroundTasks ?? 0
   return (
     <Modal title="Rewind this chat to an earlier prompt" onClose={onClose} width={620}>
       {error && <div className="msg-system error"><div className="body">{error}</div></div>}
@@ -60,6 +61,14 @@ export function RewindDialog({ sessionId, messageId, onClose }: { sessionId: str
                   prompt goes back into the input box so you can change it and send it again. This prompt is older than
                   the conversation Claude Code still keeps, so the chat's own transcript is cut at that point, the way
                   Claude Code's rewind does it; the removed part is kept in a file beside the transcript.
+                  {tasks > 0 && ` Claude Code is restarted for this, which ends its ${tasks} background task${tasks === 1 ? '' : 's'}.`}
+                </>
+              ) : preview.inPlace ? (
+                <>
+                  Everything after it — Claude's answers and your later prompts — is removed from the chat, and this
+                  prompt goes back into the input box so you can change it and send it again. Claude Code goes back to
+                  that point without being restarted, so it no longer remembers what came after
+                  {tasks > 0 ? `, and its ${tasks} background task${tasks === 1 ? '' : 's'} keep${tasks === 1 ? 's' : ''} running.` : '.'}
                 </>
               ) : (
                 <>

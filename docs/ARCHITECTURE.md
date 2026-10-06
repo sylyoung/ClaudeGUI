@@ -86,8 +86,23 @@ running, a second press within 700 ms opens the picker, and a dialog that is ope
 itself. `⇧⇥` steps through `CYCLE_MODES` (default → acceptEdits → plan), as it does in the terminal.
 
 `SessionRuntime.rewindPreview(messageId)` asks the CLI (`query.rewindFiles(uuid, { dryRun: true })`)
-what would change on disk; `rewind(messageId, restoreFiles)` optionally calls `rewindFiles` for real,
-stops the process, drops every transcript message from that prompt on and remembers a fork point.
+what would change on disk; `rewind(messageId, restoreFiles)` optionally calls `rewindFiles` for real.
+
+Since 1.0.59 a running process is taken back in place (`rewindInPlace`), with the control request
+Claude Code's own rewind uses: `{ subtype: 'rewind_conversation', target_message_uuid,
+last_seen_user_message_uuid, interrupt_if_running: true }`, sent through `query.request` because the
+SDK implements it but declares no method for it. The CLI cuts its conversation in memory, writes a
+`last-prompt` entry with `rewound: true` pointing at the answer before the prompt (the next entry is
+chained there, so a later resume sees the same conversation), and answers `{ rewound, prefillText }`.
+The process lives on, and so do its background tasks and monitors — a restart ended them all. It
+declines (`rewound: false` with a `reason`) when it holds something after `last_seen…` the window has
+not shown, or while prompts wait in its queue, so waiting prompts are taken back first
+(`cancelQueued`), as a restart dropped them too. Measured on 2.1.280: a background command started
+after the rewind point keeps running as well. When it declines, or the process is not running, the
+rewind goes the old way below.
+
+The old way stops the process, drops every transcript message from that prompt on and remembers a
+fork point.
 The fork point is the `chainUuid` of the last top-level assistant message before the prompt — Claude
 Code's own transcript uuid, which is not the same as the API message id used as our message id. The
 next start passes `resume` + `resumeSessionAt: forkPoint`, so the CLI replays only up to there;
@@ -244,7 +259,10 @@ answered instead of the one still waiting below it.
    transcript reducer into `ChatMessage` objects; changed messages travel as host events
    (`session` → `session:message`) to the renderer, state changes as `session:state`.
 4. `canUseTool` callbacks become pending permission requests kept in the host and shown inline in
-   the chat; the renderer answers through `sessions.answerPermission`.
+   the chat; the renderer answers through `sessions.answerPermission`. Each request is logged
+   (`approval asked: <tool> … in mode <mode> — <reason>`, 1.0.59): in `bypassPermissions` Claude
+   Code still asks for some things (ask rules, tools that always ask, bypass-immune safety checks),
+   and the reason it gives is what tells them apart.
 5. After `init` and after every `result`, the runtime asks the CLI for its context usage and
    publishes it in the live state.
 

@@ -163,6 +163,12 @@ const DELIVERY_QUIET_MS = 10_000
 const SHELL_TIMEOUT_MS = 10 * 60_000
 /** How much of a shell command's output is kept from its beginning, and as much again from its end. */
 const SHELL_OUTPUT_KEEP = 15_000
+/** An id Claude Code gave (or took from us) — rows the app writes for itself are named otherwise. */
+const UUID_RE = /^[0-9a-f-]{36}$/
+
+/** What a rewind did to the files. */
+type RewoundFiles = Pick<RewindResult, 'filesRestored' | 'filesSkipped'>
+const NO_FILES: RewoundFiles = { filesRestored: 0, filesSkipped: 0 }
 
 /**
  * Stop a shell command and everything it started. The command runs as an interactive shell, which
@@ -994,6 +1000,8 @@ export class SessionRuntime {
       canRewind: Boolean(forkAt),
       reason,
       cut,
+      inPlace: Boolean(this.q) && !cut,
+      backgroundTasks: this.live.backgroundTasks.length,
       files: { available: false, changed: 0, insertions: 0, deletions: 0, paths: [] }
     }
     if (!this.q) {
@@ -1020,19 +1028,86 @@ export class SessionRuntime {
 
   /**
    * Cut the chat back to just before one of your prompts: optionally put the files Claude changed
-   * since then back as they were, drop the messages from that prompt onwards and remember the fork
-   * point. Claude Code can only replay a cut conversation when it starts (`resumeSessionAt` is a
-   * start option, there is no request for it), so the process has to be replaced: it is stopped
-   * and, if it was running, started again at the fork point straight away, so the chat is ready
-   * to go on instead of being left "not running".
+   * since then back as they were, and drop the messages from that prompt onwards. A running Claude
+   * Code is taken back in place, as its own rewind does in the terminal, so its background tasks
+   * and monitors keep running. Otherwise — not running, a prompt older than the last compaction, or
+   * Claude Code declining — the process is replaced: stopped and, if it was running, started again
+   * at the fork point straight away (`resumeSessionAt` is a start option), so the chat is ready to
+   * go on instead of being left "not running".
    */
   async rewind(messageId: string, restoreFiles: boolean): Promise<RewindResult> {
     const point = await this.rewindPoint(messageId)
     const forkAt = point.forkAt
     if (!forkAt) throw new Error(point.reason ?? this.noForkReason(messageId))
-    return this.replaceQuietly(() =>
-      point.cut ? this.rewindByCutting(messageId, point, restoreFiles) : this.rewindAtForkPoint(messageId, forkAt, point.text, restoreFiles)
-    )
+    if (point.cut) return this.replaceQuietly(() => this.rewindByCutting(messageId, point, restoreFiles))
+    const files = restoreFiles ? await this.restoreFiles(messageId) : NO_FILES
+    const inPlace = await this.rewindInPlace(messageId, point.text, files)
+    if (inPlace) return inPlace
+    return this.replaceQuietly(() => this.rewindAtForkPoint(messageId, forkAt, point.text, restoreFiles, files))
+  }
+
+  /** Put the files Claude changed since this prompt back as they were. */
+  private async restoreFiles(messageId: string): Promise<RewoundFiles> {
+    if (!this.q) throw new Error('The session is not running, so the files cannot be put back.')
+    // The real rewind does not always report which files it touched, so count them first.
+    const planned = await this.q.rewindFiles(messageId, { dryRun: true }).catch(() => null)
+    const r = await this.q.rewindFiles(messageId)
+    if (!r.canRewind) throw new Error(r.error || 'The files could not be put back.')
+    return { filesRestored: r.filesChanged?.length ?? planned?.filesChanged?.length ?? 0, filesSkipped: r.skippedLinks ?? 0 }
+  }
+
+  /**
+   * Take the running Claude Code back to just before this prompt without replacing it, through
+   * the `rewind_conversation` request its own rewind uses (implemented by the CLI, not declared by
+   * the SDK). The conversation is cut inside the process and the cut is recorded in the transcript
+   * — the next entry continues from the answer before the prompt — so a later resume sees the same
+   * conversation, and background tasks and monitors keep running: replacing the process ended
+   * them all. Prompts still waiting in Claude Code's queue are taken back first, since it will not
+   * rewind past them and a restart dropped them as well. Null when Claude Code declines; the caller
+   * then restarts at the fork point as before.
+   */
+  private async rewindInPlace(messageId: string, text: string, files: RewoundFiles): Promise<RewindResult | null> {
+    const q = this.q as (Query & { request?(req: Record<string, unknown>): Promise<{ response?: unknown }> }) | null
+    if (!q?.request) return null
+    for (const id of [...this.live.queuedIds]) await this.cancelQueued(id)
+    if (this.live.queuedIds.length) {
+      this.deps.log(`[session ${this.id}] rewind in place skipped: ${this.live.queuedIds.length} prompt(s) still queued`)
+      return null
+    }
+    // The newest message of yours Claude Code has: anything it holds after that is news to this
+    // window, and Claude Code then declines rather than cut away what was never shown.
+    const running = new Set(this.live.runningShellIds ?? [])
+    const lastSeen = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && UUID_RE.test(m.id) && !running.has(m.id))?.id
+    let answer: { rewound?: boolean; prefillText?: string | null; reason?: string; error?: string } | undefined
+    try {
+      const res = await q.request({ subtype: 'rewind_conversation', target_message_uuid: messageId, last_seen_user_message_uuid: lastSeen, interrupt_if_running: true })
+      answer = res?.response as typeof answer
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] rewind in place failed: ${(err as Error).message}`)
+      return null
+    }
+    if (!answer?.rewound) {
+      this.deps.log(`[session ${this.id}] rewind in place declined: ${answer?.reason ?? 'no answer'}${answer?.error ? ` — ${answer.error}` : ''}`)
+      return null
+    }
+    const index = this.transcript.messages.findIndex((m) => m.id === messageId)
+    if (index >= 0) for (const m of this.transcript.messages.slice(index)) this.transcript.removeMessage(m.id)
+    this.noteRewound(text)
+    this.deps.log(`[session ${this.id}] rewound in place to ${messageId} (files: ${files === NO_FILES ? 'kept' : files.filesRestored})`)
+    this.scheduleFlush()
+    this.flush()
+    return { text: answer.prefillText || text, ...files, restarted: false, inPlace: true }
+  }
+
+  /** What the sidebar and the record say about a chat that was just rewound to this prompt. */
+  private noteRewound(text: string): void {
+    const lastPrompt = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && !m.synthetic)
+    this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
+    this.record.lastActiveAt = Date.now()
+    this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
+    this.live.lastRecap = undefined
+    this.live.unread = 0
+    this.deps.saveRecord(this.record)
   }
 
   /**
@@ -1061,16 +1136,7 @@ export class SessionRuntime {
     point: { text: string; cutAt: number },
     restoreFiles: boolean
   ): Promise<RewindResult> {
-    let filesRestored = 0
-    let filesSkipped = 0
-    if (restoreFiles) {
-      if (!this.q) throw new Error('The session is not running, so the files cannot be put back.')
-      const planned = await this.q.rewindFiles(messageId, { dryRun: true }).catch(() => null)
-      const r = await this.q.rewindFiles(messageId)
-      if (!r.canRewind) throw new Error(r.error || 'The files could not be put back.')
-      filesRestored = r.filesChanged?.length ?? planned?.filesChanged?.length ?? 0
-      filesSkipped = r.skippedLinks ?? 0
-    }
+    const files = restoreFiles ? await this.restoreFiles(messageId) : NO_FILES
     const wasRunning = Boolean(this.q)
     await this.stop(true)
     if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
@@ -1083,13 +1149,7 @@ export class SessionRuntime {
     this.historyLoaded = false
     await this.loadHistory()
     this.resumeAt = null
-    const lastPrompt = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && !m.synthetic)
-    this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
-    this.record.lastActiveAt = Date.now()
-    this.live.lastPreview = point.text.replace(/\s+/g, ' ').slice(0, 140)
-    this.live.lastRecap = undefined
-    this.live.unread = 0
-    this.deps.saveRecord(this.record)
+    this.noteRewound(point.text)
     this.scheduleFlush()
     this.flush()
     let restarted = false
@@ -1101,23 +1161,16 @@ export class SessionRuntime {
         this.deps.log(`[session ${this.id}] restart after rewind failed: ${(err as Error).message}`)
       }
     }
-    return { text: point.text, filesRestored, filesSkipped, restarted, cut: true, backup: cut.backup }
+    return { text: point.text, ...files, restarted, cut: true, backup: cut.backup }
   }
 
-  /** The way it always was: restart Claude Code at the answer before the prompt. */
-  private async rewindAtForkPoint(messageId: string, forkAt: string, text: string, restoreFiles: boolean): Promise<RewindResult> {
+  /**
+   * Restart Claude Code at the answer before the prompt: how every rewind went before 1.0.59, and
+   * still the way when Claude Code is not running or declines to rewind in place. The files, if
+   * they were to be put back, already have been.
+   */
+  private async rewindAtForkPoint(messageId: string, forkAt: string, text: string, restoreFiles: boolean, files: RewoundFiles): Promise<RewindResult> {
     const index = this.transcript.messages.findIndex((m) => m.id === messageId)
-    let filesRestored = 0
-    let filesSkipped = 0
-    if (restoreFiles) {
-      if (!this.q) throw new Error('The session is not running, so the files cannot be put back.')
-      // The real rewind does not always report which files it touched, so count them first.
-      const planned = await this.q.rewindFiles(messageId, { dryRun: true }).catch(() => null)
-      const r = await this.q.rewindFiles(messageId)
-      if (!r.canRewind) throw new Error(r.error || 'The files could not be put back.')
-      filesRestored = r.filesChanged?.length ?? planned?.filesChanged?.length ?? 0
-      filesSkipped = r.skippedLinks ?? 0
-    }
     const wasRunning = Boolean(this.q)
     await this.stop(true)
     // The old read loop must have wound down before a new process starts: its last step marks the
@@ -1125,14 +1178,8 @@ export class SessionRuntime {
     if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
     for (const m of this.transcript.messages.slice(index)) this.transcript.removeMessage(m.id)
     this.resumeAt = forkAt
-    const lastPrompt = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && !m.synthetic)
-    this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
-    this.record.lastActiveAt = Date.now()
-    this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
-    this.live.lastRecap = undefined
-    this.live.unread = 0
-    this.deps.saveRecord(this.record)
-    this.deps.log(`[session ${this.id}] rewound to ${messageId} (files: ${restoreFiles ? filesRestored : 'kept'})`)
+    this.noteRewound(text)
+    this.deps.log(`[session ${this.id}] rewound to ${messageId} (files: ${restoreFiles ? files.filesRestored : 'kept'})`)
     this.scheduleFlush()
     this.flush()
     let restarted = false
@@ -1146,7 +1193,7 @@ export class SessionRuntime {
     } else if (wasRunning) {
       this.deps.log(`[session ${this.id}] old process still winding down after rewind; not restarted`)
     }
-    return { text, filesRestored, filesSkipped, restarted }
+    return { text, ...files, restarted }
   }
 
   async interrupt(): Promise<void> {
@@ -1482,6 +1529,10 @@ export class SessionRuntime {
       agentId: opts.agentID,
       createdAt: Date.now()
     }
+    // Which tool asked, from where and why: a question in a chat set to bypass is Claude Code's own
+    // doing (a rule, a safety check, a tool that always asks), and this line is how to tell which.
+    const reason = (opts.decisionReason || opts.title || '').replace(/\s+/g, ' ').slice(0, 200)
+    this.deps.log(`[session ${this.id}] approval asked: ${toolName}${opts.agentID ? ` (subagent ${opts.agentID})` : ''} in mode ${this.live.permissionMode ?? '?'}${reason ? ` — ${reason}` : ''}`)
     return new Promise<PermissionResult>((resolve) => {
       this.pending.set(request.requestId, { resolve, request, suggestions: opts.suggestions })
       this.live.pendingPermissions = [...this.live.pendingPermissions, request]
