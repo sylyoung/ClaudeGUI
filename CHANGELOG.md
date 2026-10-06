@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.60 — 2026-10-06
+
+### Going from one of your prompts to the next
+
+- Two buttons in the chat's bottom-right corner, ↑ and ↓, next to "latest": each press puts your
+  previous or next prompt at the top of the chat and outlines it for a moment. Going further back
+  than the part of the chat on screen reads the earlier messages in, as scrolling to the top does,
+  so a whole chat can be walked prompt by prompt. A button is greyed out when there is no prompt
+  further that way.
+
+### Scrolling up no longer jumps
+
+- Scrolling close to the top of a chat (but not right to it) read the earlier messages in and then
+  threw the chat forward by their height, because the window kept the view in place and the app
+  moved it once more. The app now moves it only by what is left to make up.
+- The "latest" button was placed inside the scrolling list, so in a chat longer than the window it
+  scrolled away with the messages. It now stays in the corner, next to the new buttons.
+
 ## 1.0.59 — 2026-10-06
 
 ### Rewinding no longer stops background tasks

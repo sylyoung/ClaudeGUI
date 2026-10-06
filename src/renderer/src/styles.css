@@ -251,9 +251,23 @@ a:hover { text-decoration: underline; }
 .chat-header .cwd:hover { color: var(--text-dim); }
 .messages { flex: 1; overflow-y: auto; padding: 16px 20px 24px; scroll-behavior: auto; position: relative; }
 .messages-inner { max-width: var(--chat-max-width); margin: 0 auto; display: flex; flex-direction: column; gap: var(--msg-gap); }
-.jump-bottom {
-  position: absolute; right: 24px; bottom: 16px; z-index: 5; padding: 6px 12px; border-radius: 999px; background: var(--bg-elev2);
-  border: 1px solid var(--border-strong); color: var(--text-dim); font-size: 12px; box-shadow: 0 4px 16px var(--shadow);
+/* The buttons in the chat's bottom-right corner: your previous / next prompt, and the latest message.
+   They sit over the list (in .messages-wrap), not in it, so they stay in the corner while it scrolls. */
+.jump-nav { position: absolute; right: 24px; bottom: 16px; z-index: 5; display: flex; gap: 6px; }
+.jump-btn {
+  display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 999px; background: var(--bg-elev2);
+  border: 1px solid var(--border-strong); color: var(--text-dim); font-size: 12px; box-shadow: 0 4px 16px var(--shadow); cursor: pointer;
+}
+.jump-btn.icon { padding: 6px 8px; }
+.jump-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+/* Greyed out without being see-through: the buttons float over the chat's text. */
+.jump-btn:disabled { color: var(--text-faint); cursor: default; }
+.jump-btn:disabled svg { opacity: 0.5; }
+/* The prompt those buttons went to, outlined in the accent colour for a moment. */
+.msg-user.stepped .bubble, .msg-user.stepped .images { animation: prompt-stepped 1.5s ease-out; }
+@keyframes prompt-stepped {
+  0%, 70% { outline: 2px solid var(--accent); outline-offset: 2px; }
+  100% { outline: 2px solid transparent; outline-offset: 2px; }
 }
 /* The list and what floats over it (the find box). */
 .messages-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }

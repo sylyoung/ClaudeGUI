@@ -61,7 +61,8 @@ src/
       common/GroupColorPicker.tsx  Palette popover for group colours
       chat/                ChatView (header with action buttons incl. expand/collapse all tool
                            details, one-line configuration row, status row + ContextBar),
-                           MessageList (prompt states; prompts still queued are moved to the end),
+                           MessageList (prompt states; prompts still queued are moved to the end;
+                           ↑ ↓ buttons from one of your prompts to the next, and "latest"),
                            MessageItem (per-prompt state mark + rewind button), ToolCallCard
                            (per-card show/hide), PermissionPrompt, WorkingStrip (what Claude is
                            doing + elapsed time, drawn as the last row of the message list while a
@@ -250,6 +251,27 @@ be withdrawn even in the moment before its row arrives, and the ↑ walk in the 
 the time each prompt was sent rather than by its position in the chat. The second matters because a
 registered prompt is moved down to its answer: without it, ↑ would offer the prompt already being
 answered instead of the one still waiting below it.
+
+## Going from one prompt to the next (1.0.60)
+The ↑ ↓ buttons in the chat's bottom-right corner (`MessageList`, `.jump-nav`) put the previous or
+next of your prompts at the top of the chat (12 px down) and outline it for 1.5 s. Your prompts are
+the conversation's own `.msg-user[data-mid]` rows, so neither Claude Code's notes nor the prompts
+still queued below the conversation. The prompt at the top is the last one at or above that line; a
+step up goes to the one before it, a step down to the one after it. A prompt not drawn yet is
+reached the way scrolling reaches it: the step waits (`pendingStep`) while the rows above are drawn
+or read from the transcript (`showEarlier`), or the rows below (`showLater`, in a part a find opened),
+and goes on once they are in, reading further when they hold no prompt. Whether each button has
+somewhere to go is measured once per frame at most, on a scroll or when rows come or go. There are no
+keys for this.
+
+The buttons sit in `.messages-wrap`, over the list: until 1.0.60 "latest" was inside the scrolling
+list, so in a chat longer than the window it scrolled away with the messages.
+
+Rows read in above the ones on screen must leave the row being read where it was. The browser does
+this by itself (`overflow-anchor`), as soon as the page is measured, except when the list is scrolled
+right to its top; `MessageList` keeps where that row stood on screen and makes up only the rest.
+Until 1.0.60 it made up the whole shift, so near the top (but not at it) the chat jumped on by the
+height of the rows read in.
 
 ## Data flow
 1. Renderer calls `window.api.sessions.send(id, text)` → IPC → `HostClient.send` → socket request.
