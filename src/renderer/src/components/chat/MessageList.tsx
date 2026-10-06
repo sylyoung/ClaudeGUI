@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ChevronDown, ChevronUp } from 'lucide-react'
+import { ArrowDownToLine, ChevronDown, ChevronUp } from 'lucide-react'
 import type { ChatMessage, PendingPermission, PermissionDecision, SessionLiveState } from '@shared/types'
 import { MessageItem, type PromptState } from './MessageItem'
 import { PermissionPrompt } from './PermissionPrompt'
@@ -13,6 +13,12 @@ const AROUND_BEFORE = 30
 const AROUND_AFTER = 60
 /** How far below the top of the chat the ↑ ↓ buttons put the prompt they go to, in pixels. */
 const STEP_MARGIN = 12
+/**
+ * How long a move of the ↑ ↓ and latest buttons takes, in ms: one continuous scroll that starts fast
+ * and slows into place, longer for a longer way (with its square root), within these bounds.
+ */
+const GLIDE_MIN = 180
+const GLIDE_MAX = 600
 
 /**
  * Your prompts as drawn in the conversation, top to bottom: rows of their own (data-mid), so neither
@@ -25,6 +31,45 @@ function promptRows(root: HTMLElement): HTMLElement[] {
 /** How far a row stands below the top of the list's visible area, in pixels. */
 function atTop(list: HTMLElement, row: HTMLElement): number {
   return row.getBoundingClientRect().top - list.getBoundingClientRect().top
+}
+
+/** The list is scrolled to the end of what is drawn. */
+function atScrollEnd(list: HTMLElement): boolean {
+  return list.scrollTop >= list.scrollHeight - list.clientHeight - 1
+}
+
+/** The prompt the ↑ ↓ buttons went to last, and where on screen they put it (null: still on the way). */
+interface StepMark {
+  row: HTMLElement
+  at: number | null
+}
+
+/**
+ * That prompt, while the chat still shows it where the buttons put it or is still on its way there;
+ * null once anything else has moved the chat (your own scrolling).
+ */
+function markedPrompt(list: HTMLElement, mark: StepMark | null, moving: boolean): HTMLElement | null {
+  if (!mark || !mark.row.isConnected) return null
+  if (mark.at === null) return moving ? mark.row : null
+  return Math.abs(atTop(list, mark.row) - mark.at) < 2 ? mark.row : null
+}
+
+/**
+ * Where a step of the ↑ ↓ buttons goes on from, as an index into `rows` (your prompts as drawn): the
+ * prompt the buttons went to last, while it is still marked. Otherwise the line STEP_MARGIN below the
+ * top of the chat: a step up goes to the last prompt above that line, a step down to the first one
+ * below it (rows.length and -1 stand for "none on that side").
+ */
+function stepFrom(list: HTMLElement, rows: HTMLElement[], dir: -1 | 1, marked: HTMLElement | null): number {
+  const i = marked ? rows.indexOf(marked) : -1
+  if (i !== -1) return i
+  if (dir < 0) {
+    const below = rows.findIndex((r) => atTop(list, r) >= STEP_MARGIN - 2)
+    return below === -1 ? rows.length : below
+  }
+  let above = -1
+  while (above + 1 < rows.length && atTop(list, rows[above + 1]) <= STEP_MARGIN + 2) above++
+  return above
 }
 
 /** A row of the list by its message id (rows carry it as data-mid). */
@@ -107,11 +152,19 @@ export function MessageList({
   const loadedAt = useRef(0)
   const laterAt = useRef(0)
   /**
-   * A step of the ↑ ↓ buttons to a prompt not drawn yet: the rows above (dir -1) or below (dir 1)
-   * are being drawn or read first. `fromId` is the prompt it steps on from (null: none drawn that
-   * way), `sig` what was drawn when it was last looked at.
+   * Steps of the ↑ ↓ buttons to a prompt not drawn yet: the rows above (dir -1) or below (dir 1)
+   * are being drawn or read first. `fromId` is the prompt they step on from (null: none drawn that
+   * way), `n` how many prompts on from it (a press while waiting adds one), `since` when it began,
+   * `sig` what was drawn when it was last looked at.
    */
-  const pendingStep = useRef<{ dir: -1 | 1; fromId: string | null; sig: string } | null>(null)
+  const pendingStep = useRef<{ dir: -1 | 1; fromId: string | null; n: number; since: number; sig: string } | null>(null)
+  /** The move under way of the ↑ ↓ and latest buttons (see glideTo). */
+  const glide = useRef<{ frame: number } | null>(null)
+  const stepMark = useRef<StepMark | null>(null)
+  const stopGlide = () => {
+    if (glide.current) cancelAnimationFrame(glide.current.frame)
+    glide.current = null
+  }
 
   useEffect(() => {
     if (prevSession.current !== sessionId) {
@@ -121,6 +174,8 @@ export function MessageList({
       setPaged(false)
       setWin(null)
       pendingStep.current = null
+      stepMark.current = null
+      stopGlide()
     }
   }, [sessionId, older])
 
@@ -188,22 +243,42 @@ export function MessageList({
     older.onLoadLater()
   }, [windowed, winStart, winEnd, messages, older])
 
+  /** Near the top (bottom) of what is drawn: draw or read what comes before (after) it. */
+  const readNear = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    // Scrolling to the top of a chat is the request for what came before it.
+    if (el.scrollTop < 240) showEarlier()
+    // And, where the rows shown are not the chat's end, scrolling to the bottom for what follows.
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 240 && (below > 0 || older?.laterAvailable)) showLater()
+  }, [showEarlier, showLater, below, older?.laterAvailable])
+  const readNearNow = useRef(readNear)
+  readNearNow.current = readNear
+
   const onScroll = useCallback(() => {
     const el = ref.current
     if (!el) return
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    setStick(dist < 80)
+    // The buttons' own moves are not the reader scrolling: they neither let go of the chat's end nor
+    // take it up (the buttons do that themselves), and read nothing in on the way.
+    const own = glide.current !== null
+    if (!own) setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 80)
     // A row kept in place while rows are read in above it moves with the reader's own scrolling.
     const kept = anchor.current
     const keptRow = kept && rowElement(el, kept.id)
     if (kept && keptRow) kept.at = atTop(el, keptRow)
-    // Scrolling to the top of a chat is the request for what came before it.
-    if (el.scrollTop < 240) showEarlier()
-    // And, where the rows shown are not the chat's end, scrolling to the bottom for what follows.
-    if (dist < 240 && (below > 0 || older?.laterAvailable)) showLater()
+    if (!own) readNear()
     measureStepsSoon()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showEarlier, showLater, below, older?.laterAvailable])
+  }, [readNear])
+
+  // A turn of the wheel or a swipe stops a move of the buttons — but not what is left of a swipe made
+  // before it, which coasts on in small steps for a moment: a press right after one would be lost.
+  const lastWheel = useRef(0)
+  const onWheel = () => {
+    const now = performance.now()
+    if (now - lastWheel.current > 150) stopGlide()
+    lastWheel.current = now
+  }
 
   // Following the newest message, and — when reading further back instead — keeping the row that
   // was under the eye where it was: rows added above would otherwise push the chat down. The list is
@@ -245,8 +320,8 @@ export function MessageList({
   useEffect(() => () => cancelAnimationFrame(stickFrame.current), [])
 
   // Going from one of your prompts to the next with the ↑ ↓ buttons, instead of scrolling: a step
-  // puts the prompt at the top of the chat and outlines it for a moment. A prompt not drawn yet is
-  // reached the way scrolling reaches it — the rows above (below) are drawn, or read from the
+  // scrolls the chat until the prompt is at its top, and outlines it for a moment. A prompt not drawn
+  // yet is reached the way scrolling reaches it — the rows above (below) are drawn, or read from the
   // transcript, first — and the step goes on once they are in.
   const canReadEarlier = hidden > 0 || earlierAvailable
   const canReadLater = below > 0 || Boolean(older?.laterAvailable)
@@ -265,73 +340,113 @@ export function MessageList({
       const el = ref.current
       if (!el) return
       const rows = promptRows(el)
-      const top = el.getBoundingClientRect().top
-      const atEnd = el.scrollTop >= el.scrollHeight - el.clientHeight - 1
-      const up = (rows.length > 0 && rows[0].getBoundingClientRect().top - top < STEP_MARGIN - 2) || reach.current.earlier
-      const down = (rows.length > 0 && !atEnd && rows[rows.length - 1].getBoundingClientRect().top - top > STEP_MARGIN + 2) || reach.current.later
+      const marked = markedPrompt(el, stepMark.current, glide.current !== null)
+      const up = stepFrom(el, rows, -1, marked) > 0 || reach.current.earlier
+      // At the end of what is drawn a prompt further down cannot be brought any higher: a step down
+      // goes on there only from a prompt the buttons went to (and marks the next one).
+      const down = (stepFrom(el, rows, 1, marked) < rows.length - 1 && (marked !== null || !atScrollEnd(el))) || reach.current.later
       setSteps((s) => (s.up === up && s.down === down ? s : { up, down }))
     })
   }, [])
   useEffect(() => measureStepsSoon(), [drawnSig, canReadEarlier, canReadLater, measureStepsSoon])
   useEffect(() => () => cancelAnimationFrame(stepFrame.current), [])
 
-  const flashed = useRef<{ row: HTMLElement; timer: number } | null>(null)
-  const goToPrompt = useCallback((row: HTMLElement) => {
+  /**
+   * Scroll the list to `to()` in one continuous move that starts fast and slows into place, then call
+   * `then`. `to` is worked out afresh on every frame, so rows read in above or an answer growing on
+   * the way do not throw it off. A move started meanwhile replaces this one; the reader's own
+   * scrolling stops it (onWheel, and a press in the list such as on its scroll bar).
+   */
+  const glideTo = useCallback((to: () => number, then: () => void) => {
     const el = ref.current
     if (!el) return
-    // No longer following the end: a scroll to it queued for this frame must not undo the step.
-    followRef.current = false
-    setStick(false)
-    el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top - STEP_MARGIN
-    if (flashed.current) {
-      clearTimeout(flashed.current.timer)
-      flashed.current.row.classList.remove('stepped')
+    if (glide.current) cancelAnimationFrame(glide.current.frame)
+    const target = () => Math.max(0, Math.min(el.scrollHeight - el.clientHeight, to()))
+    const span = target() - el.scrollTop
+    const instant = Math.abs(span) < 1 || matchMedia('(prefers-reduced-motion: reduce)').matches
+    const ms = instant ? 0 : Math.min(GLIDE_MAX, Math.max(GLIDE_MIN, 120 + 6 * Math.sqrt(Math.abs(span))))
+    const start = performance.now()
+    const g = { frame: 0 }
+    glide.current = g
+    const frame = (now: number) => {
+      if (glide.current !== g) return
+      const t = ms ? Math.min(1, Math.max(0, (now - start) / ms)) : 1
+      // What is left of the way shrinks with the cube of the time left.
+      el.scrollTop = target() - span * (1 - t) ** 3
+      if (t < 1) {
+        g.frame = requestAnimationFrame(frame)
+        return
+      }
+      // Over one frame later: the scroll event of the last move comes in then, and is the move's own.
+      g.frame = requestAnimationFrame(() => {
+        if (glide.current !== g) return
+        glide.current = null
+        then()
+      })
     }
-    void row.offsetWidth // so the outline starts over when the same prompt is gone to again
-    row.classList.add('stepped')
-    flashed.current = {
-      row,
-      timer: window.setTimeout(() => {
-        row.classList.remove('stepped')
-        flashed.current = null
-      }, 1600)
-    }
+    g.frame = requestAnimationFrame(frame)
   }, [])
+  useEffect(
+    () => () => {
+      if (glide.current) cancelAnimationFrame(glide.current.frame)
+    },
+    []
+  )
+
+  const flashed = useRef<{ row: HTMLElement; timer: number } | null>(null)
+  const goToPrompt = useCallback(
+    (row: HTMLElement) => {
+      const el = ref.current
+      if (!el) return
+      // No longer following the end: a scroll to it queued for this frame must not undo the step.
+      followRef.current = false
+      setStick(false)
+      const mark: StepMark = { row, at: null }
+      stepMark.current = mark
+      glideTo(
+        () => (row.isConnected ? el.scrollTop + atTop(el, row) - STEP_MARGIN : el.scrollTop),
+        () => {
+          // Where the prompt ended up: at the top, or lower for one near the end of the chat.
+          if (stepMark.current === mark && row.isConnected) mark.at = atTop(el, row)
+          readNearNow.current()
+          measureStepsSoon()
+        }
+      )
+      if (flashed.current) {
+        clearTimeout(flashed.current.timer)
+        flashed.current.row.classList.remove('stepped')
+      }
+      void row.offsetWidth // so the outline starts over when the same prompt is gone to again
+      row.classList.add('stepped')
+      flashed.current = {
+        row,
+        timer: window.setTimeout(() => {
+          row.classList.remove('stepped')
+          flashed.current = null
+        }, 1600)
+      }
+    },
+    [glideTo, measureStepsSoon]
+  )
   useEffect(() => () => clearTimeout(flashed.current?.timer), [])
 
   const stepPrompt = (dir: -1 | 1) => {
     const el = ref.current
     if (!el) return
+    const p = pendingStep.current
+    // Still waiting for rows that way (and not for long): one prompt further once they are in.
+    if (p && p.dir === dir && Date.now() - p.since < 4000) {
+      p.n++
+      return
+    }
     pendingStep.current = null
     const rows = promptRows(el)
-    const top = el.getBoundingClientRect().top
-    const at = (r: HTMLElement) => r.getBoundingClientRect().top - top
-    // The prompt at the top of the chat is the one just above the line STEP_MARGIN down: a step
-    // up goes to the one before it, a step down to the one after it.
-    let to: HTMLElement | undefined
-    let from: HTMLElement | undefined
-    if (dir < 0) {
-      for (const r of rows) {
-        if (at(r) >= STEP_MARGIN - 2) {
-          from = r
-          break
-        }
-        to = r
-      }
-    } else {
-      for (const r of rows) {
-        if (at(r) > STEP_MARGIN + 2) {
-          to = r
-          break
-        }
-        from = r
-      }
-      // At the end of what is drawn, a prompt further down cannot be brought any higher.
-      if (el.scrollTop >= el.scrollHeight - el.clientHeight - 1) to = undefined
-    }
-    if (to) return goToPrompt(to)
+    const marked = markedPrompt(el, stepMark.current, glide.current !== null)
+    const i = stepFrom(el, rows, dir, marked)
+    const to = rows[i + dir]
+    if (to && (dir < 0 || marked || !atScrollEnd(el))) return goToPrompt(to)
     if (dir < 0 ? !canReadEarlier : !canReadLater) return
-    pendingStep.current = { dir, fromId: from?.dataset.mid ?? null, sig: drawnSig }
+    pendingStep.current = { dir, fromId: rows[i]?.dataset.mid ?? null, n: 1, since: Date.now(), sig: drawnSig }
     if (dir < 0) {
       followRef.current = false
       setStick(false)
@@ -339,7 +454,7 @@ export function MessageList({
     } else showLater(true)
   }
 
-  // A step waiting for rows: once they are in, go to the prompt, or draw (read) further.
+  // Steps waiting for rows: once they are in, go to the prompt, or draw (read) further.
   useLayoutEffect(() => {
     const p = pendingStep.current
     const el = ref.current
@@ -352,14 +467,19 @@ export function MessageList({
       pendingStep.current = null
       return
     }
-    const to = rows[i + p.dir]
+    const to = rows[i + p.dir * p.n]
     if (to) {
       pendingStep.current = null
       goToPrompt(to)
     } else if (p.dir < 0 ? canReadEarlier : canReadLater) {
       if (p.dir < 0) showEarlier(true)
       else showLater(true)
-    } else pendingStep.current = null
+    } else {
+      // The chat goes no further that way: its first (last) prompt, then.
+      pendingStep.current = null
+      const end = p.dir < 0 ? rows[0] : rows[rows.length - 1]
+      if (end && end !== rows[i]) goToPrompt(end)
+    }
   })
 
   // A find that moved to a match above the rows drawn: draw the rows around it instead.
@@ -397,6 +517,8 @@ export function MessageList({
     paintMatches(all, current)
     if (t && current && scrolledSeq.current !== t.seq) {
       scrolledSeq.current = t.seq
+      stopGlide()
+      stepMark.current = null
       revealRange(el, current)
       setStick(false)
     }
@@ -434,15 +556,29 @@ export function MessageList({
   const queued = atEnd ? visible.filter((m) => queuedIds.has(m.id)) : []
   const flow = queuedIds.size ? visible.filter((m) => !queuedIds.has(m.id)) : visible
 
+  // The latest button: the chat's end, followed from there on as new output comes in.
+  const latestOn = Boolean(older) || !stick || windowed
   const toLatest = () => {
-    setWin(null)
-    setStick(true)
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
+    pendingStep.current = null
+    stepMark.current = null
+    if (older) return older.onBackToLatest()
+    const el = ref.current
+    if (!el) return
+    if (windowed) {
+      // The rows drawn are a part around a match of the find, not the chat's end: the end is drawn in
+      // their place, with nothing in between to scroll through.
+      stopGlide()
+      setWin(null)
+      setStick(true)
+      el.scrollTop = el.scrollHeight
+      return
+    }
+    glideTo(() => el.scrollHeight - el.clientHeight, () => setStick(true))
   }
 
   return (
     <>
-      <div className="messages" ref={ref} onScroll={onScroll}>
+      <div className="messages" ref={ref} onScroll={onScroll} onWheel={onWheel} onPointerDown={stopGlide}>
         <div className="messages-inner">
           {earlierBusy && <div className="faint" style={{ textAlign: 'center' }}>Reading earlier messages…</div>}
           {!earlierBusy && (hidden > 0 || earlierAvailable) && (
@@ -494,20 +630,20 @@ export function MessageList({
           )}
         </div>
       </div>
-      {/* Over the list rather than in it, so they stay in the corner while it scrolls. */}
-      {messages.length > 0 && (
-        <div className="jump-nav">
-          <button className="jump-btn icon" disabled={!steps.up} data-tip="Go to your previous prompt: it is put at the top of the chat. Further back than what is shown, earlier messages are read in, as scrolling to the top does." onClick={() => stepPrompt(-1)}>
-            <ChevronUp size={14} />
+      {/* Over the list rather than in it, so they stay in the corner while it scrolls. Always all three,
+          each in its own place, so that none moves under the mouse; and a press does not take the
+          keyboard away from the input box. */}
+      {messages.length > 0 && (steps.up || steps.down || latestOn) && (
+        <div className="jump-nav" onMouseDown={(e) => e.preventDefault()}>
+          <button className="jump-btn" disabled={!steps.up} data-tip="Your previous prompt: the chat scrolls up until it is at the top. Before the first one shown, earlier messages are read in first, as scrolling to the top does." onClick={() => stepPrompt(-1)}>
+            <ChevronUp size={16} />
           </button>
-          <button className="jump-btn icon" disabled={!steps.down} data-tip="Go to your next prompt: it is put at the top of the chat." onClick={() => stepPrompt(1)}>
-            <ChevronDown size={14} />
+          <button className="jump-btn" disabled={!steps.down} data-tip="Your next prompt: the chat scrolls down until it is at the top." onClick={() => stepPrompt(1)}>
+            <ChevronDown size={16} />
           </button>
-          {!older && (!stick || windowed) && (
-            <button data-tip="Jump to the newest message and follow new output" className="jump-btn" onClick={toLatest}>
-              <ArrowDown size={12} /> latest
-            </button>
-          )}
+          <button className="jump-btn" disabled={!latestOn} data-tip={older ? "Back to the chat's latest messages" : 'The latest message: the chat scrolls to its end and follows new output from there.'} onClick={toLatest}>
+            <ArrowDownToLine size={16} />
+          </button>
         </div>
       )}
     </>

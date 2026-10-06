@@ -49,6 +49,27 @@ export function startDebugServer(opts: { getWindow(): BrowserWindow | null; host
           const value = await win.webContents.executeJavaScript(code, true)
           return send(200, { value })
         }
+        case '/input': {
+          // Mouse input as the page gets it from the system, at ?x=&y= (page pixels): ?type=click,
+          // move, or wheel with ?dy= (positive scrolls down). Unlike a click() run in the page it goes
+          // through the page's own hit testing, focus and scrolling — though not through the window's
+          // drag regions, which macOS handles before the page sees anything.
+          if (!win) return send(500, { error: 'no window' })
+          const dbg = win.webContents.debugger
+          if (!dbg.isAttached()) dbg.attach('1.3')
+          const x = Number(url.searchParams.get('x'))
+          const y = Number(url.searchParams.get('y'))
+          const type = url.searchParams.get('type') || 'click'
+          const mouse = (p: Record<string, unknown>) => dbg.sendCommand('Input.dispatchMouseEvent', { x, y, ...p })
+          await mouse({ type: 'mouseMoved' })
+          if (type === 'click') {
+            await mouse({ type: 'mousePressed', button: 'left', clickCount: 1 })
+            await mouse({ type: 'mouseReleased', button: 'left', clickCount: 1 })
+          } else if (type === 'wheel') {
+            await mouse({ type: 'mouseWheel', deltaX: 0, deltaY: Number(url.searchParams.get('dy') || 100) })
+          }
+          return send(200, { ok: true })
+        }
         case '/heap': {
           // The window's JavaScript heap, and with ?gc=1 the same after a full garbage collection:
           // the part that survives it is what the window really holds, the rest is waiting to be freed.

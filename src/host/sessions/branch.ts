@@ -1773,6 +1773,27 @@ export async function branchChat(opts: {
   }
 }
 
+/**
+ * Where Claude Code's own rewind to this prompt leaves the conversation it resumes the chat with:
+ * the nearest user or assistant entry before the prompt (the anchor its rewind_conversation keeps),
+ * found in that conversation as it rebuilds it from the transcript. Null when the prompt is not in it
+ * or nothing comes before it. Resuming at an entry outside that conversation fails ("No message found
+ * with message.uuid"), as an answer from before the last compaction does unless the compaction kept it.
+ */
+export async function resumePointBefore(file: string, firstParty: boolean, promptUuid: string): Promise<string | null> {
+  const fh = await fsp.open(file, 'r')
+  try {
+    const { size } = await fh.stat()
+    const { list } = await conversation(fh, size, firstParty)
+    for (let i = list.findIndex((e) => e.uuid === promptUuid) - 1; i >= 0; i--) {
+      if (list[i].type === 'user' || list[i].type === 'assistant') return list[i].uuid
+    }
+    return null
+  } finally {
+    await fh.close()
+  }
+}
+
 /** For checks against the real /branch: the uuids of the conversation /branch would copy. */
 export async function conversationUuids(file: string, firstParty: boolean): Promise<string[]> {
   const fh = await fsp.open(file, 'r')

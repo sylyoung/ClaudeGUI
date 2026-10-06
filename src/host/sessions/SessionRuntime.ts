@@ -44,6 +44,7 @@ import { readLineIndex, readSessionHistory, readSessionSlice, readSubagentHistor
 import { findToolImages, messageForWindow, messagesForWindow, updateForWindow } from './forWindow'
 import { cutAt, rowPlace, trimLimit, type RowPlace } from '@shared/rows'
 import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
+import { resumePointBefore } from './branch'
 import { readTranscriptIndex } from './transcriptIndex'
 import { projectDirFor } from './paths'
 import { splitList } from '@shared/util'
@@ -253,6 +254,8 @@ export class SessionRuntime {
   private processCostSeen = 0
   /** Chain entry the next start resumes at (a rewind fork point), or null for the whole chain. */
   private resumeAt: string | null = null
+  /** resumePointAfterCompaction's last answer, for a prompt and the transcript as it was then. */
+  private compactionResumePoint: { key: string; at: string | null } | undefined
   /** The process is being replaced under the chat (a rewind, another provider): see replaceQuietly. */
   private quietReplace = false
   /** Whether file backups were switched on for the process that is running now. */
@@ -929,20 +932,50 @@ export class SessionRuntime {
 
   // --------------------------------------------------------------------- rewind
 
-  /** The prompt and the chain entry the conversation would be cut back to. */
-  private rewindTarget(messageId: string): { index: number; text: string; forkAt: string | null } {
+  /**
+   * The prompt and the chain entry the conversation would be cut back to: the answer before it.
+   * `afterCompaction` when a compaction comes first — the prompt is the first one after it — and the
+   * answer has to be looked for in the conversation Claude Code resumes with instead (rewindPoint).
+   */
+  private rewindTarget(messageId: string): { index: number; text: string; forkAt: string | null; afterCompaction: boolean } {
     const idx = this.transcript.messages.findIndex((m) => m.id === messageId)
     const target = this.transcript.messages[idx]
     if (!target || target.kind !== 'user' || target.synthetic) throw new Error('A rewind goes back to one of your own prompts')
     let forkAt: string | null = null
     for (let i = idx - 1; i >= 0; i--) {
       const m = this.transcript.messages[i]
+      // What comes before a compaction is not in the conversation Claude Code resumes, apart from
+      // what the compaction kept, and the rows read from the transcript above it can even hold
+      // copies of old answers written while it ran. Resuming at one fails.
+      if (m.kind === 'system' && m.subtype === 'compact_boundary') return { index: idx, text: target.text, forkAt: null, afterCompaction: true }
       if (m.kind === 'assistant' && !m.parentToolUseId) {
         forkAt = m.chainUuid ?? null
         break
       }
     }
-    return { index: idx, text: target.text, forkAt }
+    return { index: idx, text: target.text, forkAt, afterCompaction: false }
+  }
+
+  /**
+   * For the first prompt after a compaction: the entry Claude Code's own rewind would keep, in the
+   * conversation it resumes the chat with (branch.ts rebuilds that from the transcript as Claude Code
+   * does). Rebuilding it reads the transcript, a few seconds for one of gigabytes, so the answer is
+   * kept for the preview and the rewind after it.
+   */
+  private async resumePointAfterCompaction(messageId: string): Promise<string | null> {
+    const file = this.transcriptPath()
+    const stat = await fs.promises.stat(file).catch(() => null)
+    if (!stat) return null
+    const key = `${messageId}|${stat.size}|${stat.mtimeMs}`
+    if (this.compactionResumePoint?.key === key) return this.compactionResumePoint.at
+    const started = Date.now()
+    const at = await resumePointBefore(file, !this.record.provider, messageId).catch((err: Error) => {
+      this.deps.log(`[session ${this.id}] rewind point after the compaction not found: ${err.message}`)
+      return null
+    })
+    this.deps.log(`[session ${this.id}] rewind point after the compaction: ${at ?? 'none'} (${Date.now() - started} ms)`)
+    this.compactionResumePoint = { key, at }
+    return at
   }
 
   /**
@@ -954,7 +987,11 @@ export class SessionRuntime {
    */
   private async rewindPoint(messageId: string): Promise<{ text: string; forkAt: string | null; cutAt: number; cut: boolean; reason?: string }> {
     if (this.transcript.messages.findIndex((m) => m.id === messageId) > this.compactedUpTo()) {
-      const { text, forkAt } = this.rewindTarget(messageId)
+      const { text, forkAt, afterCompaction } = this.rewindTarget(messageId)
+      if (afterCompaction) {
+        const at = await this.resumePointAfterCompaction(messageId)
+        return { text, forkAt: at, cutAt: 0, cut: false, reason: at ? undefined : 'Claude Code does not have this prompt in the conversation it would resume, so there is no point before it to go back to.' }
+      }
       return { text, forkAt, cutAt: 0, cut: false, reason: forkAt ? undefined : this.noForkReason(messageId) }
     }
     const index = await this.refreshPromptIndex()

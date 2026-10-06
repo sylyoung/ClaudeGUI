@@ -105,7 +105,15 @@ rewind goes the old way below.
 The old way stops the process, drops every transcript message from that prompt on and remembers a
 fork point.
 The fork point is the `chainUuid` of the last top-level assistant message before the prompt — Claude
-Code's own transcript uuid, which is not the same as the API message id used as our message id. The
+Code's own transcript uuid, which is not the same as the API message id used as our message id. For
+the first prompt after a compaction (1.0.61) there is no such answer after the compaction, and one
+above it is not in the conversation Claude Code resumes unless the compaction kept it: the rows read
+from the transcript above a compaction can even hold copies of old answers written while it ran, and
+resuming at one failed with "No message found with message.uuid". There the fork point is taken
+from that conversation itself, rebuilt from the transcript as Claude Code rebuilds it
+(`branch.ts`, `resumePointBefore`), with Claude Code's own rule for its rewind: the nearest user or
+assistant entry before the prompt. Rebuilding reads the transcript (seconds for one of gigabytes), so
+the answer is kept for the preview and the rewind after it. The
 next start passes `resume` + `resumeSessionAt: forkPoint`, so the CLI replays only up to there;
 the fork point is cleared once `system/init` confirms the start, and dropped with a warning in the
 chat if the CLI refuses it. File backups exist only when the session was started with
@@ -252,20 +260,44 @@ the time each prompt was sent rather than by its position in the chat. The secon
 registered prompt is moved down to its answer: without it, ↑ would offer the prompt already being
 answered instead of the one still waiting below it.
 
-## Going from one prompt to the next (1.0.60)
-The ↑ ↓ buttons in the chat's bottom-right corner (`MessageList`, `.jump-nav`) put the previous or
-next of your prompts at the top of the chat (12 px down) and outline it for 1.5 s. Your prompts are
-the conversation's own `.msg-user[data-mid]` rows, so neither Claude Code's notes nor the prompts
-still queued below the conversation. The prompt at the top is the last one at or above that line; a
-step up goes to the one before it, a step down to the one after it. A prompt not drawn yet is
-reached the way scrolling reaches it: the step waits (`pendingStep`) while the rows above are drawn
-or read from the transcript (`showEarlier`), or the rows below (`showLater`, in a part a find opened),
-and goes on once they are in, reading further when they hold no prompt. Whether each button has
-somewhere to go is measured once per frame at most, on a scroll or when rows come or go. There are no
-keys for this.
+## Going from one prompt to the next (1.0.60, 1.0.61)
+Three buttons in one column in the chat's bottom-right corner (`MessageList`, `.jump-nav`): ↑ your
+previous prompt, ↓ your next prompt, and the latest message. All three are always there, each in its
+own place, and greyed out when it has nowhere to go: in 1.0.60 "latest" appeared beside ↑ ↓ after the
+first step and pushed them aside, so the next press at the same spot went to the end of the chat. The
+column is left out only while none of the three can do anything (a chat that fits on screen). A press
+does not take the keyboard from the input box (`preventDefault` on mouse-down). There are no keys for
+any of them.
+
+A step scrolls until the prompt is at the top of the chat (12 px down) and outlines it for 1.5 s. Your
+prompts are the conversation's own `.msg-user[data-mid]` rows, so neither Claude Code's notes nor the
+prompts still queued below the conversation. A step goes on from the prompt the buttons went to last
+(`stepMark`), as long as it is still where they put it — a prompt near the end cannot be brought all
+the way up, so it is not always the one at the top — and otherwise from the line 12 px down: up to the
+last prompt above it, down to the first one below it. At the end of what is drawn, ↓ only goes on from
+a prompt the buttons went to, so it is greyed out at the end of a chat.
+
+Every move of the three buttons glides (`glideTo`, 1.0.61): one continuous scroll that starts fast
+and slows into place (ease-out cubic), 180–600 ms with the square root of the distance, however far,
+rather than skipping most of a long way. The target is worked out afresh on each frame
+from the row's position, so rows read in above or an answer growing on the way do not throw it off.
+A press during a move goes on from where that move is going, so quick presses add up and the chat
+never turns back. The reader's own scrolling stops a move: a wheel turn or swipe (but not what still
+coasts from one made before the press) and a press in the list, such as on its scroll bar. The
+moves' own scroll events neither let go of the chat's end nor take it up, and read nothing in on the
+way; when a step ends, the rows near it are read in as scrolling there would. `prefers-reduced-motion`
+makes the moves instant.
+
+A prompt not drawn yet is reached the way scrolling reaches it: the step waits (`pendingStep`) while
+the rows above are drawn or read from the transcript (`showEarlier`), or the rows below (`showLater`,
+in a part a find opened), and goes on once they are in, reading further when they hold no prompt.
+Presses made meanwhile in the same direction add a prompt each. Whether each button has somewhere to
+go is measured once per frame at most, on a scroll or when rows come or go.
 
 The buttons sit in `.messages-wrap`, over the list: until 1.0.60 "latest" was inside the scrolling
-list, so in a chat longer than the window it scrolled away with the messages.
+list, so in a chat longer than the window it scrolled away with the messages. "latest" glides to the
+end and follows new output from there; in a part drawn around a find's match the end is drawn in its
+place, and in the older part a find opened it goes back to the latest messages.
 
 Rows read in above the ones on screen must leave the row being read where it was. The browser does
 this by itself (`overflow-anchor`), as soon as the page is measured, except when the list is scrolled

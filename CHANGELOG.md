@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.61 — 2026-10-06
+
+### The prompt buttons, made easy to use
+
+- After the first press of ↑, the "latest" button appeared beside ↑ and ↓ and pushed them aside, so
+  the next press at the same spot jumped to the end of the chat. The three buttons now sit in one
+  column (↑, ↓, latest) and never move: each is always there and is only greyed out when it has
+  nowhere to go.
+- The chat no longer jumps to the prompt: it scrolls there in one smooth movement that starts fast
+  and slows into place, however long the answer in between (at most about 0.6 s). "latest" scrolls
+  to the end the same way.
+- Quick presses add up: three presses go three prompts on, in one movement. A turn of the scroll
+  wheel or a swipe stops a movement where it is.
+- Pressing the buttons leaves the keyboard in the input box.
+
+### Rewinding to the first prompt after a compaction
+
+- A rewind to the first prompt after a /compact (or an automatic compaction) could fail with "No
+  message found with message.uuid", and Claude kept remembering the removed messages. When Claude Code
+  had to be restarted for the rewind, the app restarted it at an answer from before the compaction,
+  which Claude Code no longer has once a chat is compacted. The point is now taken from the
+  conversation Claude Code resumes the chat with, by the rule Claude Code's own rewind uses.
+
 ## 1.0.60 — 2026-10-06
 
 ### Going from one of your prompts to the next

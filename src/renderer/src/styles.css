@@ -251,14 +251,15 @@ a:hover { text-decoration: underline; }
 .chat-header .cwd:hover { color: var(--text-dim); }
 .messages { flex: 1; overflow-y: auto; padding: 16px 20px 24px; scroll-behavior: auto; position: relative; }
 .messages-inner { max-width: var(--chat-max-width); margin: 0 auto; display: flex; flex-direction: column; gap: var(--msg-gap); }
-/* The buttons in the chat's bottom-right corner: your previous / next prompt, and the latest message.
-   They sit over the list (in .messages-wrap), not in it, so they stay in the corner while it scrolls. */
-.jump-nav { position: absolute; right: 24px; bottom: 16px; z-index: 5; display: flex; gap: 6px; }
+/* The buttons in the chat's bottom-right corner, one above the other: your previous prompt, your next
+   prompt, the latest message. Always all three, each in its own place (greyed out when it has nowhere
+   to go), so that none moves under the mouse. They sit over the list (in .messages-wrap), not in it,
+   so they stay in the corner while it scrolls. */
+.jump-nav { position: absolute; right: 22px; bottom: 16px; z-index: 5; display: flex; flex-direction: column; gap: 6px; }
 .jump-btn {
-  display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 999px; background: var(--bg-elev2);
-  border: 1px solid var(--border-strong); color: var(--text-dim); font-size: 12px; box-shadow: 0 4px 16px var(--shadow); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border-radius: 999px;
+  background: var(--bg-elev2); border: 1px solid var(--border-strong); color: var(--text-dim); box-shadow: 0 4px 16px var(--shadow); cursor: pointer;
 }
-.jump-btn.icon { padding: 6px 8px; }
 .jump-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 /* Greyed out without being see-through: the buttons float over the chat's text. */
 .jump-btn:disabled { color: var(--text-faint); cursor: default; }
