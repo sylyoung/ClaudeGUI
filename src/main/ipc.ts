@@ -1,0 +1,401 @@
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import os from 'os'
+import path from 'path'
+import fs from 'fs'
+import { execFile } from 'child_process'
+import type { AppInfo, AppSettings, ChatFileRef, ChatRowsRequest, DirInfo, EffortLevel, HistoryPage, HostStatus, ImageAttachment, PermissionDecision, PermissionMode, SessionMove, StartupNotice, ThemeInfo } from '@shared/types'
+import { compareVersions, parseVersion, splitList } from '@shared/util'
+import type { RowPlace } from '@shared/rows'
+import type { SettingsStore } from './store'
+import type { HostClient } from './hostClient'
+import type { UsageService } from './usageService'
+import type { AuthService } from './authService'
+import type { Updater } from './updater'
+import type { PermissionService } from './permissions'
+import { DirWatcher, listDir, locatePath, pathExists, probeFile, readFileContent, resolveMentionedPath } from './fsService'
+import { openExternal, openInEditor, openPath, openTerminal, openWithApp, showItemInFolder } from './shellService'
+import { getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache, getLoginShellEnv } from './env'
+import * as gitSvc from './gitService'
+import { readChatRows, searchChatFile, stopChatSearch } from './chatSearch'
+
+/**
+ * The Claude Code version inside an executable. The SDK's own package version (0.3.x) is what the
+ * app has shown so far, but the version people read about — the one whose notes say which models it
+ * knows — is Claude Code's (2.1.x), and only the binary itself can say it. Asked once per
+ * executable, so switching to your own build shows that build's version.
+ */
+const claudeVersions = new Map<string, string>()
+
+function claudeVersionOf(exe: string): Promise<string> {
+  const known = claudeVersions.get(exe)
+  if (known !== undefined) return Promise.resolve(known)
+  return new Promise((resolve) => {
+    execFile(exe, ['--version'], { timeout: 5000 }, (err, out) => {
+      // "2.1.280 (Claude Code)" — the number is what is shown.
+      const v = err ? '' : String(out).trim().split(/\s+/)[0]
+      claudeVersions.set(exe, v)
+      resolve(v)
+    })
+  })
+}
+
+export interface IpcContext {
+  store: SettingsStore
+  host: HostClient
+  usage: UsageService
+  auth: AuthService
+  updater: Updater
+  permissions: PermissionService
+  getWindow(): BrowserWindow | null
+  resolveExecutable(): string
+  sdkVersion: string
+  bundlePath: string | undefined
+  logFile: string
+  getThemeInfo(): ThemeInfo
+  onSettingsChanged(prev: AppSettings, next: AppSettings): void
+  takeStartupNotice(): StartupNotice | null
+  replaceHost(): Promise<void>
+  broadcast(channel: string, payload: unknown): void
+}
+
+/**
+ * The session host keeps running across updates, so it can be older than this window and not know a
+ * method the window now calls. Say what to do instead of "Unknown host method".
+ */
+async function needsCurrentHost<T>(call: Promise<T>, what: string): Promise<T> {
+  try {
+    return await call
+  } catch (err) {
+    if (/Unknown host method/.test((err as Error).message)) {
+      throw new Error(`${what} needs the session host of this ClaudeGUI version. The one running was started by an older version and keeps your chats alive; quit ClaudeGUI completely (⌘Q) and open it again to start the new one.`)
+    }
+    throw err
+  }
+}
+
+/**
+ * Whether the running session host starts a chat in another provider's environment when its model
+ * is switched to one. Every host from 1.0.23 on does it the same way, so a host that is only a few
+ * versions behind this window (the usual case after an update, until the next ⌘Q) switches fine;
+ * only a host from before 1.0.23 would set the model name alone and the chat would fail.
+ */
+function hostSwitchesProviders(version: string | undefined): boolean {
+  return !version || !parseVersion(version) || compareVersions(version, '1.0.23') >= 0
+}
+
+/**
+ * Whether the running session host keeps only the newest rows of a chat and can find a row's line in
+ * the transcript (1.0.55 on). With an older host the window opens a chat on everything that host
+ * holds, as before, and keeps all of it: it has no way to read back rows it let go of.
+ */
+function hostKeepsRecentRows(version: string | undefined): boolean {
+  return Boolean(version && parseVersion(version) && compareVersions(version, '1.0.55') >= 0)
+}
+
+export function registerIpc(ctx: IpcContext): void {
+  const { store, host, updater } = ctx
+  const watcher = new DirWatcher((dir) => {
+    ctx.getWindow()?.webContents.send('fs:changed', dir)
+  })
+  app.on('before-quit', () => watcher.closeAll())
+
+  const handle = <T extends unknown[], R>(channel: string, fn: (...args: T) => R | Promise<R>) => {
+    ipcMain.handle(channel, async (_e, ...args) => {
+      try {
+        return { ok: true, value: await fn(...(args as T)) }
+      } catch (err) {
+        const message = (err as Error)?.message ?? String(err)
+        console.error(`[ipc] ${channel} failed:`, message)
+        return { ok: false, error: message }
+      }
+    })
+  }
+
+  const settings = () => store.get()
+  const env = () => getSpawnEnv(parseExtraEnv(settings().extraEnv))
+
+  // ---- app / settings
+  handle('app:info', async (): Promise<AppInfo> => {
+    const exe = ctx.resolveExecutable()
+    return {
+      version: app.getVersion(),
+      platform: process.platform,
+      electron: process.versions.electron,
+      node: process.versions.node,
+      sdkVersion: ctx.sdkVersion,
+      claudeVersion: await claudeVersionOf(exe),
+      userDataPath: app.getPath('userData'),
+      claudeExecutable: exe,
+      homeDir: os.homedir(),
+      packaged: app.isPackaged,
+      bundlePath: ctx.bundlePath,
+      logFile: ctx.logFile
+    }
+  })
+  handle('app:theme', () => ctx.getThemeInfo())
+  handle('app:startupNotice', () => ctx.takeStartupNotice())
+  handle('settings:get', () => settings())
+  handle('settings:set', (patch: Partial<AppSettings>) => {
+    const prev = settings()
+    const next = store.update((s) => ({ ...s, ...patch }))
+    ctx.onSettingsChanged(prev, next)
+    return next
+  })
+  handle('app:envInfo', async () => {
+    const e = await getLoginShellEnv()
+    const keys = Object.keys(e).sort()
+    return { count: keys.length, proxy: keys.filter((k) => /proxy/i.test(k)).map((k) => `${k}=${e[k]}`), path: e.PATH ?? '' }
+  })
+  handle('app:reloadEnv', async () => {
+    resetLoginShellEnvCache()
+    const e = await getLoginShellEnv()
+    if (host.connected) await host.reloadEnv().catch(() => undefined)
+    return Object.keys(e).length
+  })
+
+  // ---- plan usage
+  handle('usage:get', () => ctx.usage.state())
+  handle('usage:refresh', () => ctx.usage.refresh('manual'))
+  handle('usage:renew-chatgpt', () => ctx.usage.renewChatGpt())
+  handle('usage:bridge-sign-in', () => ctx.usage.signInGptBridge())
+
+  // ---- Claude Code login
+  handle('auth:state', () => ctx.auth.state)
+  handle('auth:check', () => ctx.auth.check('manual'))
+  handle('auth:signIn', () => ctx.auth.signIn())
+  handle('auth:submitCode', (code: string) => ctx.auth.submitSignInCode(code))
+  handle('auth:cancelSignIn', () => ctx.auth.cancelSignIn())
+
+  // ---- session host
+  handle('host:status', async (): Promise<HostStatus> => {
+    if (!host.connected) return host.status
+    try {
+      const info = await host.info()
+      return { ...host.status, aliveSessions: info.aliveSessions, pid: info.pid, version: info.version, startedAt: info.startedAt, logFile: info.logFile }
+    } catch {
+      return host.status
+    }
+  })
+  handle('host:restart', async () => {
+    const alive = host.connected ? await host.aliveCount() : 0
+    if (alive > 0) throw new Error(`${alive} session(s) are still running; stop them first`)
+    await ctx.replaceHost()
+  })
+
+  // ---- updates
+  handle('update:state', () => updater.state)
+  handle('update:check', () => updater.check())
+  handle('update:install', () => updater.install())
+  handle('update:apply', () => updater.apply())
+  handle('update:cancel', () => updater.cancel())
+  handle('update:openLog', async () => {
+    if (fs.existsSync(updater.logFile)) await shell.openPath(updater.logFile)
+    else throw new Error('No update log yet')
+  })
+  handle('update:openWorkDir', async () => {
+    fs.mkdirSync(updater.workDir, { recursive: true })
+    await shell.openPath(updater.workDir)
+  })
+
+  // ---- sessions (all forwarded to the session host process)
+  handle('sessions:list', () => host.list())
+  handle('sessions:history', async (id: string): Promise<HistoryPage> =>
+    hostKeepsRecentRows(host.status.version) ? host.historyPage(id) : { messages: await host.history(id), trimmable: false }
+  )
+  handle('sessions:earlier', (id: string, to?: number) => host.earlier(id, to))
+  handle('sessions:row', (id: string, rowId: string) => (hostKeepsRecentRows(host.status.version) ? host.row(id, rowId) : null))
+  handle('sessions:cutPoint', (id: string, places: RowPlace[], from: number) => (hostKeepsRecentRows(host.status.version) ? host.cutPoint(id, places, from) : null))
+  handle('sessions:toolImages', (id: string, toolUseId: string) => needsCurrentHost(host.toolImages(id, toolUseId), 'Showing the pictures a tool returned'))
+  // Finding text in the part of a chat that is not loaded: read here from the chat's file, so it does
+  // not depend on the version of the session host.
+  handle('chat:searchFile', (req: ChatFileRef & { searchId: number; query: string; historyFrom: number }) =>
+    searchChatFile(req, (p) => ctx.getWindow()?.webContents.send('chat:searchProgress', p))
+  )
+  handle('chat:stopSearch', (ref: ChatFileRef) => stopChatSearch(ref))
+  handle('chat:rows', (ref: ChatFileRef, req: ChatRowsRequest) => readChatRows(ref, req, settings().toolResultMaxChars))
+  handle('sessions:create', async (opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | '' }) => {
+    const record = await host.create(opts)
+    store.addRecentDirectory(record.cwd)
+    return record
+  })
+  handle('sessions:importCli', async (sessionId: string, cwd: string, title?: string) => {
+    const record = await host.importCli(sessionId, cwd, title)
+    store.addRecentDirectory(record.cwd)
+    return record
+  })
+  handle('sessions:listCli', (dir?: string) => host.listCli(dir))
+  handle('sessions:fork', (id: string, name?: string) => needsCurrentHost(host.fork(id, name), 'Forking a chat'))
+  handle('sessions:runShell', (id: string, command: string) => needsCurrentHost(host.runShell(id, command), 'Running a shell command with "!"'))
+  handle('sessions:stopShell', (id: string, runId: string) => host.stopShell(id, runId))
+  handle('sessions:send', (id: string, text: string, images?: ImageAttachment[]) => host.send(id, text, images))
+  handle('sessions:start', (id: string) => host.start(id))
+  handle('sessions:stop', (id: string) => host.stop(id))
+  handle('sessions:interrupt', (id: string) => host.interrupt(id))
+  handle('sessions:cancelQueued', (id: string, messageId: string) => host.cancelQueued(id, messageId))
+  handle('sessions:rewindTargets', (id: string) => host.rewindTargets(id))
+  handle('sessions:rewindPreview', (id: string, messageId: string) => host.rewindPreview(id, messageId))
+  handle('sessions:rewind', (id: string, messageId: string, restoreFiles: boolean) => host.rewind(id, messageId, restoreFiles))
+  handle('sessions:answerPermission', (id: string, requestId: string, decision: PermissionDecision) => host.answerPermission(id, requestId, decision))
+  handle('sessions:setModel', (id: string, model: string, provider?: string) => {
+    if (provider && !hostSwitchesProviders(host.status.version)) throw new Error(`Using a model of another provider needs a session host from ClaudeGUI 1.0.23 or later. The one running was started by ClaudeGUI ${host.status.version} and keeps your chats alive; quit ClaudeGUI completely (⌘Q) and open it again to start the new one.`)
+    return host.setModel(id, model, provider)
+  })
+  handle('providers:list', (refresh?: boolean) => needsCurrentHost(host.providers(refresh), 'Listing the model providers'))
+  handle('sessions:setPermissionMode', (id: string, mode: PermissionMode) => host.setPermissionMode(id, mode))
+  handle('sessions:setEffort', (id: string, level: EffortLevel | '') => host.setEffort(id, level))
+  handle('sessions:rename', (id: string, title: string) => host.rename(id, title))
+  handle('sessions:setPinned', (id: string, pinned: boolean) => host.setPinned(id, pinned))
+  handle('sessions:setArchived', (id: string, archived: boolean) => host.setArchived(id, archived))
+  handle('sessions:remove', (id: string, deleteTranscript: boolean) => host.remove(id, deleteTranscript))
+  handle('sessions:setActive', (id: string | undefined) => host.setActive(id))
+  handle('sessions:stopTask', (id: string, taskId: string) => host.stopTask(id, taskId))
+  handle('sessions:backgroundTasks', (id: string, toolUseId?: string) => host.backgroundTasks(id, toolUseId))
+  handle('sessions:clearHandoffNote', (id: string) => host.clearHandoffNote(id))
+  handle('sessions:setDraft', (id: string, text: string) => host.setDraft(id, text))
+  handle('sessions:commands', (id: string) => host.commands(id))
+  handle('sessions:models', (id: string) => host.models(id))
+  handle('sessions:contextUsage', (id: string, full?: boolean) => host.contextUsage(id, full))
+  handle('sessions:createGroup', (name: string, color?: string) => host.createGroup(name, color))
+  handle('sessions:setGroupColor', (id: string, color: string) => host.setGroupColor(id, color))
+  handle('sessions:renameGroup', (id: string, name: string) => host.renameGroup(id, name))
+  handle('sessions:deleteGroup', (id: string) => host.deleteGroup(id))
+  handle('sessions:setGroupCollapsed', (id: string, collapsed: boolean) => host.setGroupCollapsed(id, collapsed))
+  handle('sessions:moveGroup', (id: string, beforeId?: string) => host.moveGroup(id, beforeId))
+  handle('sessions:moveSession', (id: string, move: SessionMove) => host.moveSession(id, move))
+  handle('sessions:relocate', async (id: string, cwd?: string) => {
+    let target = cwd
+    if (!target) {
+      const win = ctx.getWindow()
+      const current = (await host.list()).records.find((r) => r.id === id)
+      const res = await dialog.showOpenDialog(win ?? (undefined as never), {
+        title: 'Choose the new working directory for this session',
+        properties: ['openDirectory', 'createDirectory'],
+        defaultPath: current ? path.dirname(current.cwd) : settings().defaultCwd || os.homedir()
+      })
+      if (res.canceled || !res.filePaths.length) return null
+      target = res.filePaths[0]
+    }
+    return host.relocate(id, target)
+  })
+
+  // ---- working directory size (du), cached per folder for five minutes
+  const dirCache = new Map<string, DirInfo>()
+  handle('fs:dirInfo', async (dir: string, force?: boolean): Promise<DirInfo> => {
+    const cached = dirCache.get(dir)
+    if (cached && !force && Date.now() - cached.checkedAt < 5 * 60_000) return cached
+    if (!fs.existsSync(dir)) {
+      const info: DirInfo = { path: dir, exists: false, checkedAt: Date.now() }
+      dirCache.set(dir, info)
+      return info
+    }
+    const info = await new Promise<DirInfo>((resolve) => {
+      execFile('/usr/bin/du', ['-sk', '-x', dir], { timeout: 45_000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        const m = /^(\d+)/.exec(String(stdout || '').trim())
+        const kb = m ? Number(m[1]) : undefined
+        resolve({ path: dir, exists: true, bytes: kb !== undefined ? kb * 1024 : undefined, checkedAt: Date.now(), partial: Boolean(err) })
+      })
+    })
+    dirCache.set(dir, info)
+    return info
+  })
+
+  // ---- macOS privacy permissions
+  handle('perm:list', () => ctx.permissions.list())
+  handle('perm:request', (key: string) => ctx.permissions.request(key))
+  handle('perm:requestAll', () => ctx.permissions.requestAll())
+  handle('perm:openPane', (key: string) => ctx.permissions.openPane(key))
+
+  // ---- filesystem
+  handle('fs:list', (dir: string, showHidden: boolean) => listDir(dir, showHidden, splitList(settings().excludePatterns)))
+  handle('fs:read', (file: string) => readFileContent(file, Math.max(64, settings().maxPreviewKB || 1500) * 1024))
+  handle('fs:probe', (file: string) => probeFile(file))
+  handle('fs:exists', (p: string) => pathExists(p))
+  handle('fs:resolve', (raw: string, cwd: string) => resolveMentionedPath(raw, cwd, os.homedir()))
+  handle('fs:locate', (raw: string, cwd: string) => locatePath(raw, cwd, os.homedir()))
+  handle('fs:watch', (dir: string) => watcher.watch(dir))
+  handle('fs:unwatch', (dir: string) => watcher.unwatch(dir))
+  handle('fs:home', () => os.homedir())
+  handle('fs:readImageBase64', (file: string) => fs.readFileSync(file).toString('base64'))
+  handle('fs:trash', (p: string) => shell.trashItem(p))
+
+  // ---- shell
+  handle('shell:openExternal', (url: string) => openExternal(url))
+  handle('shell:openPath', (p: string) => openPath(p))
+  handle('shell:showInFolder', (p: string) => showItemInFolder(p))
+  handle('shell:openInEditor', async (file: string, line?: number) => {
+    const cmd = settings().editorCommand || 'open -t {path}'
+    openInEditor(cmd, file, line, await env())
+  })
+  handle('shell:openWith', async (file: string) => {
+    const win = ctx.getWindow()
+    const res = await dialog.showOpenDialog(win ?? (undefined as never), {
+      title: `Open ${path.basename(file)} with…`,
+      defaultPath: '/Applications',
+      properties: ['openFile'],
+      filters: [{ name: 'Applications', extensions: ['app'] }]
+    })
+    if (res.canceled || !res.filePaths.length) return false
+    openWithApp(res.filePaths[0], file, await env())
+    return true
+  })
+  handle('shell:openTerminal', async (dir: string) => openTerminal(dir, await getSpawnEnv()))
+  handle('shell:copy', (text: string) => clipboard.writeText(text))
+
+  // ---- git (every call takes the session working directory; the repo root is derived from it)
+  const root = async (cwd: string) => {
+    const r = await gitSvc.repoRoot(cwd, await env())
+    if (!r) throw new Error('Not a git repository')
+    return r
+  }
+  handle('git:status', async (cwd: string) => gitSvc.getStatus(cwd, await env()))
+  handle('git:stage', async (cwd: string, paths: string[], force?: boolean) => gitSvc.stage(await root(cwd), paths, await env(), Boolean(force)))
+  handle('git:stageAll', async (cwd: string) => gitSvc.stageAll(await root(cwd), await env()))
+  handle('git:unstage', async (cwd: string, paths: string[]) => gitSvc.unstage(await root(cwd), paths, await env()))
+  handle('git:unstageAll', async (cwd: string) => gitSvc.unstageAll(await root(cwd), await env()))
+  handle('git:untrack', async (cwd: string, paths: string[]) => gitSvc.untrack(await root(cwd), paths, await env()))
+  handle('git:discard', async (cwd: string, entries: gitSvc.DiscardEntry[]) => gitSvc.discard(await root(cwd), entries, await env()))
+  handle('git:discardAll', async (cwd: string) => gitSvc.discardAll(await root(cwd), await env()))
+  handle('git:delete', async (cwd: string, absPaths: string[]) => gitSvc.deletePaths(await root(cwd), absPaths, await env()))
+  handle('git:ignore', async (cwd: string, relPaths: string[]) => gitSvc.addToGitignore(await root(cwd), relPaths))
+  handle('git:commit', async (cwd: string, message: string, opts: { amend?: boolean; signoff?: boolean }) => gitSvc.commit(await root(cwd), message, opts ?? {}, await env()))
+  handle('git:push', async (cwd: string) => {
+    const e = await env()
+    const r = await root(cwd)
+    const info = await gitSvc.getInfo(r, e)
+    return gitSvc.push(r, info, e)
+  })
+  handle('git:pull', async (cwd: string, rebase: boolean) => gitSvc.pull(await root(cwd), rebase, await env()))
+  handle('git:fetch', async (cwd: string) => gitSvc.fetch(await root(cwd), await env()))
+  handle('git:log', async (cwd: string, limit: number) => gitSvc.log(await root(cwd), limit, await env()))
+  handle('git:diff', async (cwd: string, relPath: string, staged: boolean) => gitSvc.diff(await root(cwd), relPath, staged, await env()))
+  handle('git:showCommit', async (cwd: string, hash: string) => gitSvc.showCommit(await root(cwd), hash, await env()))
+  handle('git:branches', async (cwd: string) => gitSvc.branches(await root(cwd), await env()))
+  handle('git:checkout', async (cwd: string, branch: string) => gitSvc.checkout(await root(cwd), branch, await env()))
+  handle('git:createBranch', async (cwd: string, name: string) => gitSvc.createBranch(await root(cwd), name, await env()))
+  handle('git:init', async (cwd: string) => gitSvc.init(cwd, await env()))
+  handle('git:undoLastCommit', async (cwd: string) => gitSvc.undoLastCommit(await root(cwd), await env()))
+  handle('git:revertCommit', async (cwd: string, hash: string) => gitSvc.revertCommit(await root(cwd), hash, await env()))
+  handle('git:stash', async (cwd: string) => gitSvc.stashPush(await root(cwd), await env()))
+  handle('git:stashPop', async (cwd: string) => gitSvc.stashPop(await root(cwd), await env()))
+  handle('git:publish', async (cwd: string, name: string, visibility: 'public' | 'private') => gitSvc.publish(await root(cwd), name, visibility, await env()))
+
+  // ---- dialogs
+  handle('dialog:chooseDirectory', async (defaultPath?: string) => {
+    const win = ctx.getWindow()
+    const res = await dialog.showOpenDialog(win ?? (undefined as never), {
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: defaultPath || settings().defaultCwd || path.join(os.homedir(), 'Workspace')
+    })
+    if (res.canceled || !res.filePaths.length) return null
+    return res.filePaths[0]
+  })
+  handle('dialog:chooseFiles', async () => {
+    const win = ctx.getWindow()
+    const res = await dialog.showOpenDialog(win ?? (undefined as never), {
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }]
+    })
+    if (res.canceled) return []
+    return res.filePaths
+  })
+}

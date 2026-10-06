@@ -1,0 +1,2375 @@
+import { spawn, type ChildProcess } from 'child_process'
+import { randomUUID } from 'crypto'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import {
+  getSessionInfo,
+  query,
+  type Options,
+  type PermissionMode as SdkPermissionMode,
+  type PermissionResult,
+  type PermissionUpdate,
+  type Query,
+  type SDKMessage,
+  type SDKUserMessage
+} from '@anthropic-ai/claude-agent-sdk'
+import type {
+  AppSettings,
+  BackgroundTaskView,
+  ChatMessage,
+  ContextUsageView,
+  EarlierMessages,
+  EffortLevel,
+  HistoryPage,
+  ImageAttachment,
+  ModelInfoView,
+  PendingPermission,
+  PermissionDecision,
+  PermissionMode,
+  PromptDelivery,
+  RewindPreview,
+  RewindResult,
+  RewindTargetView,
+  SessionEvent,
+  SessionLiveState,
+  SdkUsage,
+  SessionRecord,
+  SlashCommandView,
+  TextBlockView
+} from '@shared/types'
+import { TranscriptState, flattenToolResultContent, looksSynthetic, recapText } from './transcript'
+import { handoffNote, hasUnfinishedWork, mergeHandoffNote, type HandoffSnapshot } from './handoffNote'
+import { readLineIndex, readSessionHistory, readSessionSlice, readSubagentHistory, readToolResultLine } from './history'
+import { findToolImages, messageForWindow, messagesForWindow, updateForWindow } from './forWindow'
+import { cutAt, rowPlace, trimLimit, type RowPlace } from '@shared/rows'
+import { cutTranscript, readPromptIndex, type PromptIndex } from './promptIndex'
+import { readTranscriptIndex } from './transcriptIndex'
+import { projectDirFor } from './paths'
+import { splitList } from '@shared/util'
+
+/** Unbounded async queue used as the SDK's streaming-input prompt. */
+class AsyncQueue<T> implements AsyncIterable<T> {
+  private items: T[] = []
+  private waiters: ((r: IteratorResult<T>) => void)[] = []
+  private ended = false
+  get size(): number {
+    return this.items.length
+  }
+  push(item: T): void {
+    if (this.ended) return
+    const w = this.waiters.shift()
+    if (w) w({ value: item, done: false })
+    else this.items.push(item)
+  }
+  end(): void {
+    this.ended = true
+    for (const w of this.waiters.splice(0)) w({ value: undefined as never, done: true })
+  }
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: () => {
+        if (this.items.length) return Promise.resolve({ value: this.items.shift() as T, done: false })
+        if (this.ended) return Promise.resolve({ value: undefined as never, done: true })
+        return new Promise((resolve) => this.waiters.push(resolve))
+      },
+      return: () => {
+        this.end()
+        return Promise.resolve({ value: undefined as never, done: true })
+      }
+    }
+  }
+}
+
+import type { ProviderLaunch } from '../providers/ProviderService'
+
+export interface RateLimitEventInfo {
+  rateLimitType?: string
+  utilization?: number
+  resetsAt?: number
+  status?: string
+}
+
+export interface RuntimeDeps {
+  getEnv(): Promise<Record<string, string>>
+  /** Environment and options for a chat on another model provider (see ProviderService). */
+  launchProvider(providerId: string, model?: string): Promise<ProviderLaunch>
+  getExecutable(): string | undefined
+  getSettings(): AppSettings
+  appVersion: string
+  onRateLimit(info: RateLimitEventInfo, ts: number): void
+  emit(event: SessionEvent): void
+  saveRecord(record: SessionRecord): void
+  /** silent = housekeeping (a context compaction): no unread mark, no notification. */
+  onTurnFinished(rt: SessionRuntime, preview: string, isError: boolean, silent?: boolean): void
+  onNeedsAttention(rt: SessionRuntime, request: PendingPermission): void
+  onExit(rt: SessionRuntime, error?: string): void
+  log(...args: unknown[]): void
+}
+
+/**
+ * A prompt that only asks Claude Code to tidy its own context rather than to answer something:
+ * "/compact" as the user typed it, or the shape the CLI echoes back for a slash command
+ * (`<command-name>/compact</command-name>…`), which is the same prompt written in its own words.
+ */
+function isCompactCommand(text: string): boolean {
+  return /^\s*(?:<command-name>\s*)?\/compact\b/.test(text)
+}
+
+/**
+ * Claude Code's own recap instruction, copied word for word out of the CLI's away-summary code, so
+ * a recap here reads exactly like the one the terminal writes.
+ */
+const RECAP_PROMPT =
+  'The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences, no markdown. ' +
+  'Lead with the overall goal and current task, then the one next action. Skip root-cause narrative, ' +
+  'fix internals, secondary to-dos, and em-dash tangents.'
+
+/** Messages the user wrote themselves before a recap is worth writing at all (Claude Code's count). */
+const RECAP_MIN_PROMPTS = 3
+/** …and after the last recap, so returning twice does not produce the same sentence twice. */
+const RECAP_MIN_SINCE = 2
+
+/**
+ * Claude Code asks for its recap through the same call it uses for a side question (`/btw`): one
+ * turn, no tools, the parameters of the last turn reused so the answer comes out of the prompt
+ * cache, and nothing written into the conversation. Over the SDK that call is a control request,
+ * which this method sends — it is on the object `query()` returns but not in the SDK's published
+ * types, so the shape it has in the SDK's own code is named here.
+ */
+interface SideQuestionQuery {
+  askSideQuestion?: (question: string) => Promise<{ response: string | null; synthetic?: boolean } | null>
+}
+
+const FLUSH_MS = 45
+/**
+ * How many rows of a running chat the session host holds: past `max` it lets go of the oldest, down
+ * to about `keep` (see shared/rows.ts). A chat is opened on a few hundred rows, so this is also what
+ * the window is handed when a long-running chat is opened, instead of every row since the host
+ * started.
+ */
+const HOST_ROW_LIMITS = { max: 600, keep: 400 }
+/**
+ * A chat's live state went to the window with every flush — about 20 times a second while it
+ * streams — whole, with Claude Code's list of commands (47 KB with the user's skills and plugins,
+ * measured 2026-09-28) and every chat's sidebar row drawn again each time. Now an update in which
+ * only the time of the last message changed goes at most once per STATE_QUIET_MS, anything else at
+ * once, and the command and model lists only when they changed.
+ */
+const STATE_QUIET_MS = 1000
+/** How long a chat may stay quiet before a prompt still marked as being answered is let go. */
+const DELIVERY_QUIET_MS = 10_000
+/** A shell command typed after "!" is stopped after this long. */
+const SHELL_TIMEOUT_MS = 10 * 60_000
+/** How much of a shell command's output is kept from its beginning, and as much again from its end. */
+const SHELL_OUTPUT_KEEP = 15_000
+
+/**
+ * Stop a shell command and everything it started. The command runs as an interactive shell, which
+ * ignores SIGTERM and would go on to the next part of "a; b" once "a" is killed, so the whole
+ * process group gets SIGHUP (on which such a shell exits) and SIGTERM, and whatever is still
+ * there a moment later is killed outright.
+ */
+function killShell(child: ChildProcess): void {
+  const pid = child.pid
+  if (!pid || child.exitCode !== null || child.signalCode !== null) return
+  const send = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig)
+    } catch {
+      /* already gone */
+    }
+  }
+  send('SIGHUP')
+  send('SIGTERM')
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) send('SIGKILL')
+  }, 1500).unref?.()
+}
+
+/** Output of a shell command: the beginning and the end of it, as a long scrollback is read. */
+class ShellOutput {
+  private head = ''
+  private tail = ''
+  private dropped = 0
+  add(chunk: string): void {
+    if (this.head.length < SHELL_OUTPUT_KEEP) {
+      const take = chunk.slice(0, SHELL_OUTPUT_KEEP - this.head.length)
+      this.head += take
+      chunk = chunk.slice(take.length)
+    }
+    if (!chunk) return
+    this.tail += chunk
+    if (this.tail.length > SHELL_OUTPUT_KEEP) {
+      this.dropped += this.tail.length - SHELL_OUTPUT_KEEP
+      this.tail = this.tail.slice(-SHELL_OUTPUT_KEEP)
+    }
+  }
+  text(): string {
+    const all = this.dropped ? `${this.head}\n… ${this.dropped} characters left out …\n${this.tail}` : this.head + this.tail
+    // Colours and cursor movements are for a terminal; in the chat and for Claude they are noise.
+    return all.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '').replace(/\s+$/, '')
+  }
+}
+
+export class SessionRuntime {
+  /** HOST_ROW_LIMITS; a test lowers them to see rows let go of within a short replay. */
+  static rowLimits = { ...HOST_ROW_LIMITS }
+  readonly transcript = new TranscriptState()
+  live: SessionLiveState
+  private q: Query | null = null
+  private queue: AsyncQueue<SDKUserMessage> | null = null
+  private abort: AbortController | null = null
+  private pending = new Map<string, { resolve: (r: PermissionResult) => void; request: PendingPermission; suggestions?: PermissionUpdate[] }>()
+  private historyLoaded = false
+  private historyPromise: Promise<void> | null = null
+  /**
+   * Where in the transcript file the loaded part of the chat begins. A chat is opened on the end of
+   * its file (see history.ts) and reaches further back only when the user scrolls up, so this walks
+   * towards 0; at 0 the whole file is in hand and there is nothing earlier to show.
+   */
+  private historyFrom = 0
+  private earlierPromise: Promise<EarlierMessages> | null = null
+  /** The chat's prompts as its transcript file has them; only ever grows, so it is kept between reads. */
+  private promptIndex: PromptIndex | undefined
+  private flushTimer: NodeJS.Timeout | null = null
+  private stateDirty = false
+  private runLoop: Promise<void> | null = null
+  private stopping = false
+  private startPromise: Promise<void> | null = null
+  private tasks = new Map<string, BackgroundTaskView>()
+  private lastAssistantText = ''
+  /** Since the last finished turn: did Claude write anything, and was the context compacted? */
+  private turnHadText = false
+  private turnHadCompaction = false
+  /** Since the last finished turn: was the compaction one the user asked for with "/compact"? */
+  private turnHadManualCompaction = false
+  private processCostSeen = 0
+  /** Chain entry the next start resumes at (a rewind fork point), or null for the whole chain. */
+  private resumeAt: string | null = null
+  /** The process is being replaced under the chat (a rewind, another provider): see replaceQuietly. */
+  private quietReplace = false
+  /** Whether file backups were switched on for the process that is running now. */
+  private checkpointing = false
+  /** Clears prompts left marked as being answered when no turn ever came for them. */
+  private deliverySweep: NodeJS.Timeout | null = null
+  /** Shell commands typed after "!" that are still running, so Stop can end them. */
+  private shellRuns = new Map<string, ChildProcess>()
+  /** Why a shell command was ended early ("stopped", or the time limit), by the id of its row. */
+  private shellStopReasons = new Map<string, string>()
+  /** Shell output handed to Claude Code as conversation that starts no turn. */
+  private shellAppendIds = new Set<string>()
+  /** Claude Code took shell output while no prompt was being answered: the empty result that follows is its. */
+  private shellResultExpected = false
+  /** When the last turn of this process ended, which is when Claude Code's prompt cache was filled. */
+  private lastTurnEndedAt = 0
+  /** A recap is being asked for; a second request would pay for the same sentence twice. */
+  private recapInFlight = false
+  /** A stop has already left the note for this process (see stop). */
+  private handoffNoted = false
+  /** Older rows are being let go of right now (trimRows). */
+  private trimming = false
+  /**
+   * The window has asked for this chat's rows since it attached, so it holds them and wants the chat
+   * whole again when it is read again (messages-reset). A window of 1.0.55 on keeps rows only of the
+   * chats it opened; starting every chat at launch used to send all of them — 73 MB for the user's
+   * 43 chats, which the window now ignores.
+   */
+  windowHolds = false
+  /** No line to cut at was found then: not looked for again for a minute (each look reads the file). */
+  private trimFailedAt = 0
+  /** The live state last sent to the window (see STATE_QUIET_MS). */
+  private sentState: { sig: string; at: number; commands?: unknown; models?: unknown } = { sig: '', at: 0 }
+  private stateTimer: NodeJS.Timeout | null = null
+
+  constructor(
+    public record: SessionRecord,
+    private deps: RuntimeDeps
+  ) {
+    this.live = {
+      id: record.id,
+      status: 'stopped',
+      processAlive: false,
+      model: record.model,
+      permissionMode: record.permissionMode,
+      effort: record.effort ?? null,
+      cwd: record.cwd,
+      pendingPermissions: [],
+      backgroundTasks: [],
+      activeTools: [],
+      totalCostUsd: record.totalCostUsd ?? 0,
+      unread: 0,
+      lastActivityAt: record.lastActiveAt,
+      queuedCount: 0,
+      queuedIds: [],
+      promptDelivery: {}
+    }
+  }
+
+  get id(): string {
+    return this.record.id
+  }
+
+  get isAlive(): boolean {
+    return this.q !== null
+  }
+
+  // ------------------------------------------------------------------ history
+
+  async ensureHistory(): Promise<ChatMessage[]> {
+    if (this.historyLoaded) return this.transcript.messages
+    if (!this.historyPromise) this.historyPromise = this.loadHistory()
+    await this.historyPromise
+    return this.transcript.messages
+  }
+
+  private async loadHistory(): Promise<void> {
+    const mainFile = this.transcriptPath()
+    try {
+      const read = await readSessionHistory(this.record.claudeSessionId, this.record.cwd, mainFile)
+      const entries = read.messages
+      this.historyFrom = read.from
+      // Replay before any live message so ordering is preserved.
+      const liveSnapshot = this.transcript.messages
+      const wasEmpty = liveSnapshot.length === 0
+      if (wasEmpty) {
+        const { stamps, recaps } = await readTranscriptIndex(mainFile, read.from)
+        let ts = this.record.createdAt || Date.now()
+        for (const e of entries) {
+          const real = stamps.get((e as { uuid: string }).uuid)
+          if (real) ts = real
+          this.transcript.applyHistoryEntry(e as never, ts)
+          ts += 1
+        }
+        this.transcript.settleReplayOrder()
+        this.transcript.insertRecaps(recaps)
+        // The recap this app asked for is not in Claude Code's transcript (the side-question call
+        // leaves nothing behind), so it is put back from the record, in its place in the chat.
+        if (this.record.lastRecap && this.record.lastRecapAt) {
+          this.transcript.insertRecaps([{ id: `recap-${this.record.lastRecapAt}`, text: this.record.lastRecap, ts: this.record.lastRecapAt }])
+        }
+        await this.loadSubagentHistory(ts)
+        this.transcript.takeChanges()
+      }
+      this.deps.log(
+        `[session ${this.id}] history loaded: ${entries.length} entries (transcript ${read.fileMB} MB, read from ${Math.round(read.from / 1048576)} MB on)`
+      )
+      // What the sidebar shows of the chat: the recap if the chat ends on one, and otherwise the
+      // last thing Claude said. Both come from the conversation itself, so a chat that has not run
+      // in this process yet — every chat after the session host is restarted — is not a blank line.
+      this.live.lastRecap = this.transcript.latestRecap()
+      if (!this.live.lastPreview) this.live.lastPreview = this.lastReplyText()
+      if (!this.record.lastPromptAt) {
+        const t = lastPromptTime(this.transcript.messages)
+        if (t) {
+          this.record.lastPromptAt = t
+          this.deps.saveRecord(this.record)
+        }
+      }
+    } catch (err) {
+      // A brand-new session has no transcript yet; that is fine.
+      this.deps.log(`[session ${this.id}] no history (${(err as Error).message})`)
+    }
+    this.historyLoaded = true
+    this.live.historyFrom = this.historyFrom
+    this.stateDirty = true
+    if (this.windowHolds) this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: messagesForWindow(this.transcript.messages), from: this.historyFrom })
+    this.scheduleFlush()
+  }
+
+  /** The rows the window opens the chat on, and where in the transcript file they begin. */
+  async historyPage(): Promise<HistoryPage> {
+    const messages = messagesForWindow(await this.ensureHistory())
+    return { messages, from: this.historyFrom, trimmable: true }
+  }
+
+  /** One row whole, for a window that got an update of it with a subagent step it does not have. */
+  row(rowId: string): ChatMessage | null {
+    const m = this.transcript.messages.find((x) => x.id === rowId)
+    return m ? messageForWindow(m) : null
+  }
+
+  /**
+   * Where a window holding these rows (its part of the chat beginning at `from` in the file) may let
+   * go of the older ones: the index of the first row it keeps and that row's line (shared/rows.ts).
+   */
+  async cutPoint(places: RowPlace[], from: number): Promise<{ index: number; offset: number } | null> {
+    if (!places.length) return null
+    return cutAt(places, places.length - 1, from, await readLineIndex(this.transcriptPath(), from))
+  }
+
+  /**
+   * The pictures a tool call returned, for its card in the window: the rows the window gets leave
+   * them here (see forWindow.ts), and the card asks for them when it is opened.
+   */
+  async toolImages(toolUseId: string): Promise<ImageAttachment[]> {
+    await this.ensureHistory()
+    const held = findToolImages(this.transcript.messages, toolUseId)
+    if (held) return held
+    // A row the host has let go of (trimRows), or one read from further back: the pictures are in
+    // the tool's result in the transcript — the chat's own, or one of its subagents'.
+    const files = [this.transcriptPath()]
+    const subDir = path.join(projectDirFor(this.record.cwd), this.record.claudeSessionId, 'subagents')
+    try {
+      for (const f of fs.readdirSync(subDir)) if (f.endsWith('.jsonl')) files.push(path.join(subDir, f))
+    } catch {
+      /* no subagents */
+    }
+    for (const file of files) {
+      const entry = await readToolResultLine(file, toolUseId).catch(() => null)
+      const content = (entry?.message as { content?: unknown } | undefined)?.content
+      if (!Array.isArray(content)) continue
+      const block = content.find((b: { type?: string; tool_use_id?: string }) => b?.type === 'tool_result' && b.tool_use_id === toolUseId) as { content?: unknown } | undefined
+      if (block) return flattenToolResultContent(block.content).images ?? []
+    }
+    return []
+  }
+
+  /**
+   * What came before the part of the chat that is loaded — the answer to scrolling up to the top.
+   *
+   * The range before the loaded one is read and folded on its own, and the messages are handed
+   * straight to the window rather than added to the chat's own state: the running conversation is
+   * not disturbed by it, and the session host does not end up holding a whole transcript again for
+   * a chat somebody scrolled through once. They come without the pictures tools returned, like the
+   * rows a chat is opened on; a card asks for them when it is opened (toolImages).
+   */
+  async earlier(to?: number): Promise<EarlierMessages> {
+    if (this.earlierPromise) return this.earlierPromise
+    this.earlierPromise = this.readEarlier(to).finally(() => (this.earlierPromise = null))
+    return this.earlierPromise
+  }
+
+  /**
+   * `to` is where the window's part of the chat begins in the file, when it has read further back
+   * than the host holds or has let go of rows itself; without it, the part before the host's own.
+   * The host's own place is left as it is: what the window has read back is the window's, and the
+   * host keeps only the newest part of a running chat (trimRows).
+   */
+  private async readEarlier(before?: number): Promise<EarlierMessages> {
+    await this.ensureHistory()
+    const to = typeof before === 'number' && before >= 0 ? before : this.historyFrom
+    if (to <= 0) return { messages: [], more: false, from: 0 }
+    const file = this.transcriptPath()
+    const state = new TranscriptState()
+    try {
+      const { messages: entries, from } = await readSessionSlice(this.record.claudeSessionId, this.record.cwd, file, to)
+      const { stamps, recaps } = await readTranscriptIndex(file, from, to)
+      let ts = this.record.createdAt || Date.now()
+      for (const e of entries) {
+        const real = stamps.get((e as { uuid: string }).uuid)
+        if (real) ts = real
+        state.applyHistoryEntry(e as never, ts)
+        ts += 1
+      }
+      state.settleReplayOrder()
+      state.insertRecaps(recaps)
+      this.deps.log(
+        `[session ${this.id}] earlier messages: ${state.messages.length} rows from ${Math.round(from / 1048576)}–${Math.round(to / 1048576)} MB of the transcript`
+      )
+      // The pictures stay here like those of the rows the chat was opened on: the card asks for
+      // them when it is opened (toolImages reads them from the transcript).
+      return { messages: messagesForWindow(state.messages), more: from > 0, from }
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] earlier messages failed: ${(err as Error).message}`)
+      throw err
+    }
+  }
+
+  /**
+   * Read the chat's transcript file again. Only the lines written since the last read are read, so
+   * opening the rewind list costs one pass the first time and almost nothing after that.
+   */
+  private async refreshPromptIndex(): Promise<PromptIndex> {
+    this.promptIndex = await readPromptIndex(this.transcriptPath(), this.promptIndex)
+    return this.promptIndex
+  }
+
+  /** Where this chat's Claude Code transcript lives. */
+  private transcriptPath(): string {
+    return path.join(projectDirFor(this.record.cwd), `${this.record.claudeSessionId}.jsonl`)
+  }
+
+  /**
+   * Every prompt the chat has ever had, oldest first, read from its transcript. The chat's loaded
+   * history stops at the last compaction (Claude Code hands back only that), so the rewind list
+   * comes from the file itself: Claude Code's own rewind lists the whole session, and so does this.
+   */
+  async rewindTargets(): Promise<RewindTargetView[]> {
+    const index = await this.refreshPromptIndex()
+    const waiting = new Set(this.live.queuedIds ?? [])
+    this.deps.log(`[session ${this.id}] rewind list: ${index.prompts.length} prompts (${index.scanned} transcript lines read)`)
+    return index.prompts
+      .filter((p) => !waiting.has(p.id))
+      .map((p) => ({ id: p.id, text: p.text, ts: p.ts }))
+  }
+
+  /** Attach persisted subagent transcripts to their Agent tool blocks (most recent 40). */
+  private async loadSubagentHistory(baseTs: number): Promise<void> {
+    const subDir = path.join(projectDirFor(this.record.cwd), this.record.claudeSessionId, 'subagents')
+    let metas: string[]
+    try {
+      metas = fs.readdirSync(subDir).filter((f) => f.endsWith('.meta.json'))
+    } catch {
+      return
+    }
+    metas = metas
+      .map((f) => ({ f, m: fs.statSync(path.join(subDir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m)
+      .slice(0, 40)
+      .map((x) => x.f)
+    for (const f of metas) {
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(subDir, f), 'utf8')) as { toolUseId?: string }
+        const agentId = f.replace(/^agent-/, '').replace(/\.meta\.json$/, '')
+        if (!meta.toolUseId || !this.transcript.hasTool(meta.toolUseId) || this.transcript.toolChildCount(meta.toolUseId) > 0) continue
+        const subFile = path.join(subDir, f.replace(/\.meta\.json$/, '.jsonl'))
+        const msgs = await readSubagentHistory(this.record.claudeSessionId, agentId, this.record.cwd, subFile)
+        const { stamps } = await readTranscriptIndex(subFile)
+        let ts = baseTs
+        for (const m of msgs) {
+          const real = stamps.get((m as { uuid: string }).uuid)
+          if (real) ts = real
+          this.transcript.applyHistoryEntry({ ...(m as never as object), parent_tool_use_id: meta.toolUseId } as never, ts)
+          ts += 1
+        }
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] subagent history ${f}: ${(err as Error).message}`)
+      }
+    }
+  }
+
+  /**
+   * Fills the one line the sidebar shows of a chat — Claude Code's recap of it, or the last thing
+   * Claude said — from the end of its transcript, without loading its history. A chat that has not
+   * run since the session host started has nothing in its live state otherwise, so after a restart
+   * the whole sidebar would say only "not running" until each chat is opened.
+   */
+  async fillSnapshot(): Promise<boolean> {
+    if (this.live.lastRecap || this.live.lastPreview || this.historyLoaded) return false
+    const file = path.join(projectDirFor(this.record.cwd), `${this.record.claudeSessionId}.jsonl`)
+    const snap = await lastSnapshotFromFile(file).catch(() => ({}) as TranscriptSnapshot)
+    const kept = this.record.lastRecap
+    if (!kept && !snap.recap && !snap.reply) return false
+    if (this.live.lastRecap || this.live.lastPreview) return false // filled meanwhile by a real turn
+    this.live.lastRecap = kept ?? snap.recap
+    if (snap.reply) this.live.lastPreview = snap.reply
+    this.scheduleFlush()
+    return true
+  }
+
+  /** The last thing Claude said in this chat, as one line. */
+  private lastReplyText(): string | undefined {
+    for (let i = this.transcript.messages.length - 1; i >= 0; i--) {
+      const m = this.transcript.messages[i]
+      if (m.kind !== 'assistant') continue
+      const text = m.blocks
+        .filter((b): b is TextBlockView => b.type === 'text')
+        .map((b) => b.text)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (text) return text.slice(0, 140)
+    }
+    return undefined
+  }
+
+  // ------------------------------------------------------------------- recap
+
+  /** When this chat's last turn ended, or 0 if it has not answered anything in this process. */
+  get lastTurnEnd(): number {
+    return this.lastTurnEndedAt
+  }
+
+  /**
+   * Whether asking Claude Code to recap this chat right now would be cheap and would say something.
+   *
+   * Cheap is the reason for `cacheWindowMs`: the recap is answered out of the prompt cache the last
+   * turn left behind, so it is only worth asking while that cache is still there. Past it the same
+   * question means sending the whole conversation again at full price, which is what Claude Code
+   * itself refuses to do ("cache stale"). The rest are Claude Code's own conditions: a chat that is
+   * not working on anything, with enough of the user's messages to be worth summarising.
+   */
+  recapWanted(now: number, cacheWindowMs: number): boolean {
+    if (!this.q || this.recapInFlight) return false
+    if (this.live.status !== 'idle') return false
+    if (this.live.queuedCount > 0 || this.live.pendingPermissions.length > 0) return false
+    if (this.live.backgroundTasks.some((t) => t.status === 'running')) return false
+    if (!this.lastTurnEndedAt || now - this.lastTurnEndedAt > cacheWindowMs) return false
+    return this.transcript.recapWouldSaySomething(RECAP_MIN_PROMPTS, RECAP_MIN_SINCE)
+  }
+
+  /**
+   * Asks Claude Code for the recap it writes in the terminal when you come back to a chat, and puts
+   * it in the chat. The request is the CLI's own: its wording, its one turn without tools, its
+   * prompt cache — and, like in the terminal, it leaves no trace in the conversation, so the next
+   * thing the user types is answered as if the recap had never been asked for.
+   */
+  async writeRecap(): Promise<boolean> {
+    const q = this.q as (Query & SideQuestionQuery) | null
+    if (!q || this.recapInFlight) return false
+    if (typeof q.askSideQuestion !== 'function') {
+      this.deps.log(`[session ${this.id}] recap: this Claude Code build cannot answer side questions`)
+      return false
+    }
+    this.recapInFlight = true
+    const started = Date.now()
+    try {
+      const answer = await q.askSideQuestion(RECAP_PROMPT)
+      if (this.q !== q) return false
+      const text = answer?.response?.trim()
+      // A synthetic answer is Claude Code explaining that it could not answer, not a recap.
+      if (!text || answer?.synthetic) {
+        this.deps.log(`[session ${this.id}] recap: nothing came back`)
+        return false
+      }
+      const at = Date.now()
+      this.transcript.addRecap(randomUUID(), text, at)
+      this.live.lastRecap = this.transcript.latestRecap()
+      // Claude Code writes its own recaps into its transcript; this one was asked for through the
+      // side-question call, which leaves no trace there, so the chat's record keeps it instead.
+      this.record.lastRecap = this.live.lastRecap
+      this.record.lastRecapAt = at
+      this.deps.saveRecord(this.record)
+      this.scheduleFlush()
+      this.deps.log(`[session ${this.id}] recap written after ${((Date.now() - started) / 1000).toFixed(1)}s`)
+      return true
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] recap failed: ${(err as Error).message}`)
+      return false
+    } finally {
+      this.recapInFlight = false
+    }
+  }
+
+  // ------------------------------------------------------------------ process
+
+  async ensureStarted(): Promise<void> {
+    if (this.q) return
+    if (!this.startPromise) this.startPromise = this.start().finally(() => (this.startPromise = null))
+    await this.startPromise
+  }
+
+  private async start(): Promise<void> {
+    this.stopping = false
+    if (!isDirectory(this.record.cwd)) {
+      this.live.cwdMissing = true
+      this.live.error = `Working directory not found: ${this.record.cwd}. Use "Change working directory…" to point the session at the folder's new location.`
+      this.setStatus('error')
+      this.scheduleFlush()
+      throw new Error(this.live.error)
+    }
+    this.live.cwdMissing = false
+    await this.ensureHistory()
+    // Only an idle chat stays so: after an error (a provider that would not start) this start is news.
+    if (!this.quietReplace || this.live.status !== 'idle') this.setStatus('starting')
+    this.live.error = undefined
+    // A chat on another provider gets the environment its launcher sets (base URL, key, proxies);
+    // the launcher runs first, as it would in the terminal, so its bridge and checks are in place.
+    const providerId = this.record.provider && this.record.provider !== 'anthropic' ? this.record.provider : undefined
+    let launch: ProviderLaunch | undefined
+    if (providerId) {
+      try {
+        launch = await this.deps.launchProvider(providerId, this.record.model)
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] provider ${providerId}: launch failed: ${(err as Error).message}`)
+        this.live.error = `Cannot start this chat on "${providerId}": ${(err as Error).message}`
+        this.setStatus('error')
+        this.scheduleFlush()
+        throw new Error(this.live.error)
+      }
+      if (launch.warning) this.deps.log(`[session ${this.id}] provider ${providerId}: ${launch.warning}`)
+      if (launch.model !== this.record.model) {
+        this.deps.log(`[session ${this.id}] provider ${providerId}: using current model ${launch.model}`)
+        this.record.model = launch.model
+        this.live.model = launch.model
+        this.deps.saveRecord(this.record)
+      }
+    }
+    const env = launch ? launch.env : await this.deps.getEnv()
+    let resume = false
+    try {
+      const info = await getSessionInfo(this.record.claudeSessionId, { dir: this.record.cwd })
+      resume = Boolean(info)
+    } catch {
+      resume = false
+    }
+    const mode = this.record.permissionMode as SdkPermissionMode
+    const settings = this.deps.getSettings()
+    const allowed = splitList(settings.allowedTools || '')
+    const disallowed = [...new Set([...splitList(settings.disallowedTools || ''), ...(launch?.disallowedTools ?? [])])]
+    const sources = ['user', ...(settings.useProjectSettings ? ['project'] : []), ...(settings.useLocalSettings ? ['local'] : [])]
+    const options: Options = {
+      cwd: this.record.cwd,
+      model: launch ? launch.model : this.record.model || undefined,
+      permissionMode: mode,
+      allowDangerouslySkipPermissions: mode === 'bypassPermissions' ? true : undefined,
+      effort: this.record.effort || launch?.effort || undefined,
+      includePartialMessages: true,
+      enableFileCheckpointing: settings.fileCheckpointing !== false,
+      forwardSubagentText: true,
+      agentProgressSummaries: true,
+      perTaskStopAffordance: true,
+      systemPrompt: { type: 'preset', preset: 'claude_code' },
+      settingSources: sources as Options['settingSources'],
+      maxTurns: settings.maxTurns > 0 ? settings.maxTurns : undefined,
+      maxThinkingTokens: settings.maxThinkingTokens > 0 ? settings.maxThinkingTokens : undefined,
+      allowedTools: allowed.length ? allowed : undefined,
+      disallowedTools: disallowed.length ? disallowed : undefined,
+      extraArgs: launch && Object.keys(launch.extraArgs).length ? launch.extraArgs : undefined,
+      canUseTool: (toolName, input, opts) => this.handleCanUseTool(toolName, input, opts),
+      env: { ...env, CLAUDE_AGENT_SDK_CLIENT_APP: `ClaudeGUI/${this.deps.appVersion}` },
+      stderr: (data) => this.deps.log(`[claude ${this.id.slice(0, 8)} stderr] ${data.trimEnd()}`),
+      abortController: (this.abort = new AbortController())
+    }
+    const exe = this.deps.getExecutable()
+    if (exe) options.pathToClaudeCodeExecutable = exe
+    if (resume) {
+      options.resume = this.record.claudeSessionId
+      // Set by rewind(): the CLI then replays the conversation only up to that entry.
+      if (this.resumeAt) {
+        options.resumeSessionAt = this.resumeAt
+        this.deps.log(`[session ${this.id}] resuming at ${this.resumeAt} (rewind)`)
+      }
+    } else {
+      options.sessionId = this.record.claudeSessionId
+      if (this.record.title && !this.record.autoTitle) options.title = this.record.title
+    }
+    this.checkpointing = options.enableFileCheckpointing === true
+    this.queue = new AsyncQueue<SDKUserMessage>()
+    const q = query({ prompt: this.queue, options })
+    this.q = q
+    this.live.processAlive = true
+    this.live.processStartedAt = Date.now()
+    this.processCostSeen = 0
+    this.tasks.clear()
+    this.live.backgroundTasks = []
+    this.deps.log(`[session ${this.id}] started (${resume ? 'resume' : 'new'}) cwd=${this.record.cwd}${launch ? ` provider=${providerId} model=${launch.model}` : ''}`)
+    this.runLoop = this.consume(q)
+    q.initializationResult()
+      .then((init) => {
+        if (this.q !== q) return
+        this.live.slashCommands = init.commands.map(toCommandView)
+        this.live.models = init.models.map(toModelView)
+        if (this.live.status === 'starting') this.setStatus('idle')
+        this.scheduleFlush()
+        void this.refreshContextUsage('summary')
+      })
+      .catch((err) => this.deps.log(`[session ${this.id}] initialize failed: ${(err as Error).message}`))
+  }
+
+  private async consume(q: Query): Promise<void> {
+    let error: string | undefined
+    try {
+      for await (const msg of q) {
+        if (this.q !== q) break
+        this.handle(msg)
+      }
+    } catch (err) {
+      error = (err as Error)?.message || String(err)
+      if (!this.stopping) this.deps.log(`[session ${this.id}] query error: ${error}`)
+      if (this.resumeAt && /No message found with message\.uuid|Resume rejected/i.test(error)) {
+        // Claude Code refused to cut its own transcript there. Give up on the fork point instead of
+        // failing every start from now on, and say so: Claude still remembers the removed part.
+        this.resumeAt = null
+        this.transcript.addLocalNotice(
+          'The chat was rewound here, but Claude Code could not cut its own transcript at this point, so Claude may still remember the removed messages. The files were still put back if you asked for that.',
+          'warning'
+        )
+      }
+    } finally {
+      // Read before the state below is cleared: the queue, the tools in flight and the background
+      // tasks are what the note is written from. A stop has written it already.
+      const handoff = this.handoffNoted ? null : this.captureHandoff()
+      this.handoffNoted = false
+      if (this.q === q) {
+        this.q = null
+        this.queue = null
+        this.abort = null
+      }
+      // Reject anything still waiting on this process.
+      for (const [id, p] of this.pending) {
+        p.resolve({ behavior: 'deny', message: 'Session process ended.' })
+        this.pending.delete(id)
+      }
+      this.live.pendingPermissions = []
+      this.live.activeTools = []
+      this.live.processAlive = false
+      this.setActivity(null, Date.now())
+      this.setQueued([])
+      // Nothing can be waiting or being answered once the process is gone; the chat falls back to
+      // reading those prompts from the transcript, where they show as delivered but unanswered.
+      for (const id of Object.keys(this.live.promptDelivery)) this.setDelivery(id, null)
+      if (this.deliverySweep) {
+        clearTimeout(this.deliverySweep)
+        this.deliverySweep = null
+      }
+      for (const m of this.transcript.messages) {
+        if (m.kind === 'assistant' && m.streaming) {
+          m.streaming = false
+          this.transcript.changed.add(m.id)
+        }
+      }
+      if (error && !this.stopping) {
+        this.live.error = error
+        this.setStatus('error')
+      } else {
+        // Replaced under the chat: the new process follows at once (see replaceQuietly).
+        this.setStatus(this.quietReplace ? 'idle' : 'stopped')
+      }
+      if (handoff) this.writeHandoffNote(handoff)
+      this.scheduleFlush()
+      this.deps.onExit(this, this.stopping ? undefined : error)
+    }
+  }
+
+  /**
+   * What this chat still has in hand right now (see handoffNote.ts). Only work that would be lost
+   * counts: a turn being answered, background shells, monitors and subagents, a command started
+   * from the input box, a tool waiting for permission, and prompts Claude Code never answered.
+   */
+  private captureHandoff(): HandoffSnapshot {
+    const promptText = (id: string): string => {
+      const m = this.transcript.messages.find((x) => x.id === id)
+      return m?.kind === 'user' && !m.synthetic ? m.text : ''
+    }
+    const shellCommand = (id: string): string => {
+      const m = this.transcript.messages.find((x) => x.id === id)
+      const text = m && 'text' in m ? m.text : ''
+      return /<bash-input>([\s\S]*?)<\/bash-input>/.exec(text)?.[1] ?? ''
+    }
+    return {
+      stoppedAt: Date.now(),
+      tasks: [...this.tasks.values()].filter((t) => !t.ambient && (t.status === 'running' || t.status === 'pending' || t.status === 'paused')),
+      tools: this.live.activeTools.map((t) => ({ toolName: t.toolName, toolUseId: t.toolUseId, elapsedSeconds: t.elapsedSeconds })),
+      working: Object.entries(this.live.promptDelivery)
+        .filter(([, state]) => state === 'working')
+        .map(([id]) => promptText(id))
+        .filter(Boolean),
+      queued: this.live.queuedIds.map(promptText).filter(Boolean),
+      shells: (this.live.runningShellIds ?? []).map(shellCommand).filter(Boolean),
+      permissions: this.live.pendingPermissions.map((p) => ({
+        toolName: p.displayName || p.toolName,
+        detail: typeof p.input.command === 'string' ? p.input.command : typeof p.input.file_path === 'string' ? p.input.file_path : p.description
+      })),
+      turnInFlight:
+        this.live.status === 'running' ||
+        this.live.activity === 'requesting' ||
+        this.live.activity === 'compacting' ||
+        this.live.activeTools.length > 0,
+      recap: this.live.lastRecap ?? this.record.lastRecap
+    }
+  }
+
+  /**
+   * Leave the note on the record, where it survives the app being closed and waits until the chat
+   * is opened again; the input box is where it is read (Composer). A chat that was only sitting
+   * idle loses nothing and gets no note.
+   */
+  private writeHandoffNote(snap: HandoffSnapshot): void {
+    if (!hasUnfinishedWork(snap)) return
+    const note = handoffNote(snap, this.transcript.messages)
+    this.record.draft = mergeHandoffNote(this.record.draft, this.record.handoffNote, note)
+    this.record.handoffNote = note
+    this.record.handoffNoteAt = snap.stoppedAt
+    this.deps.saveRecord(this.record)
+    this.deps.log(`[session ${this.id}] unfinished work noted for the input box`)
+  }
+
+  /** The unsent text of this chat's input box, kept with the chat so a quit cannot lose it. */
+  setDraft(text: string): void {
+    const draft = text || undefined
+    if (this.record.draft === draft) return
+    this.record.draft = draft
+    this.deps.saveRecord(this.record)
+  }
+
+  /** The user has taken the note out of the box; their own words in it stay where they are. */
+  clearHandoffNote(): void {
+    if (this.record.handoffNote === undefined && this.record.handoffNoteAt === undefined) return
+    this.record.handoffNote = undefined
+    this.record.handoffNoteAt = undefined
+    this.deps.saveRecord(this.record)
+  }
+
+  async stop(graceful = true): Promise<void> {
+    // The note is written as the stop begins, not once the process has ended: a chat in the middle
+    // of work can take longer to end than a quitting session host waits for it, and those are the
+    // chats the note is for (five of 41 were still ending when the host exited on 23 Sep).
+    if (this.q && !this.handoffNoted) {
+      this.writeHandoffNote(this.captureHandoff())
+      this.handoffNoted = true
+    }
+    for (const [id, child] of this.shellRuns) {
+      this.shellStopReasons.set(id, 'stopped')
+      killShell(child)
+    }
+    const q = this.q
+    if (!q) return
+    this.stopping = true
+    this.queue?.end()
+    if (graceful) {
+      await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 4000))])
+    }
+    if (this.q === q) {
+      try {
+        q.close()
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] close failed: ${(err as Error).message}`)
+      }
+    }
+    await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 1500))])
+  }
+
+  // --------------------------------------------------------------------- rewind
+
+  /** The prompt and the chain entry the conversation would be cut back to. */
+  private rewindTarget(messageId: string): { index: number; text: string; forkAt: string | null } {
+    const idx = this.transcript.messages.findIndex((m) => m.id === messageId)
+    const target = this.transcript.messages[idx]
+    if (!target || target.kind !== 'user' || target.synthetic) throw new Error('A rewind goes back to one of your own prompts')
+    let forkAt: string | null = null
+    for (let i = idx - 1; i >= 0; i--) {
+      const m = this.transcript.messages[i]
+      if (m.kind === 'assistant' && !m.parentToolUseId) {
+        forkAt = m.chainUuid ?? null
+        break
+      }
+    }
+    return { index: idx, text: target.text, forkAt }
+  }
+
+  /**
+   * Where a rewind to this prompt goes back to, and how. A prompt the chat still shows is cut the
+   * way it always was, by restarting Claude Code at the answer before it. A prompt older than that
+   * — before the last compaction, which is all Claude Code hands back when a transcript is large —
+   * is not in the chat any more: there is nothing for Claude Code to resume at, so the transcript
+   * itself is cut, which is what Claude Code's own rewind does to its transcript.
+   */
+  private async rewindPoint(messageId: string): Promise<{ text: string; forkAt: string | null; cutAt: number; cut: boolean; reason?: string }> {
+    if (this.transcript.messages.findIndex((m) => m.id === messageId) > this.compactedUpTo()) {
+      const { text, forkAt } = this.rewindTarget(messageId)
+      return { text, forkAt, cutAt: 0, cut: false, reason: forkAt ? undefined : this.noForkReason(messageId) }
+    }
+    const index = await this.refreshPromptIndex()
+    const found = index.prompts.find((p) => p.id === messageId)
+    if (!found) throw new Error('That prompt is not in this chat any more.')
+    return {
+      text: found.text,
+      forkAt: found.forkAt,
+      cutAt: found.cutAt,
+      cut: true,
+      reason: found.forkAt ? undefined : 'This is the first prompt of the chat, so there is nothing before it to go back to.'
+    }
+  }
+
+  /**
+   * Where the conversation Claude Code itself still has begins: the last compaction in the chat.
+   * The chat shows what came before it — the whole transcript is read, compaction or not — but
+   * Claude Code cannot be resumed there, so a rewind to a prompt above this line has to cut the
+   * transcript instead of forking it, as it always has.
+   */
+  private compactedUpTo(): number {
+    for (let i = this.transcript.messages.length - 1; i >= 0; i--) {
+      const m = this.transcript.messages[i]
+      if (m.kind === 'system' && m.subtype === 'compact_boundary') return i
+    }
+    return -1
+  }
+
+  /** Why there is no point to go back to before this prompt. */
+  private noForkReason(messageId: string): string {
+    const idx = this.transcript.messages.findIndex((m) => m.id === messageId)
+    const earlier = this.transcript.messages.slice(0, idx).some((m) => m.kind === 'assistant' && !m.parentToolUseId)
+    return earlier
+      ? 'The answer before this prompt was written by an older version of the app, which did not record the point Claude Code would have to resume from.'
+      : 'This is the first prompt of the chat, so there is nothing before it to go back to.'
+  }
+
+  /** What a rewind to this prompt would do, without changing anything. */
+  async rewindPreview(messageId: string): Promise<RewindPreview> {
+    const { text, forkAt, cut, reason } = await this.rewindPoint(messageId)
+    const preview: RewindPreview = {
+      text,
+      canRewind: Boolean(forkAt),
+      reason,
+      cut,
+      files: { available: false, changed: 0, insertions: 0, deletions: 0, paths: [] }
+    }
+    if (!this.q) {
+      preview.files.reason = 'The session is not running. Start it first if the files should be put back as well.'
+      return preview
+    }
+    if (!this.checkpointing) {
+      preview.files.reason = 'This session was started without file backups, so only the conversation can be rewound.'
+      return preview
+    }
+    try {
+      const r = await this.q.rewindFiles(messageId, { dryRun: true })
+      preview.files.available = r.canRewind
+      preview.files.reason = r.canRewind ? undefined : r.error || 'Claude Code has no file backups for this prompt.'
+      preview.files.paths = r.filesChanged ?? []
+      preview.files.changed = r.filesChanged?.length ?? 0
+      preview.files.insertions = r.insertions ?? 0
+      preview.files.deletions = r.deletions ?? 0
+    } catch (err) {
+      preview.files.reason = (err as Error).message
+    }
+    return preview
+  }
+
+  /**
+   * Cut the chat back to just before one of your prompts: optionally put the files Claude changed
+   * since then back as they were, drop the messages from that prompt onwards and remember the fork
+   * point. Claude Code can only replay a cut conversation when it starts (`resumeSessionAt` is a
+   * start option, there is no request for it), so the process has to be replaced: it is stopped
+   * and, if it was running, started again at the fork point straight away, so the chat is ready
+   * to go on instead of being left "not running".
+   */
+  async rewind(messageId: string, restoreFiles: boolean): Promise<RewindResult> {
+    const point = await this.rewindPoint(messageId)
+    const forkAt = point.forkAt
+    if (!forkAt) throw new Error(point.reason ?? this.noForkReason(messageId))
+    return this.replaceQuietly(() =>
+      point.cut ? this.rewindByCutting(messageId, point, restoreFiles) : this.rewindAtForkPoint(messageId, forkAt, point.text, restoreFiles)
+    )
+  }
+
+  /**
+   * Replace Claude Code under the chat without the chat looking busy. Claude Code's own rewind
+   * leaves the chat idle, and so must this one: in between, the chat said "not running" and then
+   * "starting" for as long as the new process took to come up, and the window draws "starting" as
+   * working — the running dots, "starting the process" timed from the last prompt, a "Queue"
+   * button beside the prompt just put back in the box. Nothing is being worked on, and a prompt
+   * sent meanwhile waits for the new process anyway (send → ensureStarted), so the chat stays idle.
+   * A replacement that fails still ends as an error or "not running".
+   */
+  private async replaceQuietly<T>(work: () => Promise<T>): Promise<T> {
+    this.quietReplace = true
+    try {
+      return await work()
+    } finally {
+      this.quietReplace = false
+      if (!this.q && this.live.status === 'idle') this.setStatus('stopped')
+      this.scheduleFlush()
+    }
+  }
+
+  /** Cut the transcript itself, for a prompt older than the conversation Claude Code still has. */
+  private async rewindByCutting(
+    messageId: string,
+    point: { text: string; cutAt: number },
+    restoreFiles: boolean
+  ): Promise<RewindResult> {
+    let filesRestored = 0
+    let filesSkipped = 0
+    if (restoreFiles) {
+      if (!this.q) throw new Error('The session is not running, so the files cannot be put back.')
+      const planned = await this.q.rewindFiles(messageId, { dryRun: true }).catch(() => null)
+      const r = await this.q.rewindFiles(messageId)
+      if (!r.canRewind) throw new Error(r.error || 'The files could not be put back.')
+      filesRestored = r.filesChanged?.length ?? planned?.filesChanged?.length ?? 0
+      filesSkipped = r.skippedLinks ?? 0
+    }
+    const wasRunning = Boolean(this.q)
+    await this.stop(true)
+    if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
+    const cut = await cutTranscript(this.transcriptPath(), point.cutAt)
+    this.promptIndex = undefined
+    this.deps.log(`[session ${this.id}] transcript cut at ${point.cutAt} for a rewind to ${messageId.slice(0, 8)}: ${cut.removedBytes} bytes kept in ${path.basename(cut.backup)}`)
+    // What the chat shows is now whatever the cut transcript holds: read it as a fresh chat would.
+    this.transcript.reset()
+    this.historyPromise = null
+    this.historyLoaded = false
+    await this.loadHistory()
+    this.resumeAt = null
+    const lastPrompt = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && !m.synthetic)
+    this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
+    this.record.lastActiveAt = Date.now()
+    this.live.lastPreview = point.text.replace(/\s+/g, ' ').slice(0, 140)
+    this.live.lastRecap = undefined
+    this.live.unread = 0
+    this.deps.saveRecord(this.record)
+    this.scheduleFlush()
+    this.flush()
+    let restarted = false
+    if (wasRunning && !this.q) {
+      try {
+        await this.ensureStarted()
+        restarted = true
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] restart after rewind failed: ${(err as Error).message}`)
+      }
+    }
+    return { text: point.text, filesRestored, filesSkipped, restarted, cut: true, backup: cut.backup }
+  }
+
+  /** The way it always was: restart Claude Code at the answer before the prompt. */
+  private async rewindAtForkPoint(messageId: string, forkAt: string, text: string, restoreFiles: boolean): Promise<RewindResult> {
+    const index = this.transcript.messages.findIndex((m) => m.id === messageId)
+    let filesRestored = 0
+    let filesSkipped = 0
+    if (restoreFiles) {
+      if (!this.q) throw new Error('The session is not running, so the files cannot be put back.')
+      // The real rewind does not always report which files it touched, so count them first.
+      const planned = await this.q.rewindFiles(messageId, { dryRun: true }).catch(() => null)
+      const r = await this.q.rewindFiles(messageId)
+      if (!r.canRewind) throw new Error(r.error || 'The files could not be put back.')
+      filesRestored = r.filesChanged?.length ?? planned?.filesChanged?.length ?? 0
+      filesSkipped = r.skippedLinks ?? 0
+    }
+    const wasRunning = Boolean(this.q)
+    await this.stop(true)
+    // The old read loop must have wound down before a new process starts: its last step marks the
+    // session as stopped, and it would do that to the new process otherwise.
+    if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
+    for (const m of this.transcript.messages.slice(index)) this.transcript.removeMessage(m.id)
+    this.resumeAt = forkAt
+    const lastPrompt = [...this.transcript.messages].reverse().find((m) => m.kind === 'user' && !m.synthetic)
+    this.record.lastPromptAt = lastPrompt?.ts ?? this.record.createdAt
+    this.record.lastActiveAt = Date.now()
+    this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
+    this.live.lastRecap = undefined
+    this.live.unread = 0
+    this.deps.saveRecord(this.record)
+    this.deps.log(`[session ${this.id}] rewound to ${messageId} (files: ${restoreFiles ? filesRestored : 'kept'})`)
+    this.scheduleFlush()
+    this.flush()
+    let restarted = false
+    if (wasRunning && !this.q) {
+      try {
+        await this.ensureStarted()
+        restarted = true
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] restart after rewind failed: ${(err as Error).message}`)
+      }
+    } else if (wasRunning) {
+      this.deps.log(`[session ${this.id}] old process still winding down after rewind; not restarted`)
+    }
+    return { text, filesRestored, filesSkipped, restarted }
+  }
+
+  async interrupt(): Promise<void> {
+    for (const [id, child] of this.shellRuns) {
+      this.shellStopReasons.set(id, 'stopped')
+      killShell(child)
+    }
+    if (!this.q) return
+    try {
+      await this.q.interrupt()
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] interrupt failed: ${(err as Error).message}`)
+    }
+  }
+
+  // ------------------------------------------------------------------ shell
+
+  /**
+   * Run a shell command typed after "!", as the terminal chat does: in this chat's folder, with the
+   * environment the Claude process gets and the aliases of the user's own shell, shown in the chat
+   * as its own row. When it has finished, the command and its output are handed to Claude Code as
+   * conversation that starts no turn (`shouldQuery: false`), so Claude reads them with the next
+   * prompt. Returns the id of the row.
+   */
+  async runShell(command: string): Promise<string> {
+    const cmd = command.trim()
+    if (!cmd) throw new Error('Type a command after "!"')
+    // As with a prompt: the line appears in the chat first, and is taken out again if the chat
+    // turns out not to be startable.
+    const id = randomUUID()
+    this.markRead()
+    this.transcript.addLocalShellRun(id, `<bash-input>${cmd}</bash-input>`)
+    this.live.runningShellIds = [...(this.live.runningShellIds ?? []), id]
+    this.stateDirty = true
+    this.flush()
+    try {
+      await this.ensureStarted()
+    } catch (err) {
+      this.transcript.removeMessage(id)
+      this.live.runningShellIds = (this.live.runningShellIds ?? []).filter((x) => x !== id)
+      this.stateDirty = true
+      this.flush()
+      throw err
+    }
+    void this.finishShell(id, cmd)
+    return id
+  }
+
+  /** Stop a shell command typed after "!" that is still running. */
+  stopShell(id: string): void {
+    const child = this.shellRuns.get(id)
+    if (!child) return
+    this.shellStopReasons.set(id, 'stopped')
+    killShell(child)
+  }
+
+  private async finishShell(id: string, cmd: string): Promise<void> {
+    const out = new ShellOutput()
+    const err = new ShellOutput()
+    let code: number | null = null
+    let signal: NodeJS.Signals | null = null
+    try {
+      const env = await this.deps.getEnv()
+      const shell = env.SHELL && fs.existsSync(env.SHELL) ? env.SHELL : '/bin/zsh'
+      await new Promise<void>((resolve) => {
+        // -i -l: the aliases and functions of the user's shell work as they do in a terminal.
+        // detached: its own process group, so Stop reaches everything the command started.
+        const child = spawn(shell, ['-ilc', cmd], { cwd: this.record.cwd, env: { ...env, TERM: 'dumb' }, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+        this.shellRuns.set(id, child)
+        const timer = setTimeout(() => {
+          this.shellStopReasons.set(id, `stopped after ${SHELL_TIMEOUT_MS / 60_000} minutes`)
+          killShell(child)
+        }, SHELL_TIMEOUT_MS)
+        // A decoder per stream, so a character split between two chunks (Chinese output) stays whole.
+        child.stdout.setEncoding('utf8')
+        child.stderr.setEncoding('utf8')
+        child.stdout.on('data', (d: string) => out.add(d))
+        child.stderr.on('data', (d: string) => err.add(d))
+        child.on('error', (e) => err.add(e.message))
+        child.on('close', (c, s) => {
+          clearTimeout(timer)
+          code = c
+          signal = s
+          resolve()
+        })
+      })
+    } catch (e) {
+      err.add((e as Error).message)
+    } finally {
+      this.shellRuns.delete(id)
+    }
+    const stderr = err.text()
+    const ending = this.shellStopReasons.get(id) ?? (signal ? `ended by ${signal}` : code ? `exit code ${code}` : '')
+    this.shellStopReasons.delete(id)
+    const text = `<bash-input>${cmd}</bash-input>\n<bash-stdout>${out.text()}</bash-stdout><bash-stderr>${stderr}${ending ? `${stderr ? '\n' : ''}(${ending})` : ''}</bash-stderr>`
+    this.transcript.setLocalText(id, text)
+    this.live.runningShellIds = (this.live.runningShellIds ?? []).filter((x) => x !== id)
+    this.stateDirty = true
+    this.scheduleFlush()
+    this.deps.log(`[session ${this.id}] shell command finished${ending ? ` (${ending})` : ''}`)
+    if (!this.queue) return
+    this.shellAppendIds.add(id)
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      uuid: id as never,
+      session_id: this.record.claudeSessionId,
+      shouldQuery: false
+    })
+  }
+
+  // ------------------------------------------------------------------ input
+
+  /** Hand a prompt to Claude Code; the id it is known by in the chat is returned. */
+  /**
+   * Send a prompt. The row appears in the chat before anything else happens, because starting a
+   * chat that is not running takes real time — a chat on another provider runs its launcher first,
+   * measured at 12.5 s and once at 80 s — and during that time the prompt has already left the
+   * input box. It is shown as waiting until the process has actually taken it, and taken out again
+   * if the chat cannot be started at all.
+   */
+  async send(text: string, images?: ImageAttachment[]): Promise<string> {
+    const uuid = randomUUID()
+    // Writing into a chat means having it in front of you: anything that was waiting to be read
+    // has been read by now, so the unread mark goes when the prompt is sent. Without this a mark
+    // left from an earlier answer stays on the chat through a "/compact" and looks as if the
+    // compaction itself had left something new to read.
+    this.markRead()
+    this.transcript.addLocalUserMessage(uuid, text, images)
+    this.setDelivery(uuid, 'queued')
+    this.setQueued([...this.live.queuedIds, uuid])
+    this.record.lastActiveAt = Date.now()
+    this.record.lastPromptAt = this.record.lastActiveAt
+    this.live.lastActivityAt = this.record.lastActiveAt
+    this.live.lastPreview = text.slice(0, 120)
+    this.live.lastRecap = undefined
+    this.deps.saveRecord(this.record)
+    this.stateDirty = true
+    this.flush()
+    try {
+      await this.ensureStarted()
+      if (!this.queue) throw new Error('Session is not running')
+    } catch (err) {
+      this.unsend(uuid)
+      throw err
+    }
+    const content: unknown[] = []
+    if (text.trim()) content.push({ type: 'text', text })
+    for (const img of images ?? []) {
+      content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } })
+    }
+    const message: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: images?.length ? (content as never) : text },
+      parent_tool_use_id: null,
+      uuid: uuid as never,
+      session_id: this.record.claudeSessionId
+    }
+    // A prompt waits whenever Claude Code still owes an answer for an earlier one. Reading that
+    // from the prompts themselves rather than from the session status also covers the moments
+    // where the status is briefly idle although the CLI has already taken the next prompt.
+    const others = Object.entries(this.live.promptDelivery).some(([id, state]) => id !== uuid && (state === 'queued' || state === 'working'))
+    if (!others && this.live.status !== 'running' && this.live.status !== 'requires_action') {
+      this.setDelivery(uuid, 'working')
+      this.setQueued(this.live.queuedIds.filter((id) => id !== uuid))
+      this.setStatus('running')
+    }
+    this.queue.push(message)
+    this.scheduleFlush()
+    return uuid
+  }
+
+  /** Take a prompt back out of the chat: the chat could not be started, so it was never sent. */
+  private unsend(uuid: string): void {
+    this.transcript.removeMessage(uuid)
+    this.setDelivery(uuid, null)
+    this.setQueued(this.live.queuedIds.filter((id) => id !== uuid))
+    this.stateDirty = true
+    this.flush()
+  }
+
+  /** Remember which prompts Claude Code has not taken off its queue yet. */
+  private setQueued(ids: string[]): void {
+    this.live.queuedIds = ids
+    this.live.queuedCount = ids.length
+  }
+
+  /**
+   * Record what Claude Code has done with a prompt this app sent; `null` means the turn that took
+   * it has finished, so the chat can read its state from the transcript again.
+   */
+  private setDelivery(id: string, state: PromptDelivery | null): void {
+    const current = this.live.promptDelivery
+    if (state === null) {
+      if (!(id in current)) return
+      const next = { ...current }
+      delete next[id]
+      this.live.promptDelivery = next
+    } else {
+      if (current[id] === state) return
+      this.live.promptDelivery = { ...current, [id]: state }
+    }
+    this.stateDirty = true
+  }
+
+  /**
+   * Claude Code has just taken a prompt off its queue: it is being answered from now on, and it
+   * belongs at the end of the chat, directly above the answer that is about to be written, rather
+   * than where it was typed — which was in the middle of the answer to the previous prompt.
+   */
+  private startWorking(id: string): void {
+    this.setDelivery(id, 'working')
+    this.transcript.moveToEnd(id)
+    // Being taken is the moment the chat is working again, not the first token of the answer: a
+    // "/compact" taken from the queue never writes a token (measured: 14 s of compacting after a
+    // result that had set the chat idle), and a normal prompt waits about a second for the model.
+    if (this.live.status === 'idle' || this.live.status === 'starting') this.setStatus('running')
+    this.scheduleFlush()
+  }
+
+  /** Is there a prompt Claude Code has not answered yet? */
+  private hasUnfinishedPrompt(): boolean {
+    return Object.values(this.live.promptDelivery).some((s) => s === 'queued' || s === 'working')
+  }
+
+  /**
+   * Claude Code named the prompts the turn it is starting has taken, so they are being answered
+   * now and are no longer waiting in its queue.
+   */
+  private takePrompts(msg: { user_message_uuids?: string[]; user_message_uuid?: string }): void {
+    const ids = msg.user_message_uuids ?? (msg.user_message_uuid ? [msg.user_message_uuid] : [])
+    if (!ids.length) return
+    for (const id of ids) if (this.live.promptDelivery[id] === 'queued') this.startWorking(id)
+    const taken = new Set(ids)
+    const rest = this.live.queuedIds.filter((id) => !taken.has(id))
+    if (rest.length !== this.live.queuedIds.length) {
+      this.setQueued(rest)
+      this.stateDirty = true
+      this.scheduleFlush()
+    }
+  }
+
+  /** What Claude Code reported doing with a message it was handed (see handle()). */
+  private handleLifecycle(id: string | undefined, state: string | undefined): void {
+    if (!id) return
+    if (this.shellAppendIds.has(id)) {
+      if (state === 'started' && !Object.values(this.live.promptDelivery).includes('working')) this.shellResultExpected = true
+      if (state === 'completed' || state === 'cancelled') this.shellAppendIds.delete(id)
+      return
+    }
+    if (state === 'started') {
+      this.takePrompts({ user_message_uuids: [id] })
+    } else if (state === 'completed' && this.live.promptDelivery[id] === 'working') {
+      // Claude Code is done with a prompt that no result answered (it dropped the message): let
+      // the mark go, and with nothing else on the go the chat is idle again. After an answered
+      // prompt this frame follows its result, which has cleared the mark already.
+      this.setDelivery(id, null)
+      if (!this.hasUnfinishedPrompt() && this.live.status === 'running' && !this.live.pendingPermissions.length && !this.live.activeTools.length) this.setStatus('idle')
+      this.stateDirty = true
+      this.scheduleFlush()
+    } else if (state === 'cancelled' && (id in this.live.promptDelivery || this.live.queuedIds.includes(id))) {
+      this.setDelivery(id, null)
+      this.setQueued(this.live.queuedIds.filter((q) => q !== id))
+      this.stateDirty = true
+      this.scheduleFlush()
+    }
+  }
+
+  /**
+   * A chat that has been idle for a while has nothing waiting and nothing running, whatever the
+   * last turn said: a prompt still marked as waiting or as being answered was taken by a turn
+   * that never came (answered inside a turn Claude Code did not name, or dropped). Letting those
+   * go keeps a stale mark from sitting in the chat — and from pushing every later prompt into the
+   * queue behind it.
+   */
+  private sweepDeliveryWhenQuiet(): void {
+    if (this.deliverySweep) clearTimeout(this.deliverySweep)
+    this.deliverySweep = setTimeout(() => {
+      this.deliverySweep = null
+      if (this.live.status !== 'idle' || !Object.keys(this.live.promptDelivery).length) return
+      for (const id of Object.keys(this.live.promptDelivery)) this.setDelivery(id, null)
+      this.setQueued([])
+      this.stateDirty = true
+      this.flush()
+    }, DELIVERY_QUIET_MS)
+  }
+
+  /**
+   * Take a prompt back out of Claude Code's queue and hand its text back, so it can go into the
+   * input box for editing. Only possible while it is still waiting: once the CLI has taken it for
+   * the running turn it will answer it, and we say so rather than pretend it was withdrawn.
+   */
+  async cancelQueued(messageId: string): Promise<{ cancelled: boolean; text: string; images?: ImageAttachment[] }> {
+    const msg = this.transcript.messages.find((m) => m.id === messageId)
+    const text = msg?.kind === 'user' ? msg.text : ''
+    const images = msg?.kind === 'user' ? msg.images : undefined
+    if (!this.live.queuedIds.includes(messageId)) return { cancelled: false, text, images }
+    const q = this.q as (Query & { cancelAsyncMessage?(uuid: string): Promise<boolean> }) | null
+    let cancelled = false
+    try {
+      cancelled = q?.cancelAsyncMessage ? Boolean(await q.cancelAsyncMessage(messageId)) : false
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] taking a queued prompt back failed: ${(err as Error).message}`)
+    }
+    if (!cancelled) return { cancelled: false, text, images }
+    this.setQueued(this.live.queuedIds.filter((id) => id !== messageId))
+    this.setDelivery(messageId, null)
+    this.transcript.removeMessage(messageId)
+    this.scheduleFlush()
+    this.flush()
+    return { cancelled: true, text, images }
+  }
+
+  // ------------------------------------------------------------- permissions
+
+  private handleCanUseTool(
+    toolName: string,
+    input: Record<string, unknown>,
+    opts: Parameters<NonNullable<Options['canUseTool']>>[2]
+  ): Promise<PermissionResult> {
+    const request: PendingPermission = {
+      requestId: opts.requestId || randomUUID(),
+      toolUseId: opts.toolUseID,
+      toolName,
+      input,
+      suggestions: opts.suggestions as unknown[] | undefined,
+      title: opts.title,
+      description: opts.description,
+      displayName: opts.displayName,
+      decisionReason: opts.decisionReason,
+      blockedPath: opts.blockedPath,
+      agentId: opts.agentID,
+      createdAt: Date.now()
+    }
+    return new Promise<PermissionResult>((resolve) => {
+      this.pending.set(request.requestId, { resolve, request, suggestions: opts.suggestions })
+      this.live.pendingPermissions = [...this.live.pendingPermissions, request]
+      this.setStatus('requires_action')
+      this.scheduleFlush()
+      this.deps.onNeedsAttention(this, request)
+      opts.signal.addEventListener('abort', () => {
+        if (this.pending.has(request.requestId)) {
+          this.pending.delete(request.requestId)
+          this.live.pendingPermissions = this.live.pendingPermissions.filter((p) => p.requestId !== request.requestId)
+          if (!this.live.pendingPermissions.length && this.live.status === 'requires_action') this.setStatus('running')
+          this.scheduleFlush()
+          resolve({ behavior: 'deny', message: 'Request cancelled.' })
+        }
+      })
+    })
+  }
+
+  answerPermission(requestId: string, decision: PermissionDecision): boolean {
+    const p = this.pending.get(requestId)
+    if (!p) return false
+    this.pending.delete(requestId)
+    this.live.pendingPermissions = this.live.pendingPermissions.filter((r) => r.requestId !== requestId)
+    if (decision.behavior === 'allow') {
+      p.resolve({
+        behavior: 'allow',
+        updatedInput: decision.updatedInput ?? p.request.input,
+        updatedPermissions: decision.alwaysAllow ? p.suggestions : undefined,
+        decisionClassification: decision.alwaysAllow ? 'user_permanent' : 'user_temporary'
+      })
+    } else {
+      this.transcript.markToolDenied(p.request.toolUseId)
+      p.resolve({
+        behavior: 'deny',
+        message: decision.message || 'The user declined this action.',
+        interrupt: decision.interrupt,
+        decisionClassification: 'user_reject'
+      })
+    }
+    if (!this.live.pendingPermissions.length && this.live.status === 'requires_action') this.setStatus('running')
+    this.scheduleFlush()
+    return true
+  }
+
+  // ---------------------------------------------------------------- controls
+
+  /**
+   * Change the model, and with it possibly the provider ('codex', 'deepseek', ... or undefined for
+   * Anthropic). A provider lives in the process environment, so changing it replaces the process;
+   * the conversation is resumed in the new one. Within a provider the running process just switches.
+   * When the new provider cannot start, the chat goes back to what it ran on and stays usable.
+   */
+  async setModel(model: string, provider?: string): Promise<void> {
+    const next = provider && provider !== 'anthropic' ? provider : undefined
+    const previous = { model: this.record.model, provider: this.record.provider ?? undefined }
+    const providerChanged = previous.provider !== next
+    const wasRunning = Boolean(this.q)
+    this.record.model = model || undefined
+    this.record.provider = next
+    this.live.model = model || undefined
+    this.deps.saveRecord(this.record)
+    if (this.q && providerChanged) {
+      this.deps.log(`[session ${this.id}] provider ${previous.provider ?? 'anthropic'} -> ${next ?? 'anthropic'}: restarting`)
+      try {
+        await this.restart()
+      } catch (err) {
+        // Nothing was lost: the conversation is on disk, so run it again as it did before.
+        this.deps.log(`[session ${this.id}] switching to ${next} failed: ${(err as Error).message}`)
+        this.record.model = previous.model
+        this.record.provider = previous.provider
+        this.live.model = previous.model
+        this.live.error = undefined
+        this.deps.saveRecord(this.record)
+        if (wasRunning) {
+          try {
+            await this.ensureStarted()
+          } catch (again) {
+            this.deps.log(`[session ${this.id}] could not start ${previous.provider ?? 'anthropic'} again: ${(again as Error).message}`)
+          }
+        }
+        this.scheduleFlush()
+        throw new Error(`${(err as Error).message} The chat stayed on ${previous.model || previous.provider || 'its previous model'}.`)
+      }
+    } else if (this.q) {
+      await this.q.setModel(model || undefined)
+    }
+    this.scheduleFlush()
+  }
+
+  /** Replace the process (the conversation is resumed): needed when its environment changes. */
+  private async restart(): Promise<void> {
+    await this.replaceQuietly(async () => {
+      await this.stop(true)
+      // The old read loop must have wound down before a new process starts (see rewind()).
+      if (this.q) await Promise.race([this.runLoop, new Promise((r) => setTimeout(r, 10000))])
+      if (this.q) throw new Error('The old Claude process is still winding down; try again in a moment.')
+      await this.ensureStarted()
+    })
+  }
+
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    this.record.permissionMode = mode
+    this.live.permissionMode = mode
+    this.deps.saveRecord(this.record)
+    if (this.q) await this.q.setPermissionMode(mode as SdkPermissionMode)
+    this.scheduleFlush()
+  }
+
+  async setEffort(level: EffortLevel | ''): Promise<void> {
+    this.record.effort = level || undefined
+    this.live.effort = level || null
+    this.deps.saveRecord(this.record)
+    if (this.q) await this.q.applyFlagSettings({ effortLevel: level ? level : null } as never)
+    this.scheduleFlush()
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    if (this.q) await this.q.stopTask(taskId)
+  }
+
+  async backgroundTasks(toolUseId?: string): Promise<boolean> {
+    if (!this.q) return false
+    return this.q.backgroundTasks(toolUseId)
+  }
+
+  async getCommands(): Promise<SlashCommandView[]> {
+    if (this.live.slashCommands) return this.live.slashCommands
+    if (!this.q) return []
+    const cmds = await this.q.supportedCommands()
+    this.live.slashCommands = cmds.map(toCommandView)
+    return this.live.slashCommands
+  }
+
+  async getModels(): Promise<ModelInfoView[]> {
+    if (this.live.models) return this.live.models
+    if (!this.q) return []
+    const models = await this.q.supportedModels()
+    this.live.models = models.map(toModelView)
+    return this.live.models
+  }
+
+  private contextRefreshing = false
+
+  /**
+   * Ask the CLI for its context-window accounting. 'summary' is cheap (uses the last response's
+   * usage); 'full' re-counts every category with the token-count API.
+   */
+  async refreshContextUsage(detail: 'summary' | 'full' = 'summary'): Promise<ContextUsageView | null> {
+    if (!this.q) return this.live.contextUsage ?? null
+    if (this.contextRefreshing && detail === 'summary') return this.live.contextUsage ?? null
+    this.contextRefreshing = true
+    try {
+      const r = await this.q.getContextUsage({ detail })
+      const view: ContextUsageView = {
+        totalTokens: r.totalTokens,
+        maxTokens: r.rawMaxTokens || r.maxTokens,
+        percentage: r.percentage,
+        model: (r as { model?: string }).model ?? this.live.model,
+        categories: r.categories.map((c) => ({ name: c.name, tokens: c.tokens, color: c.color, kind: c.isDeferred ? 'deferred' : undefined })),
+        checkedAt: Date.now()
+      }
+      this.live.contextUsage = view
+      this.live.contextWindow = view.maxTokens
+      if (view.totalTokens > 0) this.live.contextTokens = view.totalTokens
+      this.scheduleFlush()
+      return view
+    } catch (err) {
+      this.deps.log(`[session ${this.id}] context usage failed: ${(err as Error).message}`)
+      return this.live.contextUsage ?? null
+    } finally {
+      this.contextRefreshing = false
+    }
+  }
+
+  /** Plan rate limits as reported by the CLI's structured /usage (experimental SDK API). */
+  async getPlanUsage(): Promise<SdkUsage | null> {
+    if (!this.q) return null
+    const q = this.q as unknown as { usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: (o: { skipBehaviors?: boolean }) => Promise<unknown> }
+    const fn = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET
+    if (typeof fn !== 'function') return null
+    return (await fn.call(this.q, { skipBehaviors: true })) as SdkUsage
+  }
+
+  /** Move the transcript (and subagent transcripts) to the project folder of a new working directory. */
+  moveTranscript(newCwd: string): void {
+    const from = projectDirFor(this.record.cwd)
+    const to = projectDirFor(newCwd)
+    if (from === to) return
+    fs.mkdirSync(to, { recursive: true })
+    const id = this.record.claudeSessionId
+    for (const name of [`${id}.jsonl`, id]) {
+      const src = path.join(from, name)
+      const dst = path.join(to, name)
+      try {
+        if (fs.existsSync(src) && !fs.existsSync(dst)) fs.renameSync(src, dst)
+      } catch (err) {
+        this.deps.log(`[session ${this.id}] move ${src} -> ${dst} failed: ${(err as Error).message}`)
+      }
+    }
+  }
+
+  markRead(): void {
+    if (this.live.unread) {
+      this.live.unread = 0
+      this.scheduleFlush()
+    }
+  }
+
+  rename(title: string): void {
+    this.record.title = title
+    this.record.autoTitle = false
+    this.deps.saveRecord(this.record)
+  }
+
+  // ---------------------------------------------------------------- handling
+
+  private handle(msg: SDKMessage): void {
+    const ts = Date.now()
+    this.live.lastActivityAt = ts
+    // Claude Code says what it does with every message it is handed: "queued", "started",
+    // "completed" or "cancelled". This is the only report of a prompt sent while a turn is running
+    // being taken: Claude Code reads such a prompt inside the running turn, together with a tool
+    // result, and no message names it until the whole turn is over.
+    const lifecycle = msg as unknown as { type: string; command_uuid?: string; state?: string }
+    if (lifecycle.type === 'command_lifecycle') {
+      this.handleLifecycle(lifecycle.command_uuid, lifecycle.state)
+      return
+    }
+    switch (msg.type) {
+      // The prompts a turn has taken are read before its first row is written into the chat:
+      // taking a prompt moves it to the end of the chat, and it has to get there before the
+      // answer it starts, not after it.
+      case 'stream_event': {
+        this.takePrompts(msg)
+        this.transcript.apply(msg, ts)
+        if (msg.event.type === 'message_start' && !msg.parent_tool_use_id && this.live.status !== 'requires_action') this.setStatus('running')
+        break
+      }
+      case 'assistant': {
+        if (!msg.parent_tool_use_id) this.takePrompts(msg)
+        this.transcript.apply(msg, ts)
+        if (!msg.parent_tool_use_id) {
+          // Claude Code could not authenticate (its login expired or could not be renewed). The
+          // window reads this to say so plainly and to offer signing in again; the next real
+          // answer in this chat clears it.
+          const failure = (msg as { error?: string }).error
+          if (failure === 'authentication_failed') {
+            const said = msg.message.content.find((b) => b.type === 'text') as { text?: string } | undefined
+            this.live.authFailedAt = ts
+            this.live.authError = said?.text?.slice(0, 300) || 'Failed to authenticate'
+          } else if (this.live.authFailedAt && !failure && msg.message.model !== '<synthetic>') {
+            this.live.authFailedAt = undefined
+            this.live.authError = undefined
+          }
+        }
+        // Only the chat's own answer makes it working. A subagent's messages come in while the
+        // chat is idle too: a background subagent keeps working after the turn that started it has
+        // ended (measured: messages from 0.2 s after that turn's result until it finishes, which in
+        // real chats was 24 and 36 minutes later), and the chat takes a new prompt at once all the
+        // while. Such a chat is "idle · tasks", from the background task Claude Code reports.
+        if (!msg.parent_tool_use_id && (this.live.status === 'idle' || this.live.status === 'starting')) this.setStatus('running')
+        const usage = msg.message.usage as unknown as Record<string, number> | undefined
+        if (usage && !msg.parent_tool_use_id) {
+          const ctx = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0)
+          if (ctx > 0) this.live.contextTokens = ctx
+        }
+        for (const b of msg.message.content) {
+          if (b.type === 'text' && !msg.parent_tool_use_id && b.text.trim()) {
+            this.lastAssistantText = b.text
+            this.turnHadText = true
+          }
+        }
+        break
+      }
+      case 'user': {
+        this.transcript.apply(msg, ts)
+        const content = msg.message.content
+        if (Array.isArray(content)) {
+          const done = new Set<string>()
+          for (const b of content as { type: string; tool_use_id?: string }[]) if (b.type === 'tool_result' && b.tool_use_id) done.add(b.tool_use_id)
+          if (done.size) this.live.activeTools = this.live.activeTools.filter((t) => !done.has(t.toolUseId))
+        }
+        break
+      }
+      case 'result': {
+        // The empty result Claude Code gives for shell output it was handed is not a turn: nothing
+        // was asked or answered, so it leaves no footer, no unread mark and no notification.
+        const named = msg as { user_message_uuids?: string[]; user_message_uuid?: string }
+        const shellOnly = this.shellResultExpected && !named.user_message_uuids?.length && !named.user_message_uuid
+        this.shellResultExpected = false
+        if (shellOnly) {
+          this.setActivity(null, ts)
+          break
+        }
+        this.transcript.apply(msg, ts)
+        // Claude Code's prompt cache holds this turn's conversation from here; a recap asked for
+        // while it lasts is answered out of it instead of being paid for again.
+        this.lastTurnEndedAt = Date.now()
+        {
+          const processCost = msg.total_cost_usd ?? 0
+          const delta = Math.max(0, processCost - this.processCostSeen)
+          this.processCostSeen = processCost
+          this.record.totalCostUsd = (this.record.totalCostUsd ?? 0) + delta
+          this.live.totalCostUsd = this.record.totalCostUsd
+        }
+        const last = this.transcript.messages[this.transcript.messages.length - 1]
+        if (last?.kind === 'result') this.live.lastTurn = last.stats
+        this.live.activeTools = []
+        this.setActivity(null, ts)
+        // The prompts that were being answered when this turn ended. The result usually names them
+        // (user_message_uuids below), but not always — a "/compact" the CLI refuses is answered
+        // without naming anything — so the ones marked as being worked on are kept as well.
+        const workingBefore = Object.entries(this.live.promptDelivery)
+          .filter(([, state]) => state === 'working')
+          .map(([id]) => id)
+        // Which prompts this turn answered: the result names them (user_message_uuids). Claude Code
+        // may fold several into one turn, so counting one off per finished turn would leave
+        // prompts marked as waiting long after they were answered.
+        const r = msg as { user_message_uuid?: string; user_message_uuids?: string[] }
+        const consumed = new Set(r.user_message_uuids ?? (r.user_message_uuid ? [r.user_message_uuid] : []))
+        const waiting = this.live.queuedIds.filter((id) => !consumed.has(id))
+        // The prompts this turn answered are finished, and so is anything it was working on:
+        // Claude Code runs one turn at a time. Prompts still waiting stay waiting: the CLI reports
+        // the moment it takes each of them (the lifecycle "started" frame, handled above), and
+        // when its queue is not empty that frame follows this result at once. The result's
+        // queued_turn_count is no use for this — measured with Claude Code 2.1.263, it is 0 even
+        // with two prompts waiting that were sent mid-turn, and counting prompts off the queue
+        // with it marked a prompt as taken (and moved it up the chat) while it was still waiting.
+        for (const id of consumed) this.setDelivery(id, null)
+        for (const [id, state] of Object.entries(this.live.promptDelivery)) {
+          if (state === 'working') this.setDelivery(id, null)
+        }
+        this.setQueued(waiting)
+        if (this.live.status !== 'requires_action') this.setStatus('idle')
+        this.sweepDeliveryWhenQuiet()
+        const preview = msg.subtype === 'success' ? msg.result : humanResultSubtype(msg.subtype, (msg as { errors?: string[] }).errors)
+        const text = (this.lastAssistantText || preview || '').trim()
+        this.live.lastPreview = text.replace(/\s+/g, ' ').slice(0, 140)
+        // A recap says where the chat stands; this answer is newer, so it is what the sidebar shows.
+        this.live.lastRecap = undefined
+        this.record.lastRecap = undefined
+        this.record.lastRecapAt = undefined
+        this.record.lastActiveAt = ts
+        this.deps.saveRecord(this.record)
+        // A turn that only compacted the context is housekeeping, not an answer: it must not mark
+        // the chat unread or raise a notification. A "/compact" the user typed counts as
+        // housekeeping even though compacting writes a summary — that summary is not an answer to
+        // read — unless a real prompt was folded into the same turn. Only the prompts the user
+        // wrote count here: the notes the CLI puts in the chat itself (its echo of the command, a
+        // reminder, a task notification) are marked as such and are not something to read either,
+        // and a compaction that was refused ("Not enough messages to compact") is housekeeping too.
+        const turnPromptIds = new Set([...consumed, ...workingBefore])
+        const prompts: string[] = []
+        for (const id of turnPromptIds) {
+          const m = this.transcript.messages.find((x) => x.id === id)
+          if (m && m.kind === 'user' && !m.synthetic) prompts.push(m.text)
+        }
+        const compactAsked = prompts.some(isCompactCommand)
+        const otherPrompts = prompts.filter((t) => !isCompactCommand(t))
+        const compactionOnly =
+          compactAsked || this.turnHadManualCompaction
+            ? otherPrompts.length === 0
+            : this.turnHadCompaction && !this.turnHadText
+        this.turnHadCompaction = false
+        this.turnHadManualCompaction = false
+        this.turnHadText = false
+        this.deps.onTurnFinished(this, this.live.lastPreview, Boolean(msg.is_error) || msg.subtype !== 'success', compactionOnly)
+        this.refreshTitle()
+        void this.refreshContextUsage('summary')
+        break
+      }
+      case 'tool_progress': {
+        this.transcript.apply(msg, ts)
+        // A background subagent's tool running while the chat is idle is not the chat at work
+        // (see 'assistant' above); the subagent itself is listed with the background tasks.
+        if (msg.parent_tool_use_id && this.live.status !== 'running' && this.live.status !== 'requires_action') break
+        const idx = this.live.activeTools.findIndex((t) => t.toolUseId === msg.tool_use_id)
+        const view = { toolUseId: msg.tool_use_id, toolName: msg.tool_name, elapsedSeconds: msg.elapsed_time_seconds, parentToolUseId: msg.parent_tool_use_id }
+        if (idx >= 0) this.live.activeTools[idx] = view
+        else this.live.activeTools = [...this.live.activeTools, view]
+        break
+      }
+      case 'rate_limit_event': {
+        const info = msg.rate_limit_info
+        this.live.rateLimit = { status: info.status, rateLimitType: info.rateLimitType, utilization: info.utilization, resetsAt: info.resetsAt }
+        this.deps.onRateLimit({ rateLimitType: info.rateLimitType, utilization: info.utilization, resetsAt: info.resetsAt, status: info.status }, ts)
+        break
+      }
+      case 'conversation_reset': {
+        this.transcript.reset()
+        this.record.conversationId = msg.new_conversation_id
+        // The conversation starts again here, so there is nothing above it to scroll up to: what
+        // came before belongs to the conversation that was cleared, not to this one.
+        this.historyFrom = 0
+        this.live.historyFrom = 0
+        this.deps.saveRecord(this.record)
+        if (this.windowHolds) this.deps.emit({ type: 'messages-reset', sessionId: this.id, messages: [] })
+        break
+      }
+      case 'system': {
+        this.handleSystem(msg as SDKMessage & { type: 'system' }, ts)
+        break
+      }
+      default:
+        break
+    }
+    this.stateDirty = true
+    this.scheduleFlush()
+  }
+
+  private handleSystem(msg: SDKMessage & { type: 'system' }, ts: number): void {
+    const s = msg as unknown as Record<string, unknown> & { subtype: string }
+    if (s.subtype === 'compact_boundary') {
+      this.turnHadCompaction = true
+      // "manual" = the user typed /compact; "auto" = the context ran full during a real turn.
+      if ((s.compact_metadata as { trigger?: string } | undefined)?.trigger === 'manual') this.turnHadManualCompaction = true
+    }
+    switch (s.subtype) {
+      case 'init': {
+        // The CLI accepted the fork point; a later restart must not truncate again.
+        this.resumeAt = null
+        this.live.model = String(s.model ?? this.live.model ?? '')
+        if (this.live.model && this.record.lastModel !== this.live.model) {
+          this.record.lastModel = this.live.model
+          this.deps.saveRecord(this.record)
+        }
+        this.live.permissionMode = s.permissionMode as PermissionMode
+        this.live.cwd = String(s.cwd ?? this.record.cwd)
+        this.live.claudeVersion = String(s.claude_code_version ?? '')
+        if (s.effort !== undefined) this.live.effort = (s.effort as EffortLevel | null) ?? null
+        const sid = String(s.session_id ?? '')
+        if (sid && sid !== this.record.claudeSessionId) {
+          this.deps.log(`[session ${this.id}] session id changed ${this.record.claudeSessionId} -> ${sid}`)
+          this.record.claudeSessionId = sid
+          this.deps.saveRecord(this.record)
+        }
+        if (this.live.status === 'starting') this.setStatus('running')
+        break
+      }
+      case 'session_state_changed': {
+        const state = s.state as 'idle' | 'running' | 'requires_action'
+        if (state === 'idle') {
+          this.live.activeTools = []
+          this.setActivity(null, ts)
+          if (this.live.status !== 'requires_action' || !this.live.pendingPermissions.length) this.setStatus(this.live.pendingPermissions.length ? 'requires_action' : 'idle')
+        } else if (state === 'running') {
+          if (!this.live.pendingPermissions.length) this.setStatus('running')
+        } else if (state === 'requires_action') {
+          this.setStatus('requires_action')
+        }
+        break
+      }
+      case 'status': {
+        this.setActivity((s.status as 'compacting' | 'requesting' | null) ?? null, ts)
+        // "compacting" or "requesting" is the CLI at work whatever the last result left the status
+        // at: a compaction queued behind a turn starts right after that turn's result, which
+        // reported nothing queued (queued_turn_count is 0 for prompts sent mid-turn) and set idle.
+        if (this.live.activity && (this.live.status === 'idle' || this.live.status === 'starting')) this.setStatus('running')
+        if (s.permissionMode) this.live.permissionMode = s.permissionMode as PermissionMode
+        break
+      }
+      case 'background_tasks_changed': {
+        const list = (s.tasks as { task_id: string; task_type: string; description: string; ambient?: boolean }[]) ?? []
+        const next = new Map<string, BackgroundTaskView>()
+        for (const t of list) {
+          const prev = this.tasks.get(t.task_id)
+          next.set(t.task_id, { ...(prev ?? { startedAt: ts }), taskId: t.task_id, taskType: t.task_type, description: t.description, ambient: t.ambient, status: prev?.status ?? 'running' })
+        }
+        this.tasks = next
+        this.live.backgroundTasks = [...next.values()]
+        break
+      }
+      case 'task_started': {
+        const id = String(s.task_id)
+        const prev = this.tasks.get(id)
+        this.tasks.set(id, {
+          ...(prev ?? {}),
+          taskId: id,
+          taskType: String(s.task_type ?? prev?.taskType ?? 'task'),
+          description: String(s.description ?? prev?.description ?? ''),
+          toolUseId: s.tool_use_id as string | undefined,
+          ambient: Boolean(s.ambient),
+          status: 'running',
+          startedAt: prev?.startedAt ?? ts
+        })
+        this.live.backgroundTasks = [...this.tasks.values()]
+        this.transcript.apply(msg, ts)
+        break
+      }
+      case 'task_progress': {
+        const id = String(s.task_id)
+        const prev = this.tasks.get(id)
+        if (prev) {
+          prev.summary = s.summary as string | undefined
+          prev.lastToolName = s.last_tool_name as string | undefined
+          prev.usage = s.usage as BackgroundTaskView['usage']
+          prev.description = String(s.description ?? prev.description)
+          this.live.backgroundTasks = [...this.tasks.values()]
+        }
+        this.transcript.apply(msg, ts)
+        break
+      }
+      case 'task_updated': {
+        const id = String(s.task_id)
+        const prev = this.tasks.get(id)
+        const patch = (s.patch ?? {}) as Partial<BackgroundTaskView> & { status?: BackgroundTaskView['status'] }
+        if (prev) {
+          if (patch.status) prev.status = patch.status
+          if (patch.description) prev.description = patch.description
+          this.live.backgroundTasks = [...this.tasks.values()]
+        }
+        break
+      }
+      case 'task_notification': {
+        const id = String(s.task_id)
+        if (this.tasks.delete(id)) this.live.backgroundTasks = [...this.tasks.values()]
+        this.transcript.apply(msg, ts)
+        break
+      }
+      case 'commands_changed': {
+        this.live.slashCommands = ((s.commands as { name: string; description: string; argumentHint: string; aliases?: string[] }[]) ?? []).map(toCommandView)
+        break
+      }
+      default:
+        this.transcript.apply(msg, ts)
+        break
+    }
+  }
+
+  private setStatus(status: SessionLiveState['status']): void {
+    if (this.live.status !== status) {
+      this.live.status = status
+      this.stateDirty = true
+    }
+  }
+
+  /**
+   * What Claude Code says it is doing (compacting the context, waiting for the model), with the
+   * time it started. It repeats "compacting" every 30 seconds while it works (measured 2026-09-13:
+   * status messages at 0 s and 30 s, the boundary at 41.8 s), so the start time is only taken when
+   * the activity actually changes — otherwise a wait would look as if it restarted every 30 s.
+   */
+  private setActivity(next: 'compacting' | 'requesting' | null, ts: number): void {
+    if (next !== this.live.activity) {
+      this.live.activitySince = next ? ts : undefined
+      this.live.activity = next
+      this.stateDirty = true
+    }
+  }
+
+  private refreshTitlePending = false
+  private refreshTitle(): void {
+    if (!this.record.autoTitle || this.refreshTitlePending) return
+    this.refreshTitlePending = true
+    setTimeout(async () => {
+      this.refreshTitlePending = false
+      try {
+        const info = await getSessionInfo(this.record.claudeSessionId, { dir: this.record.cwd })
+        const title = info?.customTitle || info?.summary
+        if (title && title !== this.record.title) {
+          this.record.title = title.slice(0, 120)
+          this.deps.saveRecord(this.record)
+          this.deps.emit({ type: 'record', record: this.record })
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 1500)
+  }
+
+  bumpUnread(): void {
+    this.live.unread += 1
+    this.stateDirty = true
+    this.scheduleFlush()
+  }
+
+  scheduleFlush(): void {
+    this.stateDirty = true
+    if (this.flushTimer) return
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null
+      this.flush()
+    }, FLUSH_MS)
+  }
+
+  flush(): void {
+    const { changed, removed, rowChanges } = this.transcript.takeChanges()
+    for (const id of removed) this.deps.emit({ type: 'message-removed', sessionId: this.id, messageId: id })
+    for (const m of changed) {
+      const { message, keeps } = updateForWindow(m, rowChanges.get(m.id))
+      this.deps.emit(keeps ? { type: 'message', sessionId: this.id, message, keeps } : { type: 'message', sessionId: this.id, message })
+    }
+    if (this.stateDirty) {
+      this.stateDirty = false
+      this.sendState()
+    }
+    if (this.transcript.messages.length > SessionRuntime.rowLimits.max && !this.trimming && Date.now() - this.trimFailedAt > 60_000) void this.trimRows()
+  }
+
+  /** The live state to the window, as STATE_QUIET_MS describes. */
+  private sendState(): void {
+    const { lastActivityAt: _at, slashCommands, models, ...rest } = this.live
+    const sig = JSON.stringify(rest)
+    const now = Date.now()
+    const same = sig === this.sentState.sig && slashCommands === this.sentState.commands && models === this.sentState.models
+    if (same && now - this.sentState.at < STATE_QUIET_MS) {
+      // Only the time of the last message moved: it goes with the next update, or in a moment.
+      if (!this.stateTimer) {
+        this.stateTimer = setTimeout(() => {
+          this.stateTimer = null
+          this.sendState()
+        }, STATE_QUIET_MS - (now - this.sentState.at))
+      }
+      return
+    }
+    if (this.stateTimer) {
+      clearTimeout(this.stateTimer)
+      this.stateTimer = null
+    }
+    const state: SessionLiveState = { ...this.live }
+    const keeps: Array<'slashCommands' | 'models'> = []
+    if (slashCommands && slashCommands === this.sentState.commands) {
+      delete state.slashCommands
+      keeps.push('slashCommands')
+    }
+    if (models && models === this.sentState.models) {
+      delete state.models
+      keeps.push('models')
+    }
+    this.sentState = { sig, at: now, commands: slashCommands, models }
+    this.deps.emit(keeps.length ? { type: 'state', state, keeps } : { type: 'state', state })
+  }
+
+  /**
+   * Let go of the oldest rows of a chat that has grown past HOST_ROW_LIMITS.max while running (see
+   * shared/rows.ts): down to the newest row, keeping about HOST_ROW_LIMITS.keep and nothing busy
+   * above it, where everything above lies before that row's first line in the transcript. The chat
+   * then begins at that line, as if it had been opened there, and scrolling up reads the rest back
+   * from the file.
+   */
+  private async trimRows(): Promise<void> {
+    const rows = this.transcript.messages
+    const limit = trimLimit(rows, SessionRuntime.rowLimits.keep, SessionRuntime.rowLimits.max, (taskId) => this.tasks.has(taskId))
+    if (limit <= 0) return
+    this.trimming = true
+    try {
+      const places = rows.slice(0, limit + 1).map(rowPlace)
+      const cut = cutAt(places, limit, this.historyFrom, await readLineIndex(this.transcriptPath(), this.historyFrom))
+      if (!cut) {
+        this.trimFailedAt = Date.now()
+        this.deps.log(`[session ${this.id}] ${rows.length} rows held; no place to let go of older ones at (held from ${this.historyFrom})`)
+        return
+      }
+      // The rows may have moved while the file was read (a reset, a rewind): cut by the row itself.
+      const idx = this.transcript.messages.findIndex((m) => m.id === places[cut.index].id)
+      if (idx !== cut.index) return
+      this.transcript.dropFirst(idx)
+      this.historyFrom = cut.offset
+      this.live.historyFrom = cut.offset
+      this.stateDirty = true
+      this.scheduleFlush()
+      this.deps.log(`[session ${this.id}] let go of ${idx} older rows; ${this.transcript.messages.length} kept, from ${Math.round(cut.offset / 1048576)} MB of the transcript on`)
+    } finally {
+      this.trimming = false
+    }
+  }
+
+}
+
+/** Sidebar-friendly wording for non-success result subtypes ("error_during_execution" → "interrupted"…). */
+function humanResultSubtype(subtype: string, errors?: string[]): string {
+  const joined = (errors ?? []).join(' ').toLowerCase()
+  if (/interrupt|abort|cancel/.test(joined)) return 'interrupted'
+  switch (subtype) {
+    case 'error_during_execution':
+      return joined ? `failed: ${(errors ?? [])[0]?.slice(0, 100)}` : 'interrupted'
+    case 'error_max_turns':
+      return 'stopped: turn limit reached'
+    case 'error_max_budget_usd':
+      return 'stopped: budget limit reached'
+    case 'error_max_structured_output_retries':
+      return 'stopped: output format retries exhausted'
+    default:
+      return subtype.replace(/^error_/, 'error: ').replace(/_/g, ' ')
+  }
+}
+
+function isDirectory(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/** Timestamp of the last prompt the user typed (top-level, non-synthetic user message). */
+export function lastPromptTime(messages: ChatMessage[]): number | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.kind === 'user' && !m.synthetic && !m.parentToolUseId && (m.text.trim() || m.images?.length)) return m.ts
+  }
+  return undefined
+}
+
+/**
+ * Cheap version of the above for sessions whose history is not loaded: scan the transcript file
+ * backwards, one chunk at a time, until a user message that is a real prompt (not a tool result
+ * or a CLI echo) is found. Long tool-heavy sessions can have many megabytes without a prompt.
+ */
+export async function lastPromptTimeFromFile(file: string, chunkBytes = 1024 * 1024, maxBytes = 96 * 1024 * 1024): Promise<number | undefined> {
+  let size: number
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    return undefined
+  }
+  const fh = await fs.promises.open(file, 'r').catch(() => null)
+  if (!fh) return undefined
+  try {
+    let end = size
+    // Partial line at the start of the previously read (later) chunk. Kept as bytes, not as text:
+    // a chunk boundary can fall inside a character, and decoding the two halves separately would
+    // lose it and leave the line unparseable.
+    let carry = Buffer.alloc(0)
+    let scanned = 0
+    while (end > 0 && scanned < maxBytes) {
+      const start = Math.max(0, end - chunkBytes)
+      const buf = Buffer.alloc(end - start)
+      await fh.read(buf, 0, end - start, start)
+      const data = carry.length ? Buffer.concat([buf, carry]) : buf
+      let body = data
+      if (start > 0) {
+        const nl = data.indexOf(0x0a)
+        if (nl === -1) {
+          // No line ended in this chunk, so the whole of it is still one unfinished line.
+          carry = data
+          scanned += end - start
+          end = start
+          continue
+        }
+        carry = data.subarray(0, nl)
+        body = data.subarray(nl + 1)
+      } else {
+        carry = Buffer.alloc(0)
+      }
+      const lines = body.toString('utf8').split('\n')
+      let best: number | undefined
+      for (const line of lines) {
+        const t = promptTimeOfLine(line)
+        if (t !== undefined && (best === undefined || t > best)) best = t
+      }
+      if (best !== undefined) return best
+      scanned += end - start
+      end = start
+    }
+    return undefined
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
+export interface TranscriptSnapshot {
+  /** Claude Code's recap of the chat, when it is the newest thing in the file. */
+  recap?: string
+  /** The last thing Claude said, when no recap follows it. */
+  reply?: string
+}
+
+/**
+ * What a chat has to say for itself without its history being loaded: Claude Code's recap when the
+ * chat ends on one, and the last thing Claude said otherwise. Read backwards from the end of the
+ * transcript like the last-prompt scan above, because what is wanted is at the end of a file that
+ * can be hundreds of megabytes, and for the same reason in whole bytes rather than chunk by chunk.
+ */
+export async function lastSnapshotFromFile(file: string, chunkBytes = 512 * 1024, maxBytes = 16 * 1024 * 1024): Promise<TranscriptSnapshot> {
+  let size: number
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    return {}
+  }
+  const fh = await fs.promises.open(file, 'r').catch(() => null)
+  if (!fh) return {}
+  try {
+    let end = size
+    let carry = Buffer.alloc(0)
+    let scanned = 0
+    while (end > 0 && scanned < maxBytes) {
+      const start = Math.max(0, end - chunkBytes)
+      const buf = Buffer.alloc(end - start)
+      await fh.read(buf, 0, end - start, start)
+      const data = carry.length ? Buffer.concat([buf, carry]) : buf
+      let body = data
+      if (start > 0) {
+        const nl = data.indexOf(0x0a)
+        if (nl === -1) {
+          carry = data
+          scanned += end - start
+          end = start
+          continue
+        }
+        carry = data.subarray(0, nl)
+        body = data.subarray(nl + 1)
+      } else {
+        carry = Buffer.alloc(0)
+      }
+      const lines = body.toString('utf8').split('\n')
+      // The last such line in the file wins, so the chunk is read from its end backwards.
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const snap = snapshotOfLine(lines[i])
+        if (snap) return snap
+      }
+      scanned += end - start
+      end = start
+    }
+    return {}
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
+/** One line of at most 140 characters, the length a preview is cut to elsewhere. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 140)
+}
+
+/** A recap or an answer of Claude's in a transcript line, if the line is either. */
+function snapshotOfLine(line: string): TranscriptSnapshot | undefined {
+  if (line.includes('"subtype":"away_summary"')) {
+    try {
+      const e = JSON.parse(line) as { content?: string }
+      const text = e.content ? recapText(e.content) : ''
+      return text ? { recap: oneLine(text) } : undefined
+    } catch {
+      // Transcripts are appended line by line, so the last line can be half written.
+      return undefined
+    }
+  }
+  if (!line.includes('"type":"assistant"')) return undefined
+  try {
+    const e = JSON.parse(line) as { type?: string; isSidechain?: boolean; message?: { content?: unknown } }
+    // A sidechain entry is a subagent's own conversation, not something said in this chat.
+    if (e.type !== 'assistant' || e.isSidechain) return undefined
+    const c = e.message?.content
+    let text = ''
+    if (typeof c === 'string') text = c
+    else if (Array.isArray(c)) for (const b of c as { type?: string; text?: string }[]) if (b.type === 'text') text += `${b.text ?? ''} `
+    return text.trim() ? { reply: oneLine(text) } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Epoch ms of a transcript line when it is a user prompt typed by the user; otherwise undefined. */
+function promptTimeOfLine(line: string): number | undefined {
+  if (!line.includes('"type":"user"') || !line.includes('"timestamp"')) return undefined
+  try {
+    const e = JSON.parse(line) as { type?: string; isMeta?: boolean; toolUseResult?: unknown; timestamp?: string; message?: { role?: string; content?: unknown } }
+    if (e.type !== 'user' || e.isMeta || e.toolUseResult) return undefined
+    const c = e.message?.content
+    let text = ''
+    let hasImage = false
+    if (typeof c === 'string') text = c
+    else if (Array.isArray(c)) {
+      let onlyResults = c.length > 0
+      for (const b of c as { type?: string; text?: string }[]) {
+        if (b.type === 'text') text += b.text ?? ''
+        if (b.type === 'image') hasImage = true
+        if (b.type !== 'tool_result') onlyResults = false
+      }
+      if (onlyResults) return undefined
+    }
+    if (!hasImage && (!text.trim() || looksSynthetic(text))) return undefined
+    const t = Date.parse(e.timestamp ?? '')
+    return Number.isNaN(t) ? undefined : t
+  } catch {
+    return undefined
+  }
+}
+
+
+function toCommandView(c: { name: string; description: string; argumentHint: string; aliases?: string[] }): SlashCommandView {
+  return { name: c.name, description: c.description, argumentHint: c.argumentHint, aliases: c.aliases }
+}
+
+function toModelView(m: { value: string; displayName: string; description: string; supportedEffortLevels?: EffortLevel[] }): ModelInfoView {
+  return { value: m.value, displayName: m.displayName, description: m.description, supportedEffortLevels: m.supportedEffortLevels }
+}
+
+export { readTranscriptIndex, projectDirFor }
+export type { TranscriptIndex, TranscriptRecap } from './transcriptIndex'

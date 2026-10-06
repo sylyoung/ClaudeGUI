@@ -1,0 +1,106 @@
+import type { AppSettings, UsageProviderId, UsageSnapshot, UsageState } from './types'
+
+/** A snapshot with no numbers yet, so the UI has something well-formed to render. */
+export function emptyUsageSnapshot(): UsageSnapshot {
+  return { fetchedAt: 0, source: 'none', windows: [] }
+}
+
+/** Both subscriptions, empty: the state before the first check has finished. */
+export function emptyUsageState(): UsageState {
+  return {
+    providers: [
+      { id: 'claude', label: 'Claude', snapshot: emptyUsageSnapshot() },
+      { id: 'codex', label: 'ChatGPT', snapshot: emptyUsageSnapshot() }
+    ]
+  }
+}
+
+export const USAGE_PROVIDER_IDS: UsageProviderId[] = ['claude', 'codex']
+
+export const DEFAULT_UPDATE_REPO = 'https://github.com/sylyoung/ClaudeGUI.git'
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  // Claude
+  claudeExecutable: '',
+  defaultModel: '',
+  defaultPermissionMode: 'default',
+  defaultEffort: '',
+  extraEnv: '',
+  maxTurns: 0,
+  maxThinkingTokens: 0,
+  allowedTools: '',
+  disallowedTools: '',
+  useProjectSettings: true,
+  useLocalSettings: true,
+  fileCheckpointing: true,
+  providers: [
+    { id: 'codex', name: 'GPT via Codex (ChatGPT subscription)', launcher: 'cc-gpt', modelsUrl: '', enabled: true },
+    { id: 'deepseek', name: 'DeepSeek', launcher: 'cc-ds', modelsUrl: 'https://api.deepseek.com/models', enabled: true },
+    { id: 'kimi', name: 'Kimi', launcher: 'cc-kimi', modelsUrl: 'https://api.moonshot.cn/v1/models', enabled: true }
+  ],
+  autoTitle: true,
+  autoRecap: true,
+  // General
+  notifications: true,
+  notifyOnTurnFinished: true,
+  notifyOnPermission: true,
+  notifyOnError: true,
+  notificationSound: true,
+  dockBadge: true,
+  resumeOnLaunch: 'none',
+  confirmQuit: true,
+  defaultCwd: '',
+  sendWithEnter: true,
+  recentDirectories: [],
+  // Appearance
+  theme: 'system',
+  accent: 'system',
+  fontSize: 14,
+  uiFont: '',
+  codeFont: '',
+  codeFontSize: 12.5,
+  density: 'comfortable',
+  showTimestamps: true,
+  thinkingDisplay: 'collapsed',
+  toolCardsExpanded: false,
+  fileSort: 'name',
+  chatMaxWidth: 980,
+  groupSessionsByFolder: false,
+  translucentSidebar: false,
+  showStatusBoard: true,
+  showTooltips: true,
+  sidebarView: 'groups',
+  sidebarSort: 'lastPrompt',
+  // Files
+  editorCommand: '',
+  showHiddenFiles: false,
+  excludePatterns: 'node_modules, .git, __pycache__, .DS_Store',
+  openFilesWith: 'system',
+  doubleClickAction: 'system',
+  autoRevealEditedFiles: false,
+  maxPreviewKB: 1500,
+  showFileSizes: true,
+  // Git
+  gitEnabled: true,
+  gitShowStatusInTree: true,
+  gitAutoRefreshSeconds: 30,
+  gitAutoFetchMinutes: 0,
+  gitPushAfterCommit: false,
+  gitSignOff: false,
+  gitCommitTemplate: '',
+  // Usage
+  usageRefreshMinutes: 5,
+  usageWarnPercent: 50,
+  usageSubscription: 'claude',
+  showUsageStatus: true,
+  showContextInSidebar: true,
+  showTaskCountsInSidebar: true,
+  // Updates
+  updateRepo: DEFAULT_UPDATE_REPO,
+  updateAutoRestart: true,
+  updateWorkDir: '',
+  // Advanced
+  toolResultMaxChars: 60000,
+  debugServer: false,
+  debugPort: 45123
+}

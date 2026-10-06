@@ -1,0 +1,967 @@
+/**
+ * Pure transcript reducer: folds Claude Agent SDK messages (live stream or replayed history)
+ * into the renderer-facing ChatMessage model. No I/O here.
+ */
+import type {
+  SDKAssistantMessage,
+  SDKMessage,
+  SDKPartialAssistantMessage,
+  SDKResultMessage,
+  SDKUserMessage,
+  SDKUserMessageReplay
+} from '@anthropic-ai/claude-agent-sdk'
+import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import type {
+  AssistantChatMessage,
+  AssistantBlockView,
+  ChatMessage,
+  ImageAttachment,
+  ResultChatMessage,
+  SystemChatMessage,
+  ToolUseBlockView,
+  TurnStats,
+  UserChatMessage
+} from '@shared/types'
+
+let toolResultMaxChars = 60_000
+
+/** Tool results longer than this are truncated in the middle (configurable in Settings → Advanced). */
+export function setToolResultMaxChars(n: number): void {
+  toolResultMaxChars = Math.max(2_000, Math.floor(n) || 60_000)
+}
+
+function now(): number {
+  return Date.now()
+}
+
+function truncateMiddle(text: string, max = toolResultMaxChars): string {
+  if (text.length <= max) return text
+  const head = text.slice(0, Math.floor(max * 0.7))
+  const tail = text.slice(-Math.floor(max * 0.3))
+  return `${head}\n\n… [${(text.length - max).toLocaleString()} characters truncated by ClaudeGUI] …\n\n${tail}`
+}
+
+type AnyBlock = { type: string; [k: string]: unknown }
+
+interface ToolRef {
+  block: ToolUseBlockView
+  /** Top-level chat message that must be re-sent when this block changes. */
+  top: ChatMessage
+  /** The subagent step (a child of `top`) the block is part of; undefined for a block of `top` itself. */
+  unit?: ChatMessage
+}
+
+/** An assistant message, the top-level row it is shown in, and the subagent step it belongs to. */
+interface AssistantRef {
+  msg: AssistantChatMessage
+  top: ChatMessage
+  /** The child of `top` that holds `msg` (msg itself for a direct child); undefined when msg is `top`. */
+  unit?: ChatMessage
+}
+
+/**
+ * What changed in one top-level row since the last flush: 'all' for a row that is new, else the
+ * ids of the subagent steps (children of its tool calls) that changed — the others are unchanged,
+ * and the window already has them.
+ */
+export type RowChanges = Set<string> | 'all'
+
+export class TranscriptState {
+  messages: ChatMessage[] = []
+  /** ids of top-level messages changed since the last flush */
+  changed = new Set<string>()
+  removed = new Set<string>()
+  /** Top-level id -> ids of the subagent steps in it that changed since the last flush. */
+  private units = new Map<string, Set<string>>()
+  /** Top-level rows added since the last flush: the window has nothing of them yet. */
+  private fresh = new Set<string>()
+
+  private topById = new Map<string, ChatMessage>()
+  private tools = new Map<string, ToolRef>()
+  /** assistant message id -> the (possibly nested) assistant message + its top-level owner */
+  private assistants = new Map<string, AssistantRef>()
+  private finalized = new Map<string, number>()
+  /** uuids of user messages the GUI itself inserted (so replays are not duplicated) */
+  private localUserUuids = new Set<string>()
+  private orphanResults = new Map<string, { content: string; images?: ImageAttachment[]; isError: boolean; structured?: unknown; ts: number }>()
+  /** ids of rows a replay hands back out of the chat's order; settleReplayOrder() puts them right */
+  private outOfOrder: string[] = []
+  private seq = 0
+
+  reset(): void {
+    this.messages = []
+    this.changed.clear()
+    this.removed.clear()
+    this.units.clear()
+    this.fresh.clear()
+    this.topById.clear()
+    this.tools.clear()
+    this.assistants.clear()
+    this.finalized.clear()
+    this.orphanResults.clear()
+    this.outOfOrder = []
+  }
+
+  takeChanges(): { changed: ChatMessage[]; removed: string[]; rowChanges: Map<string, RowChanges> } {
+    const changed: ChatMessage[] = []
+    const rowChanges = new Map<string, RowChanges>()
+    for (const id of this.changed) {
+      const m = this.topById.get(id)
+      if (!m) continue
+      changed.push(m)
+      rowChanges.set(id, this.fresh.has(id) ? 'all' : (this.units.get(id) ?? new Set()))
+    }
+    const removed = [...this.removed]
+    this.changed.clear()
+    this.removed.clear()
+    this.units.clear()
+    this.fresh.clear()
+    return { changed, removed, rowChanges }
+  }
+
+  private touch(top: ChatMessage): void {
+    this.changed.add(top.id)
+  }
+
+  /**
+   * A change to row `top`: to its own content, or — with `unit` — to one step of a subagent inside
+   * it. A subagent's run is one row holding every step it took, and a long run is megabytes, so the
+   * steps that did not change are sent to the window as references to the copy it already has.
+   */
+  private touchAt(top: ChatMessage, unit: ChatMessage | undefined): void {
+    this.changed.add(top.id)
+    if (!unit) return
+    let set = this.units.get(top.id)
+    if (!set) this.units.set(top.id, (set = new Set()))
+    set.add(unit.id)
+  }
+
+  private addTop(msg: ChatMessage): void {
+    this.messages.push(msg)
+    this.topById.set(msg.id, msg)
+    this.fresh.add(msg.id)
+    this.touch(msg)
+  }
+
+  private nextId(prefix: string): string {
+    this.seq += 1
+    return `${prefix}-${now().toString(36)}-${this.seq}`
+  }
+
+  // ---------------------------------------------------------------- user side
+
+  /** Insert the user's own prompt immediately (before the CLI echoes it back). */
+  addLocalUserMessage(uuid: string, text: string, images?: ImageAttachment[]): UserChatMessage {
+    this.localUserUuids.add(uuid)
+    const msg: UserChatMessage = { kind: 'user', id: uuid, ts: now(), text, images, parentToolUseId: null }
+    this.addTop(msg)
+    return msg
+  }
+
+  /**
+   * A shell command typed after "!": its own row in the chat, written as Claude Code writes the
+   * terminal's shell mode (`<bash-input>`, later `<bash-stdout>` / `<bash-stderr>`), and not a
+   * prompt of the user's — it asks Claude nothing.
+   */
+  addLocalShellRun(uuid: string, text: string): UserChatMessage {
+    this.localUserUuids.add(uuid)
+    const msg: UserChatMessage = { kind: 'user', id: uuid, ts: now(), text, synthetic: true, parentToolUseId: null }
+    this.addTop(msg)
+    return msg
+  }
+
+  /** Replace the text of a row the app wrote itself (a shell command whose output has come in). */
+  setLocalText(id: string, text: string): void {
+    const m = this.topById.get(id)
+    if (!m || m.kind !== 'user') return
+    m.text = text
+    this.touch(m)
+  }
+
+  /** Add a note of the app's own (not from Claude Code) to the chat. */
+  addLocalNotice(text: string, level: SystemChatMessage['level'] = 'notice'): void {
+    this.addTop({ kind: 'system', id: this.nextId('sys'), ts: now(), subtype: 'claudegui', level, text })
+  }
+
+  /**
+   * The recap Claude Code writes when you come back to a chat after being away. It goes directly
+   * above the prompt that ended the absence — where Claude Code writes it in the conversation —
+   * because under that prompt it would read as part of the answer to it.
+   */
+  addRecap(id: string, text: string, ts: number): void {
+    const msg: SystemChatMessage = { kind: 'system', id, ts, subtype: 'away_summary', level: 'notice', text: recapText(text) }
+    const at = this.pendingPromptStart()
+    if (at < 0) this.addTop(msg)
+    else this.insertTop(msg, at)
+  }
+
+  /**
+   * Recaps read back from the transcript, put where they happened: each goes after the last message
+   * written before it. A recap older than the oldest loaded message belongs to the part of the
+   * conversation a compaction replaced, which the chat no longer holds.
+   */
+  insertRecaps(recaps: Array<{ id: string; text: string; ts: number }>): void {
+    const first = this.messages[0]
+    for (const r of recaps) {
+      if (!r.text || this.topById.has(r.id)) continue
+      if (first && r.ts <= first.ts) continue
+      let at = 0
+      for (let i = this.messages.length - 1; i >= 0; i--) {
+        if (this.messages[i].ts <= r.ts) {
+          at = i + 1
+          break
+        }
+      }
+      this.insertTop({ kind: 'system', id: r.id, ts: r.ts, subtype: 'away_summary', level: 'notice', text: recapText(r.text) }, at)
+    }
+  }
+
+  /**
+   * The recap the chat ends on, if it ends on one. A recap describes where the chat stands, so it
+   * only stands for the chat while nothing has happened since; once an answer or a prompt follows
+   * it, that is the newer news.
+   */
+  latestRecap(): string | undefined {
+    const last = this.messages[this.messages.length - 1]
+    return last?.kind === 'system' && last.subtype === 'away_summary' ? last.text : undefined
+  }
+
+  /**
+   * Whether a recap of this chat would have anything to say, by Claude Code's own counts: the chat
+   * needs `minPrompts` messages the user wrote themselves, and `minSince` of them after the last
+   * recap, so coming back twice in a row does not produce the same sentence twice. A chat that ends
+   * on a recap already has one waiting to be read.
+   */
+  recapWouldSaySomething(minPrompts: number, minSince: number): boolean {
+    const last = this.messages[this.messages.length - 1]
+    if (last?.kind === 'system' && last.subtype === 'away_summary') return false
+    let prompts = 0
+    let lastRecap = -1
+    for (let i = 0; i < this.messages.length; i++) {
+      const m = this.messages[i]
+      if (m.kind === 'user' && !m.synthetic) prompts += 1
+      else if (m.kind === 'system' && m.subtype === 'away_summary') lastRecap = i
+    }
+    if (prompts < minPrompts) return false
+    if (lastRecap < 0) return true
+    let since = 0
+    for (let i = lastRecap + 1; i < this.messages.length; i++) {
+      const m = this.messages[i]
+      if (m.kind === 'user' && !m.synthetic) since += 1
+    }
+    return since >= minSince
+  }
+
+  /** Where the run of prompts still waiting for an answer begins, or -1 when the chat ends otherwise. */
+  private pendingPromptStart(): number {
+    const last = this.messages[this.messages.length - 1]
+    if (!last || last.kind !== 'user' || last.synthetic) return -1
+    let i = this.messages.length - 1
+    while (i > 0 && this.messages[i - 1].kind === 'user') i -= 1
+    return i
+  }
+
+  private insertTop(msg: ChatMessage, index: number): void {
+    this.messages.splice(index, 0, msg)
+    this.topById.set(msg.id, msg)
+    this.fresh.add(msg.id)
+    this.touch(msg)
+  }
+
+  /** Where a row belongs by its own time: after the last row that is not younger than it. */
+  private indexForTime(ts: number): number {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i].ts <= ts) return i + 1
+    }
+    return 0
+  }
+
+  /**
+   * Puts the rows that did not arrive in the chat's own order where their time places them, once
+   * the whole history has been read. Claude Code hands a compaction's summary back first, before
+   * the messages the compaction kept, so the notice that carries it would otherwise stand above
+   * the answer that came before the compaction instead of where the chat was actually cut.
+   */
+  settleReplayOrder(): void {
+    for (const id of this.outOfOrder) {
+      const idx = this.messages.findIndex((m) => m.id === id)
+      if (idx < 0) continue
+      const [msg] = this.messages.splice(idx, 1)
+      this.insertTop(msg, this.indexForTime(msg.ts))
+    }
+    this.outOfOrder = []
+  }
+
+  removeMessage(id: string): void {
+    const idx = this.messages.findIndex((m) => m.id === id)
+    if (idx < 0) return
+    this.messages.splice(idx, 1)
+    this.topById.delete(id)
+    this.changed.delete(id)
+    this.units.delete(id)
+    this.fresh.delete(id)
+    this.removed.add(id)
+  }
+
+  /**
+   * Move a prompt to the end of the chat, where it is sent as removed and added again so the
+   * renderer re-appends it. A prompt typed while Claude was still answering an earlier one is
+   * written into the chat where it was typed, in the middle of that earlier answer, but Claude
+   * Code only reads it when it takes it off its queue — after everything the earlier turn wrote.
+   * Putting it at the end there keeps the prompt directly above the answer it starts, and matches
+   * the order the history shows when the chat is read back from Claude Code's own record.
+   */
+  moveToEnd(id: string): void {
+    const idx = this.messages.findIndex((m) => m.id === id)
+    if (idx < 0 || idx === this.messages.length - 1) return
+    const [msg] = this.messages.splice(idx, 1)
+    this.messages.push(msg)
+    this.removed.add(id)
+    this.changed.add(id)
+    this.fresh.add(id)
+  }
+
+  /**
+   * Let go of the oldest `count` rows, and of everything that leads into them (their tool calls,
+   * their messages). They stay in Claude Code's transcript, from where scrolling up reads them again;
+   * see SessionRuntime.trimRows for which rows may go.
+   */
+  dropFirst(count: number): void {
+    if (count <= 0) return
+    const gone = new Set(this.messages.splice(0, count).map((m) => m.id))
+    for (const id of gone) {
+      this.topById.delete(id)
+      this.changed.delete(id)
+      this.units.delete(id)
+      this.fresh.delete(id)
+    }
+    for (const [id, ref] of this.tools) if (gone.has(ref.top.id)) this.tools.delete(id)
+    for (const [id, e] of this.assistants) {
+      if (!gone.has(e.top.id)) continue
+      this.assistants.delete(id)
+      this.finalized.delete(id)
+    }
+    for (const [key, id] of this.streamingByParent) if (!this.assistants.has(id)) this.streamingByParent.delete(key)
+    this.outOfOrder = this.outOfOrder.filter((id) => !gone.has(id))
+  }
+
+  // ---------------------------------------------------------------- SDK entry
+
+  apply(sdk: SDKMessage, ts: number = now()): void {
+    switch (sdk.type) {
+      case 'stream_event':
+        this.applyStreamEvent(sdk, ts)
+        break
+      case 'assistant':
+        this.applyAssistant(sdk, ts)
+        break
+      case 'user':
+        this.applyUser(sdk, ts)
+        break
+      case 'result':
+        this.applyResult(sdk, ts)
+        break
+      case 'system':
+        this.applySystem(sdk as SDKMessage & { type: 'system' }, ts)
+        break
+      case 'tool_progress':
+        this.markToolRunning(sdk.tool_use_id)
+        break
+      default:
+        break
+    }
+  }
+
+  // ------------------------------------------------------------- streaming
+
+  private streamingByParent = new Map<string, string>()
+
+  private applyStreamEvent(sdk: SDKPartialAssistantMessage, ts: number): void {
+    const ev = sdk.event as BetaRawMessageStreamEvent
+    const parentKey = sdk.parent_tool_use_id ?? '__main__'
+    switch (ev.type) {
+      case 'message_start': {
+        const m = ev.message
+        const entry = this.getOrCreateAssistant(m.id, sdk.parent_tool_use_id, ts, m.model)
+        entry.msg.streaming = true
+        this.streamingByParent.set(parentKey, m.id)
+        this.touchAt(entry.top, entry.unit)
+        break
+      }
+      case 'content_block_start': {
+        const entry = this.currentAssistant(parentKey, ts, sdk.parent_tool_use_id)
+        if (!entry) return
+        const cb = ev.content_block as unknown as AnyBlock
+        const block = this.viewBlockFromApi(cb, ts, true)
+        if (!block) return
+        // Keep block positions aligned with the API index when possible.
+        while (entry.msg.blocks.length < ev.index) entry.msg.blocks.push({ type: 'text', text: '' })
+        entry.msg.blocks[ev.index] = block
+        if (block.type === 'tool_use') this.tools.set(block.id, { block, top: entry.top, unit: entry.unit })
+        this.touchAt(entry.top, entry.unit)
+        break
+      }
+      case 'content_block_delta': {
+        const entry = this.currentAssistant(parentKey, ts, sdk.parent_tool_use_id)
+        if (!entry) return
+        const block = entry.msg.blocks[ev.index]
+        if (!block) return
+        const delta = ev.delta as unknown as AnyBlock
+        if (delta.type === 'text_delta' && block.type === 'text') block.text += String(delta.text ?? '')
+        else if (delta.type === 'thinking_delta' && block.type === 'thinking') block.text += String(delta.thinking ?? '')
+        else if (delta.type === 'input_json_delta' && block.type === 'tool_use') block.partialJson = (block.partialJson ?? '') + String(delta.partial_json ?? '')
+        else return
+        this.touchAt(entry.top, entry.unit)
+        break
+      }
+      case 'content_block_stop': {
+        const entry = this.currentAssistant(parentKey, ts, sdk.parent_tool_use_id)
+        if (!entry) return
+        const block = entry.msg.blocks[ev.index]
+        if (block?.type === 'tool_use' && block.status === 'streaming') {
+          block.input = safeParseJson(block.partialJson) ?? block.input
+          block.partialJson = undefined
+          block.status = 'pending'
+          this.touchAt(entry.top, entry.unit)
+        }
+        break
+      }
+      case 'message_delta': {
+        const entry = this.currentAssistant(parentKey, ts, sdk.parent_tool_use_id)
+        if (!entry) return
+        const d = ev.delta as unknown as AnyBlock
+        if (d.stop_reason) entry.msg.stopReason = String(d.stop_reason)
+        break
+      }
+      case 'message_stop': {
+        const entry = this.currentAssistant(parentKey, ts, sdk.parent_tool_use_id)
+        if (!entry) return
+        entry.msg.streaming = false
+        this.streamingByParent.delete(parentKey)
+        this.touchAt(entry.top, entry.unit)
+        break
+      }
+    }
+  }
+
+  private currentAssistant(parentKey: string, ts: number, parentToolUseId: string | null): AssistantRef {
+    const id = this.streamingByParent.get(parentKey)
+    if (id) {
+      const e = this.assistants.get(id)
+      if (e) return e
+    }
+    // Stream started without message_start (should not happen) — create a placeholder.
+    const entry = this.getOrCreateAssistant(this.nextId('asst'), parentToolUseId, ts)
+    this.streamingByParent.set(parentKey, entry.msg.id)
+    return entry
+  }
+
+  // ------------------------------------------------------------- assistant
+
+  private getOrCreateAssistant(id: string, parentToolUseId: string | null, ts: number, model?: string): AssistantRef {
+    const existing = this.assistants.get(id)
+    if (existing) {
+      if (model && !existing.msg.model) existing.msg.model = model
+      return existing
+    }
+    const msg: AssistantChatMessage = {
+      kind: 'assistant',
+      id,
+      ts,
+      model,
+      blocks: [],
+      streaming: true,
+      parentToolUseId
+    }
+    let top: ChatMessage
+    let unit: ChatMessage | undefined
+    if (parentToolUseId) {
+      const ref = this.tools.get(parentToolUseId)
+      if (ref) {
+        ref.block.children = ref.block.children ?? []
+        ref.block.children.push(msg)
+        top = ref.top
+        unit = ref.unit ?? msg
+        this.touchAt(top, unit)
+      } else {
+        this.addTop(msg)
+        top = msg
+      }
+    } else {
+      this.addTop(msg)
+      top = msg
+    }
+    const entry: AssistantRef = { msg, top, unit }
+    this.assistants.set(id, entry)
+    return entry
+  }
+
+  private viewBlockFromApi(cb: AnyBlock, ts: number, streaming: boolean): AssistantBlockView | null {
+    switch (cb.type) {
+      case 'text':
+        return { type: 'text', text: String(cb.text ?? '') }
+      case 'thinking':
+        return { type: 'thinking', text: String(cb.thinking ?? '') }
+      case 'redacted_thinking':
+        return { type: 'thinking', text: '' }
+      case 'tool_use':
+      case 'server_tool_use':
+      case 'mcp_tool_use': {
+        const input = (cb.input && typeof cb.input === 'object' ? (cb.input as Record<string, unknown>) : {}) as Record<string, unknown>
+        return {
+          type: 'tool_use',
+          id: String(cb.id),
+          name: String(cb.name ?? 'tool'),
+          input,
+          partialJson: streaming ? '' : undefined,
+          status: streaming ? 'streaming' : 'pending',
+          startedAt: ts
+        }
+      }
+      default:
+        return null
+    }
+  }
+
+  private applyAssistant(sdk: SDKAssistantMessage, ts: number): void {
+    const api = sdk.message
+    const entry = this.getOrCreateAssistant(api.id, sdk.parent_tool_use_id, ts, api.model)
+    const msg = entry.msg
+    // Keep the chain uuid: a rewind resumes the CLI at one of these entries.
+    if ((sdk as { uuid?: string }).uuid) msg.chainUuid = (sdk as { uuid?: string }).uuid
+    if (sdk.subagent_type) msg.subagentType = sdk.subagent_type
+    if (sdk.error) msg.error = sdk.error
+    if (sdk.aborted) {
+      msg.aborted = true
+      msg.streaming = false
+    }
+    if (api.stop_reason) {
+      msg.stopReason = api.stop_reason
+    }
+    const content = Array.isArray(api.content) ? (api.content as unknown as AnyBlock[]) : []
+    let pos = this.finalized.get(api.id) ?? 0
+    for (const cb of content) {
+      const view = this.viewBlockFromApi(cb, ts, false)
+      if (!view) continue
+      if (view.type === 'tool_use') {
+        const ref = this.tools.get(view.id)
+        if (ref && ref.block !== view) {
+          ref.block.input = view.input
+          ref.block.name = view.name
+          ref.block.partialJson = undefined
+          if (ref.block.status === 'streaming') ref.block.status = 'pending'
+          // make sure position accounting stays aligned
+          const idx = msg.blocks.indexOf(ref.block)
+          pos = Math.max(pos, idx + 1)
+          continue
+        }
+      }
+      const existing = msg.blocks[pos]
+      if (existing && existing.type === view.type) {
+        if (view.type === 'tool_use' && existing.type === 'tool_use') {
+          existing.input = view.input
+          existing.name = view.name
+          existing.partialJson = undefined
+          if (existing.status === 'streaming') existing.status = 'pending'
+          this.tools.set(existing.id, { block: existing, top: entry.top, unit: entry.unit })
+        } else if (view.type === 'text' && existing.type === 'text') {
+          existing.text = view.text
+        } else if (view.type === 'thinking' && existing.type === 'thinking') {
+          existing.text = view.text
+        }
+      } else {
+        msg.blocks.splice(pos, 0, view)
+        if (view.type === 'tool_use') this.tools.set(view.id, { block: view, top: entry.top, unit: entry.unit })
+      }
+      pos += 1
+    }
+    this.finalized.set(api.id, pos)
+    // Finalised messages replayed from history are never "streaming".
+    if (!sdk.parent_tool_use_id && (api.stop_reason || msg.aborted)) msg.streaming = false
+    // Attach orphan tool results that arrived before their tool_use (history edge case).
+    for (const b of msg.blocks) {
+      if (b.type === 'tool_use' && !b.result && this.orphanResults.has(b.id)) {
+        const r = this.orphanResults.get(b.id)!
+        this.orphanResults.delete(b.id)
+        b.result = { content: r.content, images: r.images, isError: r.isError, structured: r.structured, receivedAt: r.ts }
+        b.status = r.isError ? 'error' : 'done'
+      }
+    }
+    this.touchAt(entry.top, entry.unit)
+  }
+
+  // ------------------------------------------------------------------ user
+
+  private applyUser(sdk: SDKUserMessage | SDKUserMessageReplay, ts: number): void {
+    const uuid = (sdk as SDKUserMessageReplay).uuid
+    if (uuid && this.localUserUuids.has(uuid)) {
+      const local = this.topById.get(uuid)
+      if (local && local.kind === 'user') {
+        // Keep our optimistic copy; nothing else to do.
+      }
+      return
+    }
+    const message = sdk.message as { role: string; content: string | AnyBlock[] }
+    const content = message.content
+    const parentToolUseId = sdk.parent_tool_use_id
+    if (typeof content === 'string') {
+      if (!parentToolUseId && this.absorbHousekeeping(sdk, content, uuid, ts)) return
+      this.addUserText(uuid ?? this.nextId('user'), content, [], ts, parentToolUseId, Boolean(sdk.isSynthetic))
+      return
+    }
+    if (!Array.isArray(content)) return
+    const texts: string[] = []
+    const images: ImageAttachment[] = []
+    for (const block of content) {
+      if (block.type === 'tool_result') {
+        this.attachToolResult(String(block.tool_use_id), block, Boolean(block.is_error), sdk.tool_use_result, ts)
+      } else if (block.type === 'text') {
+        texts.push(String(block.text ?? ''))
+      } else if (block.type === 'image') {
+        const img = imageFromBlock(block)
+        if (img) images.push(img)
+      } else if (block.type === 'document') {
+        texts.push('[document attachment]')
+      }
+    }
+    if (texts.length || images.length) {
+      const text = texts.join('\n\n')
+      if (!parentToolUseId && !images.length && this.absorbHousekeeping(sdk, text, uuid, ts)) return
+      this.addUserText(uuid ?? this.nextId('user'), text, images, ts, parentToolUseId, Boolean(sdk.isSynthetic))
+    }
+  }
+
+  /**
+   * Notes the CLI writes about its own housekeeping rather than about the conversation, which
+   * would otherwise become unnamed extra rows under the prompt that caused them. Compacting the
+   * context writes two of them: the summary Claude keeps, which is folded into the "Context
+   * compacted" row so it can still be read, and a one-word note that it compacted, which is
+   * dropped because that row already says so. Returns true when the message was taken care of.
+   */
+  private absorbHousekeeping(sdk: SDKUserMessage | SDKUserMessageReplay, text: string, uuid: string | undefined, ts: number): boolean {
+    const t = text.trimStart()
+    const isSummary =
+      (sdk as { isCompactSummary?: boolean }).isCompactSummary === true || COMPACT_SUMMARY_START.test(t)
+    if (isSummary) {
+      const boundary = this.recentCompactBoundary()
+      if (boundary) {
+        boundary.data = { ...(boundary.data ?? {}), summary: text }
+        this.touch(boundary)
+        return true
+      }
+      // Replayed history: the CLI does not repeat its compaction notice, so the chat gets one of
+      // its own instead of a wall of text that looks like a prompt the user typed. It goes in by
+      // its own time, not at the end: Claude Code hands the summary back before the messages the
+      // compaction kept, so appending it would put the notice — and the whole summary with it —
+      // above the answer that came before the compaction instead of where the chat was cut.
+      const id = uuid ?? this.nextId('sys')
+      if (!this.topById.has(id)) {
+        this.addTop({ kind: 'system', id, ts, subtype: 'compact_boundary', level: 'notice', text: 'Context compacted', data: { summary: text } })
+        this.outOfOrder.push(id)
+      }
+      return true
+    }
+    const stdout = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/.exec(t.trim())
+    if (stdout && (!stdout[1].trim() || /^compacted\b/i.test(stdout[1].trim()))) return true
+    return false
+  }
+
+  /** The "Context compacted" row this message belongs to: one of the last few rows in the chat. */
+  private recentCompactBoundary(): SystemChatMessage | undefined {
+    for (let i = this.messages.length - 1; i >= 0 && i >= this.messages.length - 3; i--) {
+      const m = this.messages[i]
+      if (m.kind === 'system' && m.subtype === 'compact_boundary') return m
+    }
+    return undefined
+  }
+
+  private addUserText(id: string, text: string, images: ImageAttachment[], ts: number, parentToolUseId: string | null, synthetic: boolean): void {
+    const msg: UserChatMessage = {
+      kind: 'user',
+      id,
+      ts,
+      text,
+      images: images.length ? images : undefined,
+      synthetic: synthetic || looksSynthetic(text),
+      parentToolUseId
+    }
+    if (parentToolUseId) {
+      const ref = this.tools.get(parentToolUseId)
+      if (ref) {
+        ref.block.children = ref.block.children ?? []
+        ref.block.children.push(msg)
+        this.touchAt(ref.top, ref.unit ?? msg)
+        return
+      }
+    }
+    if (this.topById.has(id)) return
+    this.addTop(msg)
+  }
+
+  private attachToolResult(toolUseId: string, block: AnyBlock, isError: boolean, structured: unknown, ts: number): void {
+    const { text, images } = flattenToolResultContent(block.content)
+    const ref = this.tools.get(toolUseId)
+    if (!ref) {
+      this.orphanResults.set(toolUseId, { content: truncateMiddle(text), images, isError, structured, ts })
+      return
+    }
+    ref.block.result = { content: truncateMiddle(text), images, isError, structured, receivedAt: ts }
+    ref.block.status = isError ? 'error' : 'done'
+    if (isError && /permission|denied|rejected|user declined/i.test(text.slice(0, 200))) ref.block.status = 'denied'
+    this.touchAt(ref.top, ref.unit)
+  }
+
+  hasTool(toolUseId: string): boolean {
+    return this.tools.has(toolUseId)
+  }
+
+  toolChildCount(toolUseId: string): number {
+    return this.tools.get(toolUseId)?.block.children?.length ?? 0
+  }
+
+  markToolRunning(toolUseId: string): void {
+    const ref = this.tools.get(toolUseId)
+    if (!ref) return
+    if (ref.block.status === 'pending' || ref.block.status === 'streaming') {
+      ref.block.status = 'running'
+      this.touchAt(ref.top, ref.unit)
+    }
+  }
+
+  markToolDenied(toolUseId: string): void {
+    const ref = this.tools.get(toolUseId)
+    if (!ref) return
+    ref.block.status = 'denied'
+    this.touchAt(ref.top, ref.unit)
+  }
+
+  updateTask(
+    toolUseId: string | undefined,
+    patch: Partial<NonNullable<ToolUseBlockView['task']>> & { taskId: string }
+  ): void {
+    if (!toolUseId) return
+    const ref = this.tools.get(toolUseId)
+    if (!ref) return
+    ref.block.task = { ...(ref.block.task ?? { taskId: patch.taskId }), ...patch }
+    this.touchAt(ref.top, ref.unit)
+  }
+
+  // ---------------------------------------------------------------- result
+
+  private applyResult(sdk: SDKResultMessage, ts: number): void {
+    // Any message still marked streaming is finished now.
+    for (const e of this.assistants.values()) {
+      if (e.msg.streaming) {
+        e.msg.streaming = false
+        this.touchAt(e.top, e.unit)
+      }
+    }
+    this.streamingByParent.clear()
+    const usage = (sdk.usage ?? {}) as unknown as Record<string, number>
+    const stats: TurnStats = {
+      costUsd: sdk.total_cost_usd ?? 0,
+      durationMs: sdk.duration_ms ?? 0,
+      numTurns: sdk.num_turns ?? 0,
+      inputTokens: usage.input_tokens ?? 0,
+      outputTokens: usage.output_tokens ?? 0,
+      cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+      cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+      isError: Boolean(sdk.is_error),
+      endedAt: ts
+    }
+    let errorText: string | undefined
+    if (sdk.subtype !== 'success') {
+      const errs = (sdk.errors ?? []).filter((e) => !e.startsWith('[ede_diagnostic]'))
+      const last = this.messages[this.messages.length - 1]
+      const interrupted = last?.kind === 'user' && last.text.startsWith('[Request interrupted')
+      errorText = errs.length ? `${sdk.subtype}: ${errs.join('; ')}` : interrupted ? 'interrupted' : sdk.subtype
+    } else if (sdk.is_error) {
+      errorText = sdk.result
+    }
+    const msg: ResultChatMessage = { kind: 'result', id: sdk.uuid || this.nextId('result'), ts, stats, errorText }
+    this.addTop(msg)
+  }
+
+  // ---------------------------------------------------------------- system
+
+  private applySystem(sdk: SDKMessage & { type: 'system' }, ts: number): void {
+    const s = sdk as unknown as Record<string, unknown> & { subtype: string; uuid?: string }
+    const id = (s.uuid as string) || this.nextId('sys')
+    const add = (level: SystemChatMessage['level'], text: string, data?: Record<string, unknown>) => {
+      const m: SystemChatMessage = { kind: 'system', id, ts, subtype: s.subtype, level, text, data }
+      this.addTop(m)
+    }
+    switch (s.subtype) {
+      case 'compact_boundary': {
+        const meta = (s.compact_metadata ?? {}) as Record<string, unknown>
+        const pre = Number(meta.pre_tokens ?? 0)
+        const post = meta.post_tokens != null ? Number(meta.post_tokens) : undefined
+        add('notice', `Context compacted (${meta.trigger ?? 'auto'}): ${pre.toLocaleString()} tokens${post != null ? ` → ${post.toLocaleString()}` : ''}`)
+        break
+      }
+      case 'informational': {
+        const level = (s.level as string) === 'warning' ? 'warning' : (s.level as string) === 'suggestion' ? 'suggestion' : 'notice'
+        add(level, String(s.content ?? ''))
+        break
+      }
+      case 'notification':
+        add(s.priority === 'high' || s.priority === 'immediate' ? 'warning' : 'notice', String(s.text ?? ''))
+        break
+      case 'local_command_output':
+        add('info', String(s.content ?? ''), { markdown: true })
+        break
+      case 'api_retry':
+        add('warning', `API retry ${s.attempt}/${s.max_retries} (${s.error ?? 'error'}${s.error_status ? ' ' + s.error_status : ''}), waiting ${Math.round(Number(s.retry_delay_ms ?? 0) / 1000)}s`)
+        break
+      case 'permission_denied': {
+        const toolUseId = String(s.tool_use_id ?? '')
+        this.markToolDenied(toolUseId)
+        add('notice', `Permission denied for ${s.tool_name}${s.decision_reason ? ': ' + s.decision_reason : ''}`)
+        break
+      }
+      case 'away_summary':
+        // Claude Code's note about what happened while you were away. It is written for the chat,
+        // not about the machinery, so it takes the room of a message rather than a notice line.
+        this.addRecap(id, String(s.content ?? ''), ts)
+        break
+      case 'model_refusal_fallback':
+        add('warning', String(s.content ?? `Model refusal: retried on ${s.fallback_model}`))
+        break
+      case 'model_refusal_no_fallback':
+        add('warning', String(s.content ?? 'The model refused this request.'))
+        break
+      case 'task_started':
+        this.updateTask(s.tool_use_id as string | undefined, {
+          taskId: String(s.task_id),
+          description: s.description as string,
+          subagentType: s.subagent_type as string | undefined,
+          status: 'running',
+          isBackgrounded: Boolean(s.is_backgrounded)
+        })
+        break
+      case 'task_progress':
+        this.updateTask(s.tool_use_id as string | undefined, {
+          taskId: String(s.task_id),
+          description: s.description as string,
+          subagentType: s.subagent_type as string | undefined,
+          summary: s.summary as string | undefined,
+          lastToolName: s.last_tool_name as string | undefined,
+          usage: s.usage as ToolUseBlockView['task'] extends infer T ? (T extends { usage?: infer U } ? U : never) : never
+        })
+        break
+      case 'task_notification':
+        this.updateTask(s.tool_use_id as string | undefined, {
+          taskId: String(s.task_id),
+          status: s.status as 'completed' | 'failed' | 'stopped',
+          summary: s.summary as string | undefined,
+          outputFile: s.output_file as string | undefined,
+          usage: s.usage as ToolUseBlockView['task'] extends infer T ? (T extends { usage?: infer U } ? U : never) : never
+        })
+        break
+      default:
+        break
+    }
+  }
+
+  // --------------------------------------------------------------- history
+
+  /** Feed a replayed history entry (from getSessionMessages) through the same reducer. */
+  applyHistoryEntry(entry: { type: string; uuid: string; message: unknown; parent_tool_use_id: string | null }, ts: number): void {
+    if (entry.type === 'assistant') {
+      const api = entry.message as SDKAssistantMessage['message']
+      if (!api || typeof api !== 'object') return
+      this.applyAssistant(
+        { type: 'assistant', message: api, parent_tool_use_id: entry.parent_tool_use_id, uuid: entry.uuid as never, session_id: '' },
+        ts
+      )
+      // history entries are complete
+      const e = this.assistants.get(api.id)
+      if (e) e.msg.streaming = false
+    } else if (entry.type === 'user') {
+      const m = entry.message as { role?: string; content?: unknown }
+      if (!m || typeof m !== 'object') return
+      this.applyUser(
+        {
+          type: 'user',
+          message: m as never,
+          parent_tool_use_id: entry.parent_tool_use_id,
+          uuid: entry.uuid as never,
+          session_id: '',
+          isReplay: true
+        },
+        ts
+      )
+    } else if (entry.type === 'system') {
+      const m = entry.message as Record<string, unknown> | undefined
+      const subtype = (m?.subtype as string) || (entry as Record<string, unknown>).subtype
+      if (subtype) {
+        this.applySystem({ ...(m ?? {}), ...(entry as object), type: 'system', subtype } as never, ts)
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------------ helpers
+
+function safeParseJson(text: string | undefined): Record<string, unknown> | null {
+  if (!text) return null
+  try {
+    const v = JSON.parse(text)
+    return v && typeof v === 'object' ? v : null
+  } catch {
+    return null
+  }
+}
+
+function imageFromBlock(block: AnyBlock): ImageAttachment | null {
+  const src = block.source as { type?: string; media_type?: string; data?: string; url?: string } | undefined
+  if (!src) return null
+  if (src.type === 'base64' && src.data) return { mediaType: src.media_type ?? 'image/png', data: src.data }
+  return null
+}
+
+export function flattenToolResultContent(content: unknown): { text: string; images?: ImageAttachment[] } {
+  if (content == null) return { text: '' }
+  if (typeof content === 'string') return { text: content }
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    const images: ImageAttachment[] = []
+    for (const c of content as AnyBlock[]) {
+      if (!c || typeof c !== 'object') continue
+      if (c.type === 'text') parts.push(String(c.text ?? ''))
+      else if (c.type === 'image') {
+        const img = imageFromBlock(c)
+        if (img) images.push(img)
+      } else if (c.type === 'resource_link') parts.push(`[resource] ${c.uri}`)
+      else parts.push(JSON.stringify(c))
+    }
+    return { text: parts.join('\n'), images: images.length ? images : undefined }
+  }
+  return { text: JSON.stringify(content) }
+}
+
+/** Opening words of the summary Claude keeps when the context is compacted. */
+const COMPACT_SUMMARY_START = /^This session is being continued from a previous conversation/
+
+/** The CLI appends "(disable recaps in /config)" to the first recaps of a session; this app has no
+ * /config to point at, so that note comes off. */
+export function recapText(content: string): string {
+  return content.replace(/\s*\(disable recaps in \/config\)\s*$/, '').trim()
+}
+
+/** Text of a user-role message that the CLI generated itself (task notifications, command echoes…). */
+export function looksSynthetic(text: string): boolean {
+  const t = text.trimStart()
+  return (
+    t.startsWith('<task-notification>') ||
+    t.startsWith('<system-reminder>') ||
+    t.startsWith('<local-command-') ||
+    t.startsWith('[Request interrupted') ||
+    t.startsWith('<command-name>') ||
+    t.startsWith('<bash-input>') ||
+    t.startsWith('<bash-stdout>') ||
+    t.startsWith('<monitor-notification>') ||
+    t.startsWith('<background-task') ||
+    t.startsWith('<cron-')
+  )
+}

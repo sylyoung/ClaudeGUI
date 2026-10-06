@@ -1,0 +1,679 @@
+import { randomUUID } from 'crypto'
+import fs from 'fs'
+import path from 'path'
+import { compareRecords, lastPromptOf } from '@shared/util'
+import type { RowPlace } from '@shared/rows'
+import { nextGroupColor } from '@shared/colors'
+import { deleteSession, listSessions } from '@anthropic-ai/claude-agent-sdk'
+import type {
+  AppSettings,
+  ChatMessage,
+  EarlierMessages,
+  CliSessionSummary,
+  HistoryPage,
+  EffortLevel,
+  ImageAttachment,
+  PendingPermission,
+  PermissionDecision,
+  PermissionMode,
+  RewindPreview,
+  RewindResult,
+  RewindTargetView,
+  SessionEvent,
+  SessionLiveState,
+  SdkUsage,
+  SessionGroup,
+  SessionMove,
+  SessionRecord
+} from '@shared/types'
+import type { SessionsStore } from '../../main/store'
+import { SessionRuntime, lastPromptTimeFromFile, projectDirFor, type RateLimitEventInfo } from './SessionRuntime'
+import { branchChat } from './branch'
+import { messagesForWindow } from './forWindow'
+import type { ProviderLaunch } from '../providers/ProviderService'
+
+export type NotifyKind = 'turn' | 'permission' | 'error'
+
+/** How long a chat has been left alone before Claude Code recaps it — the CLI's own delay. */
+const RECAP_AFTER_MS = 180_000
+/**
+ * …and how long after a turn the recap is still worth asking for. Claude Code stops at nine tenths
+ * of the life of the prompt cache the turn filled, because past it the recap costs a second copy of
+ * the whole conversation instead of a cache read. The app cannot see how long that cache was given,
+ * so it assumes the shortest one and keeps well inside it.
+ */
+const RECAP_CACHE_MS = 270_000
+/** How often the away check runs. The window it is looking for is 90 seconds wide. */
+const RECAP_POLL_MS = 15_000
+/**
+ * …and how long a chat that finished a turn out of sight is left alone before it is recapped.
+ * Waiting for the window to lose focus is not enough by itself: with many chats open the user is
+ * looking at one of them and away from the other thirty-six, and those are the ones whose recap
+ * they want to find in the sidebar. Long enough that a follow-up prompt typed straight away comes
+ * first, and well inside the prompt cache the finished turn left behind.
+ */
+const RECAP_QUIET_MS = 45_000
+
+export interface ManagerHost {
+  getEnv(): Promise<Record<string, string>>
+  launchProvider(providerId: string, model?: string): Promise<ProviderLaunch>
+  getExecutable(): string | undefined
+  getSettings(): AppSettings
+  appVersion: string
+  broadcast(event: SessionEvent): void
+  notify(opts: { sessionId: string; title: string; body: string; kind: NotifyKind }): void
+  isWindowFocused(): boolean
+  updateBadge(count: number): void
+  onRateLimit(info: RateLimitEventInfo, ts: number): void
+  onTurnFinished(): void
+  log(...args: unknown[]): void
+}
+
+export class SessionManager {
+  private runtimes = new Map<string, SessionRuntime>()
+  activeSessionId: string | undefined
+  /** Runs while the user is away from the window, looking for chats worth recapping. */
+  private recapTimer: NodeJS.Timeout | null = null
+  /** Chats that finished a turn out of sight and are waiting to be quiet enough to recap, by id. */
+  private recapSoon = new Map<string, NodeJS.Timeout>()
+
+  constructor(
+    private store: SessionsStore,
+    private host: ManagerHost
+  ) {
+    for (const record of store.listSessions()) this.runtimes.set(record.id, this.makeRuntime(record))
+    this.activeSessionId = store.getActiveSession()
+    this.assignMissingGroupColors()
+    void this.backfillPromptTimes().then(() => this.fillSnapshots())
+  }
+
+  /** Groups created before 1.0.4 have no colour yet: give each one the next free palette colour. */
+  private assignMissingGroupColors(): void {
+    const groups = this.store.listGroups()
+    if (!groups.some((g) => !g.color)) return
+    const next: SessionGroup[] = []
+    for (const g of groups) next.push(g.color ? g : { ...g, color: nextGroupColor(next) })
+    this.store.setGroups(next)
+  }
+
+  /**
+   * Records created before 1.0.4 have no `lastPromptAt`: read it from the tail of their transcript
+   * (one file at a time, in the background) so the "recent" order is right from the first launch.
+   */
+  private async backfillPromptTimes(): Promise<void> {
+    let changed = 0
+    for (const rt of this.runtimes.values()) {
+      if (rt.record.lastPromptAt) continue
+      const file = path.join(projectDirFor(rt.record.cwd), `${rt.record.claudeSessionId}.jsonl`)
+      const t = await lastPromptTimeFromFile(file).catch(() => undefined)
+      if (rt.record.lastPromptAt) continue // set meanwhile by send() / history
+      rt.record.lastPromptAt = t ?? lastPromptOf(rt.record)
+      this.store.upsertSession(rt.record)
+      this.host.broadcast({ type: 'record', record: rt.record })
+      changed += 1
+    }
+    if (changed) this.host.log(`[manager] backfilled last-prompt time for ${changed} session(s)`)
+  }
+
+  /**
+   * Gives every chat the line the sidebar shows of it — its recap, or the last thing Claude said —
+   * read from the end of its transcript. Live state does not survive a session host restart, so
+   * without this the sidebar has nothing to say about any chat that has not run since.
+   */
+  private async fillSnapshots(): Promise<void> {
+    let filled = 0
+    for (const rt of this.runtimes.values()) {
+      if (await rt.fillSnapshot().catch(() => false)) filled += 1
+    }
+    if (filled) this.host.log(`[manager] read the last line of ${filled} chat(s) from their transcripts`)
+  }
+
+  private makeRuntime(record: SessionRecord): SessionRuntime {
+    return new SessionRuntime(record, {
+      getEnv: () => this.host.getEnv(),
+      launchProvider: (id, model) => this.host.launchProvider(id, model),
+      getExecutable: () => this.host.getExecutable(),
+      getSettings: () => this.host.getSettings(),
+      appVersion: this.host.appVersion,
+      onRateLimit: (info, ts) => this.host.onRateLimit(info, ts),
+      emit: (e) => this.host.broadcast(e),
+      saveRecord: (r) => {
+        this.store.upsertSession(r)
+        this.host.broadcast({ type: 'record', record: r })
+      },
+      onTurnFinished: (rt, preview, isError, silent) => {
+        const foreground = this.host.isWindowFocused() && this.activeSessionId === rt.id
+        if (!foreground && !silent) {
+          rt.bumpUnread()
+          this.host.notify({ sessionId: rt.id, title: `${isError ? '⚠️ ' : '✅ '}${rt.record.title}`, body: preview || (isError ? 'Turn ended with an error' : 'Finished'), kind: isError ? 'error' : 'turn' })
+        }
+        if (!foreground && !silent) this.recapWhenQuiet(rt)
+        this.refreshBadge()
+        this.host.onTurnFinished()
+      },
+      onNeedsAttention: (rt, request: PendingPermission) => {
+        const foreground = this.host.isWindowFocused() && this.activeSessionId === rt.id
+        if (!foreground) {
+          this.host.notify({ sessionId: rt.id, title: `🔔 ${rt.record.title}`, body: request.title || `${request.toolName} needs your approval`, kind: 'permission' })
+        }
+        this.refreshBadge()
+      },
+      onExit: (rt, error) => {
+        if (error) this.host.notify({ sessionId: rt.id, title: `⛔ ${rt.record.title}`, body: `Process exited: ${error.slice(0, 160)}`, kind: 'error' })
+        this.refreshBadge()
+      },
+      log: (...args) => this.host.log(...args)
+    })
+  }
+
+  refreshBadge(): void {
+    let count = 0
+    for (const rt of this.runtimes.values()) {
+      if (rt.live.status === 'requires_action' || rt.live.unread > 0) count += 1
+    }
+    this.host.updateBadge(count)
+  }
+
+  // ---------------------------------------------------------------- queries
+
+  list(): { records: SessionRecord[]; live: SessionLiveState[]; groups: SessionGroup[] } {
+    const records: SessionRecord[] = []
+    const live: SessionLiveState[] = []
+    for (const rt of this.runtimes.values()) {
+      if (!rt.isAlive) rt.live.cwdMissing = !dirExists(rt.record.cwd)
+      records.push(rt.record)
+      live.push(rt.live)
+    }
+    records.sort(compareRecords)
+    return { records, live, groups: this.store.listGroups() }
+  }
+
+  // ------------------------------------------------------------------ groups
+
+  private broadcastGroups(): void {
+    this.host.broadcast({ type: 'groups', groups: this.store.listGroups() })
+  }
+
+  createGroup(name: string, color?: string): SessionGroup {
+    const groups = this.store.listGroups()
+    const group: SessionGroup = {
+      id: randomUUID(),
+      name: name.trim() || 'New group',
+      order: (groups[groups.length - 1]?.order ?? -1) + 1,
+      color: color && /^#[0-9a-f]{6}$/i.test(color) ? color : nextGroupColor(groups)
+    }
+    this.store.setGroups([...groups, group])
+    this.broadcastGroups()
+    return group
+  }
+
+  setGroupColor(id: string, color: string): void {
+    if (!/^#[0-9a-f]{6}$/i.test(color)) throw new Error(`Not a colour: ${color}`)
+    this.store.setGroups(this.store.listGroups().map((g) => (g.id === id ? { ...g, color } : g)))
+    this.broadcastGroups()
+  }
+
+  renameGroup(id: string, name: string): void {
+    const groups = this.store.listGroups().map((g) => (g.id === id ? { ...g, name: name.trim() || g.name } : g))
+    this.store.setGroups(groups)
+    this.broadcastGroups()
+  }
+
+  setGroupCollapsed(id: string, collapsed: boolean): void {
+    this.store.setGroups(this.store.listGroups().map((g) => (g.id === id ? { ...g, collapsed } : g)))
+    this.broadcastGroups()
+  }
+
+  /** Reorder a group: put it before `beforeId` (or last when omitted). */
+  moveGroup(id: string, beforeId?: string): void {
+    const groups = this.store.listGroups()
+    const moving = groups.find((g) => g.id === id)
+    if (!moving) return
+    const rest = groups.filter((g) => g.id !== id)
+    const idx = beforeId ? rest.findIndex((g) => g.id === beforeId) : -1
+    rest.splice(idx >= 0 ? idx : rest.length, 0, moving)
+    this.store.setGroups(rest.map((g, i) => ({ ...g, order: i })))
+    this.broadcastGroups()
+  }
+
+  /** Delete a group; its sessions become ungrouped (nothing is removed). */
+  deleteGroup(id: string): void {
+    this.store.setGroups(this.store.listGroups().filter((g) => g.id !== id).map((g, i) => ({ ...g, order: i })))
+    for (const rt of this.runtimes.values()) {
+      if (rt.record.groupId === id) {
+        rt.record.groupId = undefined
+        this.store.upsertSession(rt.record)
+        this.host.broadcast({ type: 'record', record: rt.record })
+      }
+    }
+    this.broadcastGroups()
+  }
+
+  /** Place a session inside a group at a position (drag & drop, "Move to group"). */
+  moveSession(id: string, move: SessionMove): void {
+    const rt = this.get(id)
+    const target = move.groupId || undefined
+    // Chats working in the same folder belong to one group, so they move together — except when a
+    // chat is only being put in another place among them.
+    const siblings = [...this.runtimes.values()].filter((r) => r.id !== id && r.record.cwd === rt.record.cwd).sort((a, b) => compareRecords(a.record, b.record))
+    const moving = move.beforeId && siblings.some((r) => r.id === move.beforeId) ? [rt] : [rt, ...siblings]
+    const movingIds = new Set(moving.map((r) => r.id))
+    const members = [...this.runtimes.values()].filter((r) => !movingIds.has(r.id) && (r.record.groupId || undefined) === target).sort((a, b) => compareRecords(a.record, b.record))
+    const idx = move.beforeId ? members.findIndex((r) => r.id === move.beforeId) : -1
+    members.splice(idx >= 0 ? idx : members.length, 0, ...moving)
+    for (const r of moving) r.record.groupId = target
+    members.forEach((r, i) => {
+      r.record.order = i
+    })
+    this.store.replaceSessions((list) => list.map((s) => this.runtimes.get(s.id)?.record ?? s))
+    for (const r of members) this.host.broadcast({ type: 'record', record: r.record })
+  }
+
+  /** Point a session at another folder (e.g. after the folder was renamed) and move its transcript along. */
+  async relocate(id: string, newCwd: string): Promise<SessionRecord> {
+    const rt = this.get(id)
+    const cwd = newCwd.replace(/\/+$/, '') || '/'
+    if (!dirExists(cwd)) throw new Error(`Directory does not exist: ${cwd}`)
+    if (rt.isAlive) await rt.stop(true)
+    rt.moveTranscript(cwd)
+    rt.record.cwd = cwd
+    rt.live.cwd = cwd
+    rt.live.cwdMissing = false
+    rt.live.error = undefined
+    if (rt.live.status === 'error') rt.live.status = 'stopped'
+    this.store.upsertSession(rt.record)
+    this.host.broadcast({ type: 'record', record: rt.record })
+    this.host.broadcast({ type: 'state', state: { ...rt.live } })
+    this.host.log(`[manager] relocated ${id} -> ${cwd}`)
+    return rt.record
+  }
+
+  get(id: string): SessionRuntime {
+    const rt = this.runtimes.get(id)
+    if (!rt) throw new Error(`Unknown session ${id}`)
+    return rt
+  }
+
+  async history(id: string): Promise<ChatMessage[]> {
+    const rt = this.get(id)
+    rt.windowHolds = true
+    return messagesForWindow(await rt.ensureHistory())
+  }
+
+  /** The rows a chat is opened on and where in its transcript they begin (windows of 1.0.55 on). */
+  historyPage(id: string): Promise<HistoryPage> {
+    const rt = this.get(id)
+    rt.windowHolds = true
+    return rt.historyPage()
+  }
+
+  /** A window attached: it holds no chat's rows until it asks for them. */
+  windowAttached(): void {
+    for (const rt of this.runtimes.values()) rt.windowHolds = false
+  }
+
+  /** One row whole: for a window that got an update of it naming a subagent step it lacks. */
+  row(id: string, rowId: string): ChatMessage | null {
+    return this.get(id).row(rowId)
+  }
+
+  /** Where a window may let go of a chat's older rows (shared/rows.ts). */
+  cutPoint(id: string, places: RowPlace[], from: number): Promise<{ index: number; offset: number } | null> {
+    return this.get(id).cutPoint(places, from)
+  }
+
+  /** The pictures one tool call returned, which the rows handed to the window leave out. */
+  async toolImages(id: string, toolUseId: string): Promise<ImageAttachment[]> {
+    return this.get(id).toolImages(toolUseId)
+  }
+
+  /** The part of a chat before the part that is loaded, read when the user scrolls to the top. */
+  async earlier(id: string, to?: number): Promise<EarlierMessages> {
+    return this.get(id).earlier(to)
+  }
+
+  // --------------------------------------------------------------- mutations
+
+  /** New sessions go to the top of their group; the position only changes by drag & drop. */
+  private topOrder(groupId: string | undefined): number {
+    let min = 0
+    for (const rt of this.runtimes.values()) {
+      if ((rt.record.groupId || undefined) === (groupId || undefined) && typeof rt.record.order === 'number' && rt.record.order < min) min = rt.record.order
+    }
+    return min - 1
+  }
+
+  create(opts: { cwd: string; title?: string; model?: string; provider?: string; permissionMode?: PermissionMode; effort?: EffortLevel | ''; groupId?: string }): SessionRecord {
+    const cwd = opts.cwd.replace(/\/+$/, '') || '/'
+    if (!dirExists(cwd)) throw new Error(`Directory does not exist: ${cwd}`)
+    const id = randomUUID()
+    const now = Date.now()
+    const settings = this.host.getSettings()
+    // Chats that work in the same folder belong to the same group, unless a group was chosen.
+    const groupId = opts.groupId && this.store.listGroups().some((g) => g.id === opts.groupId) ? opts.groupId : this.folderGroup(cwd)
+    const record: SessionRecord = {
+      id,
+      claudeSessionId: id,
+      title: opts.title?.trim() || 'New session',
+      autoTitle: settings.autoTitle !== false && !opts.title?.trim(),
+      cwd,
+      model: opts.model || (opts.provider ? undefined : settings.defaultModel || undefined),
+      provider: opts.provider && opts.provider !== 'anthropic' ? opts.provider : undefined,
+      permissionMode: opts.permissionMode || settings.defaultPermissionMode || 'default',
+      effort: (opts.effort ?? settings.defaultEffort) || undefined,
+      createdAt: now,
+      lastActiveAt: now,
+      source: 'gui',
+      groupId,
+      order: this.topOrder(groupId)
+    }
+    this.store.upsertSession(record)
+    const rt = this.makeRuntime(record)
+    this.runtimes.set(id, rt)
+    this.host.broadcast({ type: 'record', record })
+    this.host.broadcast({ type: 'state', state: rt.live })
+    return record
+  }
+
+  async importCli(claudeSessionId: string, cwd: string, title?: string): Promise<SessionRecord> {
+    const existing = [...this.runtimes.values()].find((r) => r.record.claudeSessionId === claudeSessionId)
+    if (existing) return existing.record
+    const now = Date.now()
+    const settings = this.host.getSettings()
+    const record: SessionRecord = {
+      id: claudeSessionId,
+      claudeSessionId,
+      title: title?.trim() || 'Imported session',
+      autoTitle: settings.autoTitle !== false && !title?.trim(),
+      cwd,
+      permissionMode: settings.defaultPermissionMode || 'default',
+      model: settings.defaultModel || undefined,
+      effort: settings.defaultEffort || undefined,
+      createdAt: now,
+      lastActiveAt: now,
+      source: 'cli-import',
+      groupId: this.folderGroup(cwd),
+      order: this.topOrder(this.folderGroup(cwd))
+    }
+    this.store.upsertSession(record)
+    const rt = this.makeRuntime(record)
+    this.runtimes.set(record.id, rt)
+    this.host.broadcast({ type: 'record', record })
+    this.host.broadcast({ type: 'state', state: rt.live })
+    return record
+  }
+
+  /** The group of the chats already working in this folder, if any. */
+  private folderGroup(cwd: string): string | undefined {
+    return [...this.runtimes.values()].find((r) => r.record.cwd === cwd && r.record.groupId)?.record.groupId
+  }
+
+  /**
+   * Copy a chat into a new one exactly as Claude Code's /branch does (see branch.ts): the new chat
+   * gets the conversation Claude Code would resume the chat with, under its own id and the name
+   * /branch gives it, in the same folder and group, and the original chat is left exactly as it was —
+   * its process, its queue and its transcript file are not touched.
+   */
+  async fork(id: string, name?: string): Promise<SessionRecord> {
+    const src = this.get(id).record
+    const file = path.join(projectDirFor(src.cwd), `${src.claudeSessionId}.jsonl`)
+    const started = Date.now()
+    // Claude's own API or a bridge to another one: one of Claude Code's resume filters depends on it.
+    const branch = await branchChat({ file, sessionId: src.claudeSessionId, name, firstParty: !src.provider })
+    const sessionId = branch.sessionId
+    const title = branch.title
+    const now = Date.now()
+    const record: SessionRecord = {
+      id: sessionId,
+      claudeSessionId: sessionId,
+      title,
+      autoTitle: false,
+      cwd: src.cwd,
+      model: src.model,
+      provider: src.provider,
+      permissionMode: src.permissionMode,
+      effort: src.effort,
+      createdAt: now,
+      lastActiveAt: now,
+      lastPromptAt: src.lastPromptAt,
+      lastModel: src.lastModel,
+      source: 'gui',
+      groupId: src.groupId,
+      // Directly below the original in a group ordered by hand.
+      order: typeof src.order === 'number' ? src.order + 0.5 : undefined
+    }
+    this.store.upsertSession(record)
+    const rt = this.makeRuntime(record)
+    this.runtimes.set(record.id, rt)
+    this.host.broadcast({ type: 'record', record })
+    this.host.broadcast({ type: 'state', state: rt.live })
+    this.host.log(`[manager] forked ${id} -> ${sessionId}: ${branch.messages} messages in ${now - started} ms`)
+    return record
+  }
+
+  async runShell(id: string, command: string): Promise<string> {
+    const runId = await this.get(id).runShell(command)
+    this.refreshBadge()
+    return runId
+  }
+
+  stopShell(id: string, runId: string): void {
+    this.get(id).stopShell(runId)
+  }
+
+  async listCli(dir?: string, limit = 300): Promise<CliSessionSummary[]> {
+    const known = new Set([...this.runtimes.values()].map((r) => r.record.claudeSessionId))
+    const infos = await listSessions({ dir: dir || undefined, limit, includeProgrammatic: false })
+    return infos.map((i) => ({
+      sessionId: i.sessionId,
+      summary: i.customTitle || i.summary || i.firstPrompt || '(untitled)',
+      lastModified: i.lastModified,
+      createdAt: i.createdAt,
+      cwd: i.cwd,
+      firstPrompt: i.firstPrompt,
+      customTitle: i.customTitle,
+      fileSize: i.fileSize,
+      gitBranch: i.gitBranch,
+      alreadyImported: known.has(i.sessionId)
+    }))
+  }
+
+  async send(id: string, text: string, images?: ImageAttachment[]): Promise<string> {
+    const rt = this.get(id)
+    const messageId = await rt.send(text, images)
+    this.refreshBadge()
+    return messageId
+  }
+
+  async start(id: string): Promise<void> {
+    await this.get(id).ensureStarted()
+  }
+
+  async stop(id: string): Promise<void> {
+    await this.get(id).stop(true)
+    this.refreshBadge()
+  }
+
+  cancelQueued(id: string, messageId: string): Promise<{ cancelled: boolean; text: string; images?: ImageAttachment[] }> {
+    return this.get(id).cancelQueued(messageId)
+  }
+
+  /** Every prompt of a chat, read from its transcript, for the rewind list. */
+  rewindTargets(id: string): Promise<RewindTargetView[]> {
+    return this.get(id).rewindTargets()
+  }
+
+  rewindPreview(id: string, messageId: string): Promise<RewindPreview> {
+    return this.get(id).rewindPreview(messageId)
+  }
+
+  async rewind(id: string, messageId: string, restoreFiles: boolean): Promise<RewindResult> {
+    const result = await this.get(id).rewind(messageId, restoreFiles)
+    this.refreshBadge()
+    return result
+  }
+
+  async interrupt(id: string): Promise<void> {
+    await this.get(id).interrupt()
+  }
+
+  answerPermission(id: string, requestId: string, decision: PermissionDecision): boolean {
+    const ok = this.get(id).answerPermission(requestId, decision)
+    this.refreshBadge()
+    return ok
+  }
+
+  rename(id: string, title: string): void {
+    const rt = this.get(id)
+    rt.rename(title)
+    this.host.broadcast({ type: 'record', record: rt.record })
+  }
+
+  setPinned(id: string, pinned: boolean): void {
+    const rt = this.get(id)
+    rt.record.pinned = pinned
+    this.store.upsertSession(rt.record)
+    this.host.broadcast({ type: 'record', record: rt.record })
+  }
+
+  setArchived(id: string, archived: boolean): void {
+    const rt = this.get(id)
+    rt.record.archived = archived
+    this.store.upsertSession(rt.record)
+    this.host.broadcast({ type: 'record', record: rt.record })
+  }
+
+  async remove(id: string, deleteTranscript: boolean): Promise<void> {
+    const rt = this.runtimes.get(id)
+    if (!rt) return
+    await rt.stop(false)
+    const pending = this.recapSoon.get(id)
+    if (pending) clearTimeout(pending)
+    this.recapSoon.delete(id)
+    this.runtimes.delete(id)
+    this.store.removeSession(id)
+    if (deleteTranscript) {
+      try {
+        await deleteSession(rt.record.claudeSessionId, { dir: rt.record.cwd })
+      } catch (err) {
+        this.host.log(`[manager] deleteSession failed: ${(err as Error).message}`)
+      }
+    }
+    if (this.activeSessionId === id) this.setActive(undefined)
+    this.host.broadcast({ type: 'record-removed', id })
+    this.refreshBadge()
+  }
+
+  /**
+   * The window was left or come back to. Claude Code writes its recap when the terminal it is in
+   * loses focus and the session is then left alone for a while; this window's focus stands in for
+   * that terminal's, which is the one thing a chat driven from here cannot tell Claude Code itself.
+   */
+  setWindowFocused(focused: boolean): void {
+    if (focused) {
+      if (this.recapTimer) clearInterval(this.recapTimer)
+      this.recapTimer = null
+      return
+    }
+    if (this.recapTimer) return
+    this.recapTimer = setInterval(() => this.recapAwayChats(), RECAP_POLL_MS)
+    this.recapTimer.unref?.()
+  }
+
+  /**
+   * Recaps the chats that were working when the user stepped away. A chat qualifies for a short
+   * window only — long enough after its last turn that the user really has been away, and early
+   * enough that Claude Code still answers out of that turn's prompt cache — so a chat left quiet
+   * for the afternoon costs nothing, and a chat that has just finished something gets the sentence
+   * that says so.
+   */
+  private recapAwayChats(): void {
+    if (this.host.getSettings().autoRecap === false) return
+    const now = Date.now()
+    for (const rt of this.runtimes.values()) {
+      if (now - rt.lastTurnEnd < RECAP_AFTER_MS) continue
+      if (!rt.recapWanted(now, RECAP_CACHE_MS)) continue
+      void rt.writeRecap().catch(() => undefined)
+    }
+  }
+
+  /**
+   * A chat finished a turn while the user was looking at something else. Once it has stayed quiet
+   * for a moment — no follow-up prompt, nothing asked of the user — Claude Code is asked for its
+   * recap of it, so the sidebar says where the chat stands instead of quoting the end of the last
+   * answer. The wait is cancelled and restarted by the next turn of the same chat.
+   */
+  private recapWhenQuiet(rt: SessionRuntime): void {
+    if (this.host.getSettings().autoRecap === false) return
+    const pending = this.recapSoon.get(rt.id)
+    if (pending) clearTimeout(pending)
+    const timer = setTimeout(() => {
+      this.recapSoon.delete(rt.id)
+      if (this.host.isWindowFocused() && this.activeSessionId === rt.id) return
+      if (this.host.getSettings().autoRecap === false) return
+      if (!rt.recapWanted(Date.now(), RECAP_CACHE_MS)) return
+      void rt.writeRecap().catch(() => undefined)
+    }, RECAP_QUIET_MS)
+    timer.unref?.()
+    this.recapSoon.set(rt.id, timer)
+  }
+
+  setActive(id: string | undefined): void {
+    this.activeSessionId = id
+    this.store.setActiveSession(id)
+    if (id) {
+      const rt = this.runtimes.get(id)
+      rt?.markRead()
+    }
+    this.refreshBadge()
+  }
+
+  async stopAll(): Promise<void> {
+    const all = [...this.runtimes.values()].filter((r) => r.isAlive)
+    await Promise.all(all.map((r) => r.stop(true).catch(() => undefined)))
+  }
+
+  aliveCount(): number {
+    let n = 0
+    for (const rt of this.runtimes.values()) if (rt.isAlive) n += 1
+    return n
+  }
+
+  /** Plan limits through any running session (used when no login token can be read directly). */
+  async planUsageFromAnySession(): Promise<SdkUsage | null> {
+    for (const rt of this.runtimes.values()) {
+      if (!rt.isAlive) continue
+      try {
+        const u = await rt.getPlanUsage()
+        if (u) return u
+      } catch (err) {
+        this.host.log(`[manager] plan usage via session failed: ${(err as Error).message}`)
+      }
+    }
+    return null
+  }
+
+  /** Start session processes at launch according to Settings → General → "Resume on launch". */
+  async resumeOnLaunch(): Promise<void> {
+    const mode = this.host.getSettings().resumeOnLaunch
+    if (!mode || mode === 'none') return
+    const all = [...this.runtimes.values()].filter((r) => !r.record.archived)
+    let targets =
+      mode === 'all' ? all : mode === 'pinned' ? all.filter((r) => r.record.pinned) : all.filter((r) => r.id === this.activeSessionId)
+    targets.sort((a, b) => b.record.lastActiveAt - a.record.lastActiveAt)
+    if (mode === 'all') targets = targets.slice(0, 12)
+    this.host.log(`[manager] resume on launch (${mode}): ${targets.length} session(s)`)
+    for (const rt of targets) {
+      rt.ensureStarted().catch((err) => this.host.log(`[manager] resume ${rt.id} failed: ${(err as Error).message}`))
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+  }
+}
+
+function dirExists(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
