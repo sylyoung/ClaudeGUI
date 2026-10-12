@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.62 — 2026-10-12
+
+### A fast mode switch
+
+- A "fast" chip next to model, permissions and effort turns fast mode on or off for the chat with
+  one click; it is amber while on. Fast mode runs the same model with faster output and costs more.
+  Every new chat starts with it off.
+- On a Claude model it is Claude Code's own fast mode (its /fast), which Claude Code offers for Opus
+  4.8 and the Opus 5 models. On a Claude subscription it is paid from usage credits rather than the
+  plan's included usage. When Claude Code does not use it (for example because usage credits are not
+  turned on), the chip gets a dashed border and its tooltip says why.
+- GPT models use the same switch instead of separate "(fast)" models: the model list shows each GPT
+  model once, and with the switch on the bridge's fast version of it runs in its place. A chat that
+  was on a "(fast)" model becomes that model with the switch on.
+- On a model without fast mode (Sonnet, Haiku, DeepSeek, Kimi...) the chip is dimmed and the chat
+  runs at standard speed; the switch is kept and applies again on a model that has fast mode.
+- Needs the session host of this version: quit ClaudeGUI (⌘Q) and open it again.
+
 ## 1.0.61 — 2026-10-06
 
 ### The prompt buttons, made easy to use

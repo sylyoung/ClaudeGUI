@@ -243,6 +243,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle('providers:list', (refresh?: boolean) => needsCurrentHost(host.providers(refresh), 'Listing the model providers'))
   handle('sessions:setPermissionMode', (id: string, mode: PermissionMode) => host.setPermissionMode(id, mode))
   handle('sessions:setEffort', (id: string, level: EffortLevel | '') => host.setEffort(id, level))
+  handle('sessions:setFastMode', (id: string, on: boolean) => needsCurrentHost(host.setFastMode(id, on), 'Fast mode'))
   handle('sessions:rename', (id: string, title: string) => host.rename(id, title))
   handle('sessions:setPinned', (id: string, pinned: boolean) => host.setPinned(id, pinned))
   handle('sessions:setArchived', (id: string, archived: boolean) => host.setArchived(id, archived))

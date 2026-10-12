@@ -94,7 +94,9 @@ export interface RateLimitEventInfo {
 export interface RuntimeDeps {
   getEnv(): Promise<Record<string, string>>
   /** Environment and options for a chat on another model provider (see ProviderService). */
-  launchProvider(providerId: string, model?: string): Promise<ProviderLaunch>
+  launchProvider(providerId: string, model?: string, fast?: boolean): Promise<ProviderLaunch>
+  /** The id of a provider model's fast variant, when the provider has one (the Codex bridge's "<model>-fast"). */
+  fastModel(providerId: string, model: string): Promise<string | undefined>
   getExecutable(): string | undefined
   getSettings(): AppSettings
   appVersion: string
@@ -290,6 +292,11 @@ export class SessionRuntime {
   /** The live state last sent to the window (see STATE_QUIET_MS). */
   private sentState: { sig: string; at: number; commands?: unknown; models?: unknown } = { sig: '', at: 0 }
   private stateTimer: NodeJS.Timeout | null = null
+  /**
+   * The fast variant Claude Code runs in place of the chat's model (a GPT chat with its fast switch
+   * on): Claude Code reports the variant's id, and the chat shows its model's own name instead.
+   */
+  private runAs: { run: string; model: string } | null = null
 
   constructor(
     public record: SessionRecord,
@@ -679,7 +686,7 @@ export class SessionRuntime {
     let launch: ProviderLaunch | undefined
     if (providerId) {
       try {
-        launch = await this.deps.launchProvider(providerId, this.record.model)
+        launch = await this.deps.launchProvider(providerId, this.record.model, this.record.fastMode === true)
       } catch (err) {
         this.deps.log(`[session ${this.id}] provider ${providerId}: launch failed: ${(err as Error).message}`)
         this.live.error = `Cannot start this chat on "${providerId}": ${(err as Error).message}`
@@ -688,13 +695,16 @@ export class SessionRuntime {
         throw new Error(this.live.error)
       }
       if (launch.warning) this.deps.log(`[session ${this.id}] provider ${providerId}: ${launch.warning}`)
-      if (launch.model !== this.record.model) {
-        this.deps.log(`[session ${this.id}] provider ${providerId}: using current model ${launch.model}`)
+      if (launch.model !== this.record.model || (launch.fast && !this.record.fastMode)) {
+        this.deps.log(`[session ${this.id}] provider ${providerId}: using current model ${launch.model}${launch.fast ? ' (fast)' : ''}`)
         this.record.model = launch.model
+        // A fast variant the chat had as its model is now its model with the fast switch on.
+        if (launch.fast) this.record.fastMode = true
         this.live.model = launch.model
         this.deps.saveRecord(this.record)
       }
     }
+    this.runAs = launch?.fast ? { run: launch.runModel, model: launch.model } : null
     const env = launch ? launch.env : await this.deps.getEnv()
     let resume = false
     try {
@@ -710,7 +720,7 @@ export class SessionRuntime {
     const sources = ['user', ...(settings.useProjectSettings ? ['project'] : []), ...(settings.useLocalSettings ? ['local'] : [])]
     const options: Options = {
       cwd: this.record.cwd,
-      model: launch ? launch.model : this.record.model || undefined,
+      model: launch ? launch.runModel : this.record.model || undefined,
       permissionMode: mode,
       allowDangerouslySkipPermissions: mode === 'bypassPermissions' ? true : undefined,
       effort: this.record.effort || launch?.effort || undefined,
@@ -731,6 +741,10 @@ export class SessionRuntime {
       stderr: (data) => this.deps.log(`[claude ${this.id.slice(0, 8)} stderr] ${data.trimEnd()}`),
       abortController: (this.abort = new AbortController())
     }
+    // Claude Code keeps fast mode off in apps built on the Agent SDK unless the app asks for it in
+    // the flag settings, which is what the chat's fast switch does (a GPT chat runs its model's fast
+    // variant instead, above).
+    if (!launch && this.record.fastMode) options.settings = { fastMode: true }
     const exe = this.deps.getExecutable()
     if (exe) options.pathToClaudeCodeExecutable = exe
     if (resume) {
@@ -753,13 +767,14 @@ export class SessionRuntime {
     this.processCostSeen = 0
     this.tasks.clear()
     this.live.backgroundTasks = []
-    this.deps.log(`[session ${this.id}] started (${resume ? 'resume' : 'new'}) cwd=${this.record.cwd}${launch ? ` provider=${providerId} model=${launch.model}` : ''}`)
+    this.deps.log(`[session ${this.id}] started (${resume ? 'resume' : 'new'}) cwd=${this.record.cwd}${launch ? ` provider=${providerId} model=${launch.runModel}` : ''}${!launch && this.record.fastMode ? ' fast mode asked for' : ''}`)
     this.runLoop = this.consume(q)
     q.initializationResult()
       .then((init) => {
         if (this.q !== q) return
         this.live.slashCommands = init.commands.map(toCommandView)
         this.live.models = init.models.map(toModelView)
+        this.noteFastMode(init.fast_mode_state, init.fast_mode_disabled_reason)
         if (this.live.status === 'starting') this.setStatus('idle')
         this.scheduleFlush()
         void this.refreshContextUsage('summary')
@@ -1630,6 +1645,9 @@ export class SessionRuntime {
     this.record.model = model || undefined
     this.record.provider = next
     this.live.model = model || undefined
+    // What Claude Code said about fast mode was about the model before; it says it again after a turn.
+    this.live.fastModeState = undefined
+    this.live.fastModeReason = undefined
     this.deps.saveRecord(this.record)
     if (this.q && providerChanged) {
       this.deps.log(`[session ${this.id}] provider ${previous.provider ?? 'anthropic'} -> ${next ?? 'anthropic'}: restarting`)
@@ -1654,8 +1672,64 @@ export class SessionRuntime {
         throw new Error(`${(err as Error).message} The chat stayed on ${previous.model || previous.provider || 'its previous model'}.`)
       }
     } else if (this.q) {
-      await this.q.setModel(model || undefined)
+      await this.q.setModel(await this.runModel(model || undefined))
     }
+    this.scheduleFlush()
+  }
+
+  /**
+   * The id Claude Code is given for the chat's model: on another provider, the model's fast variant
+   * while the chat's fast switch is on and the provider has one (the Codex bridge's "<model>-fast").
+   * A Claude model is run under its own id; Claude Code's fast mode is a setting of its own.
+   */
+  private async runModel(model: string | undefined): Promise<string | undefined> {
+    this.runAs = null
+    if (!model || !this.record.provider || !this.record.fastMode) return model
+    const run = await this.deps.fastModel(this.record.provider, model)
+    if (!run) return model
+    this.runAs = { run, model }
+    return run
+  }
+
+  /**
+   * The chat's fast switch. On a Claude model it is Claude Code's own fast mode, switched in the
+   * running process through its flag settings: Claude Code holds such a change back while a turn is
+   * running and answers only once it has ended, so the switch does not wait for that. On the Codex
+   * bridge the running process switches to the model's fast variant, or back, as to any other model.
+   */
+  async setFastMode(on: boolean): Promise<void> {
+    this.record.fastMode = on || undefined
+    this.live.fastModeState = undefined
+    this.live.fastModeReason = undefined
+    this.deps.saveRecord(this.record)
+    this.scheduleFlush()
+    const q = this.q
+    if (!q) return
+    if (this.record.provider) {
+      const before = this.runAs?.run ?? this.record.model
+      const run = await this.runModel(this.record.model)
+      // A model without a fast variant (DeepSeek, Kimi...) keeps running as it was.
+      if (this.q !== q || !run || run === before) return
+      this.deps.log(`[session ${this.id}] fast mode ${on ? 'on' : 'off'}: running ${run}`)
+      await q.setModel(run)
+      return
+    }
+    this.deps.log(`[session ${this.id}] fast mode ${on ? 'on' : 'off'} asked for`)
+    q.applyFlagSettings({ fastMode: on }).then(
+      () => this.deps.log(`[session ${this.id}] fast mode ${on ? 'on' : 'off'} applied by Claude Code`),
+      (err) => this.deps.log(`[session ${this.id}] fast mode ${on ? 'on' : 'off'} not applied: ${(err as Error).message}`)
+    )
+  }
+
+  /** What Claude Code says about fast mode, at the process's start and at the end of every turn. */
+  private noteFastMode(state: string | undefined, reason: string | undefined): void {
+    if (this.record.provider) {
+      this.live.fastModeState = undefined
+      this.live.fastModeReason = undefined
+      return
+    }
+    if (state === 'off' || state === 'on' || state === 'cooldown') this.live.fastModeState = state
+    this.live.fastModeReason = reason || undefined
     this.scheduleFlush()
   }
 
@@ -1865,6 +1939,7 @@ export class SessionRuntime {
           break
         }
         this.transcript.apply(msg, ts)
+        this.noteFastMode(msg.fast_mode_state, msg.fast_mode_disabled_reason)
         // Claude Code's prompt cache holds this turn's conversation from here; a recap asked for
         // while it lasts is answered out of it instead of being paid for again.
         this.lastTurnEndedAt = Date.now()
@@ -1991,7 +2066,8 @@ export class SessionRuntime {
       case 'init': {
         // The CLI accepted the fork point; a later restart must not truncate again.
         this.resumeAt = null
-        this.live.model = String(s.model ?? this.live.model ?? '')
+        const reported = String(s.model ?? this.live.model ?? '')
+        this.live.model = this.runAs && reported === this.runAs.run ? this.runAs.model : reported
         if (this.live.model && this.record.lastModel !== this.live.model) {
           this.record.lastModel = this.live.model
           this.deps.saveRecord(this.record)
@@ -2000,6 +2076,7 @@ export class SessionRuntime {
         this.live.cwd = String(s.cwd ?? this.record.cwd)
         this.live.claudeVersion = String(s.claude_code_version ?? '')
         if (s.effort !== undefined) this.live.effort = (s.effort as EffortLevel | null) ?? null
+        this.noteFastMode(s.fast_mode_state as string | undefined, s.fast_mode_disabled_reason as string | undefined)
         const sid = String(s.session_id ?? '')
         if (sid && sid !== this.record.claudeSessionId) {
           this.deps.log(`[session ${this.id}] session id changed ${this.record.claudeSessionId} -> ${sid}`)
@@ -2455,8 +2532,8 @@ function toCommandView(c: { name: string; description: string; argumentHint: str
   return { name: c.name, description: c.description, argumentHint: c.argumentHint, aliases: c.aliases }
 }
 
-function toModelView(m: { value: string; displayName: string; description: string; supportedEffortLevels?: EffortLevel[] }): ModelInfoView {
-  return { value: m.value, displayName: m.displayName, description: m.description, supportedEffortLevels: m.supportedEffortLevels }
+function toModelView(m: { value: string; displayName: string; description: string; supportedEffortLevels?: EffortLevel[]; supportsFastMode?: boolean }): ModelInfoView {
+  return { value: m.value, displayName: m.displayName, description: m.description, supportedEffortLevels: m.supportedEffortLevels, supportsFastMode: m.supportsFastMode }
 }
 
 export { readTranscriptIndex, projectDirFor }

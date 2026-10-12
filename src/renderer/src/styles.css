@@ -965,6 +965,18 @@ button.stat:disabled { opacity: 0.5; cursor: default; }
 .popup-select .ps-label { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
 .popup-select .ps-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .popup-select .ps-arrow { color: var(--text-faint); flex-shrink: 0; }
+/* The fast mode switch: shaped like its neighbours, amber while on (fast mode costs more). The value
+   keeps one width for "off" and "ON", so the chip does not change size under the mouse. */
+.fast-switch { flex-shrink: 0; gap: 5px; padding-right: 8px; }
+.fast-switch .fs-mark { color: var(--text-faint); flex-shrink: 0; }
+.fast-switch .ps-value { display: inline-block; min-width: 1.75em; }
+.fast-switch.on { color: var(--amber); border-color: rgba(227, 179, 65, 0.5); background: rgba(227, 179, 65, 0.12); }
+.fast-switch.on .fs-mark, .fast-switch.on .ps-label { color: var(--amber); }
+.fast-switch.on:hover { background: rgba(227, 179, 65, 0.2); }
+.fast-switch.blocked { border-style: dashed; }
+.fast-switch.na { opacity: 0.5; }
+.fast-switch:disabled { cursor: default; }
+.fast-switch:disabled:hover { background: var(--bg-elev2); }
 .popup-list { overflow-y: auto; }
 .popup-list button { white-space: normal; text-align: left; line-height: 1.35; }
 .popup-list .popup-heading { padding: 8px 10px 3px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); font-weight: 600; border-top: 1px solid var(--border); margin-top: 4px; }

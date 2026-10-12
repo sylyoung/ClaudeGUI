@@ -4,12 +4,17 @@ import os from 'os'
 import path from 'path'
 import type { AppSettings, EffortLevel, ModelProviderSetting, ProviderModelView, ProviderView } from '@shared/types'
 import { captureLauncher, mergeSpawnEnv, parseExtraEnv, type LauncherCapture } from '../../main/env'
+import { fastModelBase, fastModelId } from '@shared/fastMode'
 
 /** Everything a Claude process needs to run on another provider. */
 export interface ProviderLaunch {
   env: Record<string, string>
-  /** Model id to pass to the CLI (the chat's choice, or the launcher's own default). */
+  /** The chat's model (its choice, or the launcher's own default), never a fast variant's id. */
   model: string
+  /** The id Claude Code runs: `model`, or its fast variant while the chat's fast switch is on. */
+  runModel: string
+  /** `runModel` is the fast variant. */
+  fast: boolean
   /** Effort the launcher would set ("--effort xhigh"); used when the chat has none of its own. */
   effort?: EffortLevel
   /** Tools the launcher removes ("--disallowed-tools=EnterPlanMode"). */
@@ -174,7 +179,12 @@ export class ProviderService {
     let entry: { at: number; models: ProviderModelView[]; error?: string }
     try {
       const list = ids ?? (await fetchModelIds(url, capture.env))
-      const models = isCodexList(p, url, list) ? codexModels(list, suffix, this.deps.log) : list.map((m) => ({ value: m.id + suffix, label: m.label ?? m.id }))
+      const models: ProviderModelView[] = isCodexList(p, url, list) ? codexModels(list, suffix, this.deps.log) : list.map((m) => ({ value: m.id + suffix, label: m.label ?? m.id }))
+      // "<model>-fast" next to "<model>" is that model's fast variant, whichever provider lists it.
+      for (const m of models) {
+        const base = m.fastOf ?? fastModelBase(m.value)
+        if (base && models.some((o) => o.value === base)) m.fastOf = base
+      }
       entry = { at: Date.now(), models }
     } catch (err) {
       entry = { at: Date.now(), models: cached?.models ?? [], error: `Model list not read from ${url}: ${(err as Error).message}` }
@@ -223,8 +233,16 @@ export class ProviderService {
     return this.saved
   }
 
+  /** The id of `model`'s fast variant on this provider, when it has one (the Codex bridge's "<model>-fast"). */
+  async fastVariant(providerId: string, model: string): Promise<ProviderModelView | undefined> {
+    const p = this.setting(providerId)
+    if (!p || !p.enabled) return undefined
+    const models = this.models.get(p.id)?.models ?? (await this.view(p, false)).models
+    return models.find((m) => m.fastOf === model && !m.unavailable)
+  }
+
   /** Environment and options for a chat on this provider, from a fresh run of its launcher. */
-  async launch(providerId: string, model?: string): Promise<ProviderLaunch> {
+  async launch(providerId: string, model?: string, fast = false): Promise<ProviderLaunch> {
     const p = this.setting(providerId)
     if (!p) throw new Error(`Provider "${providerId}" is not in Settings (Claude tab, other model providers).`)
     if (!p.enabled) throw new Error(`Provider "${p.name}" is switched off in Settings (Claude tab).`)
@@ -234,9 +252,21 @@ export class ProviderService {
     const chosen = currentModelId(p.id, requested)
     if (!chosen) throw new Error(`${p.launcher} sets no model and the chat has none.`)
     if (chosen !== requested) this.deps.log(`[providers] ${p.id}: remapped retired model ${requested} -> ${chosen}`)
+    // A fast variant named as the model (the launcher's own default, or a chat from before the fast
+    // switch) is that model with the switch on.
+    let base = chosen
+    let runModel = chosen
+    if (fast || fastModelBase(chosen)) {
+      const models = (await this.modelsFor(p, capture, false)).models
+      const variantOf = models.find((m) => m.value === chosen)?.fastOf
+      if (variantOf) base = variantOf
+      const variant = fast || variantOf ? models.find((m) => m.fastOf === base && !m.unavailable) : undefined
+      runModel = variant?.value ?? base
+      if ((fast || variantOf) && !variant) this.deps.log(`[providers] ${p.id}: ${base} has no fast variant (${fastModelId(base)} is not listed); running it at standard speed`)
+    }
     const env = mergeSpawnEnv(capture.env, parseExtraEnv(this.deps.getSettings().extraEnv))
-    env.ANTHROPIC_MODEL = chosen
-    const launch: ProviderLaunch = { env, model: chosen, disallowedTools: [], extraArgs: {}, warning: stale ? staleWarning(p.launcher, stale) : undefined }
+    env.ANTHROPIC_MODEL = runModel
+    const launch: ProviderLaunch = { env, model: base, runModel, fast: runModel !== base, disallowedTools: [], extraArgs: {}, warning: stale ? staleWarning(p.launcher, stale) : undefined }
     const argv = capture.argv
     for (let i = 0; i < argv.length; i++) {
       const a = argv[i]
@@ -340,6 +370,8 @@ interface CodexCachedModel {
   visibility?: string
   supported_reasoning_levels?: { effort: string }[]
   priority?: number
+  /** Codex's speed tiers; "priority" is the one it calls Fast ("2x speed, increased usage"). */
+  service_tiers?: { id?: string; name?: string; description?: string }[]
 }
 
 /**
@@ -373,13 +405,18 @@ function codexModels(bridge: { id: string; label?: string }[], suffix: string, l
   for (const m of current) {
     const efforts = m.supported_reasoning_levels?.map((l) => l.effort).filter((e): e is EffortLevel => EFFORTS.includes(e as EffortLevel))
     const name = m.display_name ?? m.slug
+    // The fast variant is not a model of its own in the app: it is what the chat's fast switch runs.
+    const tier = m.service_tiers?.find((t) => t.id === 'priority' || /fast/i.test(t.name ?? ''))
     for (const [id, label] of [[m.slug, name], [`${m.slug}-fast`, `${name} (fast)`]] as const) {
-      if (id.endsWith('-fast') && !known.has(id)) continue
+      const fast = id.endsWith('-fast')
+      if (fast && !known.has(id)) continue
       out.push({
         value: id + suffix,
         label,
+        description: fast ? tier?.description : undefined,
         supportedEffortLevels: efforts?.length ? efforts : undefined,
-        unavailable: known.has(id) ? undefined : 'Your Codex subscription offers this model, but the bridge (claude-code-proxy) does not know it yet; update the bridge to use it.'
+        unavailable: known.has(id) ? undefined : 'Your Codex subscription offers this model, but the bridge (claude-code-proxy) does not know it yet; update the bridge to use it.',
+        fastOf: fast ? m.slug + suffix : undefined
       })
     }
   }

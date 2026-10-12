@@ -22,6 +22,12 @@ export interface SessionRecord {
   provider?: string
   permissionMode: PermissionMode
   effort?: EffortLevel
+  /**
+   * The chat's fast mode switch (absent = off). On a Claude model it is Claude Code's own fast mode;
+   * on the Codex bridge the model's "-fast" variant is run in its place. `model` stays the model's
+   * own id either way. A model without fast mode runs at standard speed and the switch is kept.
+   */
+  fastMode?: boolean
   createdAt: number
   lastActiveAt: number
   /** When you last sent a prompt (not when Claude last answered); drives the "recent" order. */
@@ -150,6 +156,8 @@ export interface ModelInfoView {
   displayName: string
   description: string
   supportedEffortLevels?: EffortLevel[]
+  /** Claude Code offers fast mode for this model. */
+  supportsFastMode?: boolean
 }
 
 /**
@@ -178,6 +186,12 @@ export interface ProviderModelView {
   supportedEffortLevels?: EffortLevel[]
   /** Why this model cannot be used right now (the bridge does not know it yet, ...). */
   unavailable?: string
+  /**
+   * Set on a model that is another model's fast variant (the Codex bridge's "<model>-fast"): the id
+   * of that model. Such an entry is not listed as a model of its own; it is what the chat's fast
+   * switch runs in place of that model, and its `description` says what fast costs.
+   */
+  fastOf?: string
 }
 
 export interface ProviderView {
@@ -203,6 +217,13 @@ export interface SessionLiveState {
   model?: string
   permissionMode?: PermissionMode
   effort?: EffortLevel | null
+  /**
+   * Fast mode as Claude Code last reported it for this chat's process (at its start and at the end
+   * of every turn): 'cooldown' is a pause after a fast mode rate limit. Claude models only.
+   */
+  fastModeState?: 'off' | 'cooldown' | 'on'
+  /** Claude Code's reason for not using fast mode (its `fast_mode_disabled_reason`), when it has one. */
+  fastModeReason?: string
   claudeVersion?: string
   cwd?: string
   activity?: 'compacting' | 'requesting' | null

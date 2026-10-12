@@ -15,6 +15,7 @@ import { FindBox } from './FindBox'
 import { useChatFind } from './useChatFind'
 import { StateMark } from '../common/StateMark'
 import { Composer } from './Composer'
+import { FastSwitch } from './FastSwitch'
 import { ContextBar } from './ContextBar'
 import { ChatProvider, type ChatCtx } from './ChatContext'
 import { ContextMenu, type MenuItem } from '../common/ContextMenu'
@@ -543,6 +544,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <PopupSelect className={isFlagshipModel(live?.model || record.model || record.lastModel) ? 'flagship' : ''} icon={<ModelIcon model={live?.model || record.model || record.lastModel} />} label="model" value={currentModel} options={modelOptions} tip="Model for this chat's next turns: a Claude model, or one from another provider (GPT via Codex, DeepSeek, Kimi...). Switching to another provider restarts Claude Code and continues the conversation there." onChange={(v) => { const c = decodeModelChoice(v); window.api.sessions.setModel(record.id, c.model, c.provider).catch(fail) }} minWidth={340} />
           <PopupSelect label="permissions" value={live?.permissionMode ?? record.permissionMode} options={modeOptions} tip="Permission mode: what Claude may do without asking. The list explains every mode." onChange={(v) => window.api.sessions.setPermissionMode(record.id, v as PermissionMode).catch(fail)} minWidth={380} />
           <PopupSelect label="effort" value={record.effort ?? ''} options={effortOptions} tip="Effort level: how much reasoning the model spends per turn (higher = slower, more thorough)" onChange={(v) => window.api.sessions.setEffort(record.id, v as EffortLevel | '').catch(fail)} minWidth={280} />
+          <FastSwitch record={record} live={live} providers={providers} onError={fail} />
           <span className="spacer" />
           {rl && rl.status !== 'allowed' && (
             <span className={rl.status === 'rejected' ? 'pill red' : 'pill amber'} data-tip={`Rate limit (${rl.rateLimitType})`}>

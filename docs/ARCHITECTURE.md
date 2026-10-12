@@ -10,6 +10,8 @@ src/
     colors.ts              Group colour palette (macOS system colours), next free colour
     rows.ts                How much of a chat is held: busy rows, where a chat may be cut
                            (cutAt), subagent steps sent as references (withKeptChildren)
+    fastMode.ts            Fast mode: the "<model>-fast" naming of fast variants, Claude Code's
+                           rule for which Claude models have it, its reasons for not using it
   main/                    Electron window process
     index.ts               App lifecycle, window (+ saved bounds), menu, theme, notifications,
                            session-host connection and replacement, quit / restart-for-update
@@ -60,7 +62,8 @@ src/
       common/PopupSelect.tsx  Drop-down with a short closed label and full-text options
       common/GroupColorPicker.tsx  Palette popover for group colours
       chat/                ChatView (header with action buttons incl. expand/collapse all tool
-                           details, one-line configuration row, status row + ContextBar),
+                           details, one-line configuration row with FastSwitch, status row +
+                           ContextBar),
                            MessageList (prompt states; prompts still queued are moved to the end;
                            ↑ ↓ buttons from one of your prompts to the next, and "latest"),
                            MessageItem (per-prompt state mark + rewind button), ToolCallCard
@@ -304,6 +307,42 @@ this by itself (`overflow-anchor`), as soon as the page is measured, except when
 right to its top; `MessageList` keeps where that row stood on screen and makes up only the rest.
 Until 1.0.60 it made up the whole shift, so near the top (but not at it) the chat jumped on by the
 height of the rows read in.
+
+## Fast mode (1.0.62)
+
+Each chat has one fast switch (`SessionRecord.fastMode`, absent = off), the chip after effort in
+the configuration row (`FastSwitch`). Every chat starts with it off, forks and imports included. It
+does two different things depending on the model, and the chat's `model` is never changed by it:
+
+- **Claude models.** It is Claude Code's own fast mode (`/fast` in the terminal). Claude Code keeps
+  fast mode off in apps built on the Agent SDK (its reason `sdk_opt_in_required`) until the app sets
+  `fastMode: true` in the flag settings: at start through the `settings` option, in a running
+  process through `applyFlagSettings({ fastMode })`. A change made during a turn is held back by
+  Claude Code until the turn has ended, and its answer only comes then, so `setFastMode` does not
+  wait for it. Claude Code reports what it does with it (`fast_mode_state`: off / cooldown / on, and
+  `fast_mode_disabled_reason`) in the initialize response and in every turn's result; the runtime
+  keeps the last report in the live state and forgets it when the switch or the model changes. When
+  the switch is on but Claude Code says it is not using fast mode (no usage credits, an
+  organization's policy, a rate-limit pause), the chip has a dashed border and its tooltip gives
+  Claude Code's reason. Which models have it is Claude Code's model list (`supportsFastMode`), else
+  its rule for model ids (`opus-4-8`, `opus-5`).
+- **GPT models on the Codex bridge.** The bridge offers each model's fast tier as a model id of its
+  own, "<model>-fast" (with the "[1m]" suffix after it). Until 1.0.62 these were listed as models
+  ("GPT-6.1 Sol (fast)"); now `ProviderModelView.fastOf` marks a "-fast" entry next to its model, the
+  lists leave it out, and the switch runs it in the model's place: `ProviderService.launch` gives
+  Claude Code the variant's id at start, and a running process is switched to it (or back) with
+  `setModel`. Claude Code then reports the variant's id as the model; the runtime shows the model's
+  own name (`runAs`). A chat that had a "-fast" id as its model from before becomes that model with
+  the switch on at its next start. The tooltip quotes Codex's own description of the tier, from its
+  model cache ("2x speed, increased usage").
+
+A model without fast mode (Sonnet, Haiku, DeepSeek, Kimi, a GPT model the bridge has no variant of)
+runs at standard speed. The chip is dimmed; while the switch is on it can still be clicked to turn
+it off, and otherwise it cannot be clicked. The switch stays on for the chat when its model changes,
+as Claude Code keeps fast mode across a switch of model and uses it again on a model that has it.
+
+The chip keeps one width for "off" and "ON" and does not take the keyboard from the input box. A
+session host from before 1.0.62 does not know `setFastMode`; the window says to quit and reopen.
 
 ## Data flow
 1. Renderer calls `window.api.sessions.send(id, text)` → IPC → `HostClient.send` → socket request.

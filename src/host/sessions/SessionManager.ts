@@ -56,7 +56,8 @@ const RECAP_QUIET_MS = 45_000
 
 export interface ManagerHost {
   getEnv(): Promise<Record<string, string>>
-  launchProvider(providerId: string, model?: string): Promise<ProviderLaunch>
+  launchProvider(providerId: string, model?: string, fast?: boolean): Promise<ProviderLaunch>
+  fastModel(providerId: string, model: string): Promise<string | undefined>
   getExecutable(): string | undefined
   getSettings(): AppSettings
   appVersion: string
@@ -131,7 +132,8 @@ export class SessionManager {
   private makeRuntime(record: SessionRecord): SessionRuntime {
     return new SessionRuntime(record, {
       getEnv: () => this.host.getEnv(),
-      launchProvider: (id, model) => this.host.launchProvider(id, model),
+      launchProvider: (id, model, fast) => this.host.launchProvider(id, model, fast),
+      fastModel: (id, model) => this.host.fastModel(id, model),
       getExecutable: () => this.host.getExecutable(),
       getSettings: () => this.host.getSettings(),
       appVersion: this.host.appVersion,

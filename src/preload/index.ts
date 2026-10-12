@@ -159,6 +159,7 @@ const api = {
     setModel: (id: string, model: string, provider?: string) => invoke<void>('sessions:setModel', id, model, provider),
     setPermissionMode: (id: string, mode: PermissionMode) => invoke<void>('sessions:setPermissionMode', id, mode),
     setEffort: (id: string, level: EffortLevel | '') => invoke<void>('sessions:setEffort', id, level),
+    setFastMode: (id: string, on: boolean) => invoke<void>('sessions:setFastMode', id, on),
     rename: (id: string, title: string) => invoke<void>('sessions:rename', id, title),
     setPinned: (id: string, pinned: boolean) => invoke<void>('sessions:setPinned', id, pinned),
     setArchived: (id: string, archived: boolean) => invoke<void>('sessions:setArchived', id, archived),

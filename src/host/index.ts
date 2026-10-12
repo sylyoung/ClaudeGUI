@@ -100,7 +100,8 @@ const providers = new ProviderService({
 
 const manager = new SessionManager(store, {
   getEnv: () => getSpawnEnv(parseExtraEnv(settings.extraEnv)),
-  launchProvider: (id, model) => providers.launch(id, model),
+  launchProvider: (id, model, fast) => providers.launch(id, model, fast),
+  fastModel: async (id, model) => (await providers.fastVariant(id, model))?.value,
   getExecutable: () => executable,
   getSettings: () => settings,
   appVersion: version,
@@ -178,6 +179,8 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.get(a[0]).setPermissionMode(a[1])
     case 'setEffort':
       return manager.get(a[0]).setEffort(a[1])
+    case 'setFastMode':
+      return manager.get(a[0]).setFastMode(Boolean(a[1]))
     case 'rename':
       return manager.rename(a[0], a[1])
     case 'setPinned':

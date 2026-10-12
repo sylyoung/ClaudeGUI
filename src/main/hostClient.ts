@@ -463,6 +463,10 @@ export class HostClient extends EventEmitter {
   setEffort(id: string, level: EffortLevel | ''): Promise<void> {
     return this.call('setEffort', id, level)
   }
+
+  setFastMode(id: string, on: boolean): Promise<void> {
+    return this.call('setFastMode', id, on)
+  }
   rename(id: string, title: string): Promise<void> {
     return this.call('rename', id, title)
   }
