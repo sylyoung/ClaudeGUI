@@ -29,7 +29,7 @@ export function AuthNotice() {
   let level: 'error' | 'warning' = 'warning'
   let text = ''
   if (auth.status === 'signed-out') {
-    key = 'signed-out'
+    key = `signed-out-${since}`
     level = 'error'
     text = 'Claude Code is signed out: its login has expired, so chats cannot run. Sign in again; the chats keep their history and continue with your next message.'
   } else if (failedChats > 0 && auth.status !== 'api-key') {
@@ -51,11 +51,9 @@ export function AuthNotice() {
       <button className="btn sm primary" onClick={() => setDialog('sign-in')} data-tip="Runs claude auth login, the same as in a terminal: your browser opens Claude's sign-in page">
         <LogIn size={12} /> Sign in…
       </button>
-      {key !== 'signed-out' && (
-        <button className="btn ghost icon sm" onClick={() => setDismissed((d) => [...d, key])} data-tip="Hide this notice until something changes">
-          <X size={12} />
-        </button>
-      )}
+      <button className="btn ghost icon sm" aria-label="Dismiss login notice" onMouseDown={(e) => e.preventDefault()} onClick={() => setDismissed((d) => [...d, key])} data-tip="Hide this notice until something changes">
+        <X size={12} />
+      </button>
     </div>
   )
 }

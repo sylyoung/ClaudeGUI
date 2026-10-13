@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.63 — 2026-10-13
+
+### Dismiss the signed-out notice
+
+- The Claude Code signed-out notice now has the same close button as the other login notices.
+  Dismissing it hides it for the current window, including when switching chats or checking login
+  status again. A later signed-out episode can show a new notice.
+- Dismissing the notice does not change authentication or stop any chats.
+
 ## 1.0.62 — 2026-10-12
 
 ### A fast mode switch
