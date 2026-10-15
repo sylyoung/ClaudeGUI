@@ -4,6 +4,7 @@ import path from 'path'
 import { compareRecords, lastPromptOf } from '@shared/util'
 import type { RowPlace } from '@shared/rows'
 import { nextGroupColor } from '@shared/colors'
+import { sessionRecordForWindow } from '@shared/claudeConfig'
 import { deleteSession, listSessions } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AppSettings,
@@ -183,7 +184,7 @@ export class SessionManager {
     const live: SessionLiveState[] = []
     for (const rt of this.runtimes.values()) {
       if (!rt.isAlive) rt.live.cwdMissing = !dirExists(rt.record.cwd)
-      records.push(rt.record)
+      records.push(sessionRecordForWindow(rt.record))
       live.push(rt.live)
     }
     records.sort(compareRecords)
@@ -435,6 +436,7 @@ export class SessionManager {
       provider: src.provider,
       permissionMode: src.permissionMode,
       effort: src.effort,
+      claudeSettings: src.claudeSettings ? { ...structuredClone(src.claudeSettings), fastMode: false } : undefined,
       createdAt: now,
       lastActiveAt: now,
       lastPromptAt: src.lastPromptAt,

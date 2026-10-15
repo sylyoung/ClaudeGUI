@@ -58,7 +58,8 @@ export class JsonFile<T> {
   private writeNow(): void {
     const tmp = this.file + '.tmp'
     try {
-      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2))
+      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 })
+      fs.chmodSync(tmp, 0o600)
       fs.renameSync(tmp, this.file)
     } catch (err) {
       console.error('[store] write failed', this.file, err)

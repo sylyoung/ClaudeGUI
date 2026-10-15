@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.64 — 2026-10-15
+
+### Full chat configuration
+
+- A visible Chat settings button and `/config` open the same searchable configuration dialog.
+  `/config` is handled locally, even during a running turn; it is never sent as a model prompt.
+- Controls cover every setting declared by the bundled Claude Code SDK, with descriptions,
+  categories, nested fields, and a complete JSON editor for complex values. App settings remain
+  available from the same dialog. Terminal-only settings are identified rather than presented as
+  changes to ClaudeGUI's appearance.
+- Choose this chat, user, project, or local-project scope. Chat overrides are saved separately
+  from shared settings; Reset removes a saved override, with a warning when a startup value must wait
+  for the chat's next process start to fully inherit. Shared changes require
+  confirmation, preserve unchanged secret values, and refuse to overwrite files changed elsewhere.
+- Automatic compaction, its context limit, and background summary preparation can be configured
+  independently for each chat. Native settings changes wait for a running turn when necessary;
+  saving never restarts a process or stops background work. Startup-only changes are labelled.
+- Chat-only overrides need a session host from this version. An older host remains running and the
+  dialog explains the limitation; finish ongoing work before fully quitting and reopening the app.
+
 ## 1.0.63 — 2026-10-13
 
 ### Dismiss the signed-out notice

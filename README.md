@@ -13,7 +13,7 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.31** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.64** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
@@ -57,6 +57,14 @@ repository (ClaudeGUI → Check for Updates…).
   text in the open list). A status row shows the group, folder, branch, remote, folder size, the time
   of your last prompt, the last activity and the **context bar** (tokens / window / percentage, amber
   above 60 %, red above 85 %; click for the `/context` breakdown, a recount and one-click `/compact`).
+- **Chat settings**: the visible button or `/config [search]` opens searchable controls for every
+  setting declared by the bundled Claude Code SDK, including automatic compaction, its context
+  limit, and background summary preparation. Choose chat-only overrides, user, project, or local
+  project settings; use nested fields or the complete JSON editor for complex values. Shared edits
+  require confirmation and refuse to overwrite concurrent changes. Saving sends no prompt and
+  never restarts a process; startup-only changes and resets are labelled. Chat overrides need a
+  session host from 1.0.64 or later. Detected secrets are hidden in the editor but remain in local
+  JSON storage, so prefer credential helpers rather than storing secret values directly.
 - **Rendered chat**: GitHub-flavoured markdown with tables and syntax-highlighted code, collapsible
   tool cards (Bash command + output, Edit diffs, Write previews, Read results, Grep/Glob, Agent
   subagents with nested transcripts, TodoWrite checklists), thinking blocks, per-turn duration.
@@ -114,7 +122,7 @@ repository (ClaudeGUI → Check for Updates…).
 - macOS (Apple Silicon build configured), Node.js ≥ 22, npm, `git` (Xcode command line tools or
   Homebrew). The in-app updater runs `git`, `npm ci` and the build with your login-shell PATH.
 - A working Claude Code login (`claude` CLI already authenticated). The app bundles the Agent SDK's
-  own `claude` binary (same version as the SDK, 2.1.263); you can point it to another binary in Settings.
+  own `claude` binary; Settings → About shows its version. You can select another binary in Settings.
 - Optional: the GitHub CLI (`gh`, logged in) for "Publish to GitHub…".
 - Optional: an **Apple Development** code-signing certificate in your keychain (created by Xcode).
   When present, builds are signed with it, which keeps macOS privacy grants (Full Disk Access,
@@ -219,4 +227,7 @@ transcript as well. `CLAUDEGUI_USER_DATA=<dir>` moves the settings/session index
 - `scripts/devctl.sh` drives a dev instance through a debug HTTP endpoint
   (`CLAUDEGUI_DEBUG=1`, or Settings → Advanced): screenshots, state dumps, host and updater state,
   sending messages, evaluating JS in the renderer.
+- `npm run test:configuration` checks the settings catalogue, scoped persistence, conflicts, secret
+  preservation and native startup/live controls in an isolated home and Git repository. It sends no
+  inference prompts and does not use real credentials or chats.
 - Architecture: `docs/ARCHITECTURE.md`; release notes: `CHANGELOG.md`.

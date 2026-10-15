@@ -45,6 +45,7 @@ import type {
   UsageState
 } from '@shared/types'
 import type { RowPlace } from '@shared/rows'
+import type { ClaudeConfigView, ConfigSaveRequest, ConfigSaveResult } from '@shared/claudeConfig'
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -94,6 +95,10 @@ const api = {
   settings: {
     get: () => invoke<AppSettings>('settings:get'),
     set: (patch: Partial<AppSettings>) => invoke<AppSettings>('settings:set', patch)
+  },
+  config: {
+    get: (id: string) => invoke<ClaudeConfigView>('config:get', id),
+    save: (id: string, request: ConfigSaveRequest) => invoke<ConfigSaveResult>('config:save', id, request)
   },
   usage: {
     get: () => invoke<UsageState>('usage:get'),

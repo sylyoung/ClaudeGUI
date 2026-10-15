@@ -17,6 +17,8 @@ import { openExternal, openInEditor, openPath, openTerminal, openWithApp, showIt
 import { getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache, getLoginShellEnv } from './env'
 import * as gitSvc from './gitService'
 import { readChatRows, searchChatFile, stopChatSearch } from './chatSearch'
+import { ClaudeConfigService } from './claudeConfig'
+import type { ConfigSaveRequest } from '@shared/claudeConfig'
 
 /**
  * The Claude Code version inside an executable. The SDK's own package version (0.3.x) is what the
@@ -112,6 +114,9 @@ export function registerIpc(ctx: IpcContext): void {
   }
 
   const settings = () => store.get()
+  const claudeConfig = new ClaudeConfigService(host, settings)
+  handle('config:get', (id: string) => claudeConfig.get(id))
+  handle('config:save', (id: string, request: ConfigSaveRequest) => claudeConfig.save(id, request))
   const env = () => getSpawnEnv(parseExtraEnv(settings().extraEnv))
 
   // ---- app / settings

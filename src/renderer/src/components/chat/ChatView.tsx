@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, AlertTriangle, Bot, ChevronDown, ChevronsDownUp, ChevronsUpDown, Code, Ellipsis, FileDiff, FolderOpen, GitBranch, Github, HardDrive, History, MessageSquare, PanelRight, Pin, PinOff, Play, Power, Search, Square, TerminalSquare, Upload } from 'lucide-react'
+import { Activity, AlertTriangle, Bot, ChevronDown, ChevronsDownUp, ChevronsUpDown, Code, Ellipsis, FileDiff, FolderOpen, GitBranch, Github, HardDrive, History, MessageSquare, PanelRight, Pin, PinOff, Play, Power, Search, SlidersHorizontal, Square, TerminalSquare, Upload } from 'lucide-react'
 import type { DirInfo, EffortLevel, PermissionDecision, PermissionMode, SessionLiveState, SessionRecord } from '@shared/types'
 import { groupColorFor } from '@shared/colors'
 import { lastPromptOf } from '@shared/util'
@@ -276,7 +276,7 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
   const { backToLatest } = find
   const onSend = useCallback(
     (text: string, images: { mediaType: string; data: string; name?: string }[]) => {
-      backToLatest()
+      if (images.length || !/^\/config(?:\s+[^\n]*)?$/.test(text.trim())) backToLatest()
       void send(record.id, text, images)
     },
     [record.id, send, backToLatest]
@@ -545,6 +545,9 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           <PopupSelect label="permissions" value={live?.permissionMode ?? record.permissionMode} options={modeOptions} tip="Permission mode: what Claude may do without asking. The list explains every mode." onChange={(v) => window.api.sessions.setPermissionMode(record.id, v as PermissionMode).catch(fail)} minWidth={380} />
           <PopupSelect label="effort" value={record.effort ?? ''} options={effortOptions} tip="Effort level: how much reasoning the model spends per turn (higher = slower, more thorough)" onChange={(v) => window.api.sessions.setEffort(record.id, v as EffortLevel | '').catch(fail)} minWidth={280} />
           <FastSwitch record={record} live={live} providers={providers} onError={fail} />
+          <button className="btn ghost sm" aria-label="Chat settings" data-tip={live?.configError || (live?.configPending ? 'Saved settings are waiting for this turn to finish' : 'Configure this chat or shared Claude Code settings (/config)')} onClick={() => useStore.getState().openChatSettings(record.id)}>
+            <SlidersHorizontal size={13} /> Chat settings
+          </button>
           <span className="spacer" />
           {rl && rl.status !== 'allowed' && (
             <span className={rl.status === 'rejected' ? 'pill red' : 'pill amber'} data-tip={`Rate limit (${rl.rateLimitType})`}>

@@ -36,6 +36,7 @@ import type {
 } from '@shared/types'
 import { HOST_PROTOCOL, LineParser, writeFrame, type Frame, type HostEvent, type HostFile } from '../host/protocol'
 import type { RowPlace } from '@shared/rows'
+import type { ConfigValues, NativeConfigSnapshot } from '@shared/claudeConfig'
 
 export interface HostClientDeps {
   userDataPath: string
@@ -466,6 +467,12 @@ export class HostClient extends EventEmitter {
 
   setFastMode(id: string, on: boolean): Promise<void> {
     return this.call('setFastMode', id, on)
+  }
+  claudeConfig(id: string): Promise<NativeConfigSnapshot> {
+    return this.call('claudeConfig', id)
+  }
+  setClaudeConfig(id: string, values: ConfigValues, revision: string): Promise<{ pending: boolean; restartRequired?: string[] }> {
+    return this.call('setClaudeConfig', id, values, revision)
   }
   rename(id: string, title: string): Promise<void> {
     return this.call('rename', id, title)

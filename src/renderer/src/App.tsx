@@ -7,6 +7,7 @@ import { NewSessionDialog } from './components/dialogs/NewSessionDialog'
 import { SignInDialog } from './components/dialogs/SignInDialog'
 import { ImportSessionDialog } from './components/dialogs/ImportSessionDialog'
 import { SettingsDialog } from './components/dialogs/SettingsDialog'
+import { ChatSettingsDialog } from './components/dialogs/ChatSettingsDialog'
 import { ShortcutsDialog } from './components/dialogs/ShortcutsDialog'
 import { UsageStatus } from './components/status/UsageStatus'
 import { AuthNotice } from './components/status/AuthNotice'
@@ -44,6 +45,7 @@ export default function App() {
   const record = useStore((s) => (s.activeId ? s.records[s.activeId] : undefined))
   const live = useStore((s) => (s.activeId ? s.live[s.activeId] : undefined))
   const dialog = useStore((s) => s.dialog)
+  const configSessionId = useStore((s) => s.configSessionId)
   const setDialog = useStore((s) => s.setDialog)
   const sidebarOpen = useStore((s) => s.sidebarOpen)
   const filesOpen = useStore((s) => s.filesOpen)
@@ -119,6 +121,7 @@ export default function App() {
       }
       if (e.key === 'Escape' && !isComposing(e)) {
         const s = useStore.getState()
+        if (s.dialog === 'chat-settings') return // Its dialog protects unsaved configuration changes.
         if (s.dialog) setDialog(null)
         else if (s.selectedIds.length) s.setSelectedIds([])
       }
@@ -182,6 +185,7 @@ export default function App() {
       {dialog === 'sign-in' && <SignInDialog onClose={() => setDialog(null)} />}
       {dialog === 'import-session' && <ImportSessionDialog onClose={() => setDialog(null)} />}
       {dialog === 'settings' && <SettingsDialog onClose={() => setDialog(null)} />}
+      {dialog === 'chat-settings' && configSessionId && <ChatSettingsDialog sessionId={configSessionId} onClose={() => setDialog(null)} />}
       {dialog === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
       <div className="toasts">
         {toasts.map((t) => (

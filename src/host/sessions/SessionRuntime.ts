@@ -1,11 +1,13 @@
 import { spawn, type ChildProcess } from 'child_process'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import {
+  filterEscalatingDefaultMode,
   getSessionInfo,
   query,
+  resolveSettings,
   type Options,
   type PermissionMode as SdkPermissionMode,
   type PermissionResult,
@@ -48,6 +50,7 @@ import { resumePointBefore } from './branch'
 import { readTranscriptIndex } from './transcriptIndex'
 import { projectDirFor } from './paths'
 import { splitList } from '@shared/util'
+import { configPatch, configValueAt, sessionConfig, setConfigValue, startupResets, validateClaudeConfig, type ConfigValues, type NativeConfigSnapshot } from '@shared/claudeConfig'
 
 /** Unbounded async queue used as the SDK's streaming-input prompt. */
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -297,6 +300,10 @@ export class SessionRuntime {
    * on): Claude Code reports the variant's id, and the chat shows its model's own name instead.
    */
   private runAs: { run: string; model: string } | null = null
+  private pendingConfig: ConfigValues | null = null
+  private startupConfig: ConfigValues = {}
+  private configWrite: Promise<unknown> = Promise.resolve()
+  private configApplying: Promise<void> | null = null
 
   constructor(
     public record: SessionRecord,
@@ -661,7 +668,11 @@ export class SessionRuntime {
   // ------------------------------------------------------------------ process
 
   async ensureStarted(): Promise<void> {
-    if (this.q) return
+    if (this.q) {
+      if (this.pendingConfig && this.live.status === 'idle') await this.applyPendingConfig()
+      if (this.live.configError) throw new Error('Saved chat settings could not be applied. Open Chat settings to correct them before sending another prompt.')
+      return
+    }
     if (!this.startPromise) this.startPromise = this.start().finally(() => (this.startPromise = null))
     await this.startPromise
   }
@@ -676,6 +687,11 @@ export class SessionRuntime {
       throw new Error(this.live.error)
     }
     this.live.cwdMissing = false
+    if (this.record.claudeSettings !== undefined) await this.syncConfigRecord(this.record.claudeSettings)
+    this.pendingConfig = null
+    this.live.configPending = false
+    this.live.configRestartRequired = undefined
+    this.live.configError = undefined
     await this.ensureHistory()
     // Only an idle chat stays so: after an error (a provider that would not start) this start is news.
     if (!this.quietReplace || this.live.status !== 'idle') this.setStatus('starting')
@@ -698,6 +714,7 @@ export class SessionRuntime {
       if (launch.model !== this.record.model || (launch.fast && !this.record.fastMode)) {
         this.deps.log(`[session ${this.id}] provider ${providerId}: using current model ${launch.model}${launch.fast ? ' (fast)' : ''}`)
         this.record.model = launch.model
+        this.noteConfig(['model'], launch.model)
         // A fast variant the chat had as its model is now its model with the fast switch on.
         if (launch.fast) this.record.fastMode = true
         this.live.model = launch.model
@@ -715,6 +732,8 @@ export class SessionRuntime {
     }
     const mode = this.record.permissionMode as SdkPermissionMode
     const settings = this.deps.getSettings()
+    const inherited = await this.inheritedConfig()
+    const checkpointing = this.record.claudeSettings?.fileCheckpointingEnabled ?? inherited.fileCheckpointingEnabled
     const allowed = splitList(settings.allowedTools || '')
     const disallowed = [...new Set([...splitList(settings.disallowedTools || ''), ...(launch?.disallowedTools ?? [])])]
     const sources = ['user', ...(settings.useProjectSettings ? ['project'] : []), ...(settings.useLocalSettings ? ['local'] : [])]
@@ -725,7 +744,7 @@ export class SessionRuntime {
       allowDangerouslySkipPermissions: mode === 'bypassPermissions' ? true : undefined,
       effort: this.record.effort || launch?.effort || undefined,
       includePartialMessages: true,
-      enableFileCheckpointing: settings.fileCheckpointing !== false,
+      enableFileCheckpointing: typeof checkpointing === 'boolean' ? checkpointing : settings.fileCheckpointing !== false,
       forwardSubagentText: true,
       agentProgressSummaries: true,
       perTaskStopAffordance: true,
@@ -744,7 +763,11 @@ export class SessionRuntime {
     // Claude Code keeps fast mode off in apps built on the Agent SDK unless the app asks for it in
     // the flag settings, which is what the chat's fast switch does (a GPT chat runs its model's fast
     // variant instead, above).
-    if (!launch && this.record.fastMode) options.settings = { fastMode: true }
+    const chatSettings = { ...this.record.claudeSettings }
+    if (!launch && this.record.claudeSettings === undefined) chatSettings.fastMode = this.record.fastMode === true
+    if (launch) delete chatSettings.fastMode // Other providers use their fast model variant, not Anthropic fast mode.
+    if (Object.keys(chatSettings).length) options.settings = chatSettings as Options['settings']
+    this.startupConfig = structuredClone(chatSettings)
     const exe = this.deps.getExecutable()
     if (exe) options.pathToClaudeCodeExecutable = exe
     if (resume) {
@@ -819,6 +842,9 @@ export class SessionRuntime {
       this.live.pendingPermissions = []
       this.live.activeTools = []
       this.live.processAlive = false
+      this.pendingConfig = null
+      this.live.configPending = false
+      this.live.configRestartRequired = undefined
       this.setActivity(null, Date.now())
       this.setQueued([])
       // Nothing can be waiting or being answered once the process is gone; the chat falls back to
@@ -1631,6 +1657,132 @@ export class SessionRuntime {
 
   // ---------------------------------------------------------------- controls
 
+  private async inheritedConfig(): Promise<ConfigValues> {
+    const s = this.deps.getSettings()
+    const resolved = await resolveSettings({ cwd: this.record.cwd, settingSources: ['user', ...(s.useProjectSettings ? ['project' as const] : []), ...(s.useLocalSettings ? ['local' as const] : [])] })
+    return filterEscalatingDefaultMode(resolved) as ConfigValues
+  }
+
+  private async syncConfigRecord(values: ConfigValues): Promise<void> {
+    const inherited = await this.inheritedConfig()
+    this.record.model = typeof values.model === 'string' ? values.model : undefined
+    this.record.effort = typeof values.effortLevel === 'string' ? values.effortLevel as EffortLevel : undefined
+    this.record.fastMode = (values.fastMode ?? inherited.fastMode) === true || undefined
+    const mode = configValueAt(values, ['permissions', 'defaultMode']) ?? configValueAt(inherited, ['permissions', 'defaultMode']) ?? 'default'
+    this.record.permissionMode = mode as PermissionMode
+    this.live.effort = this.record.effort ?? null
+    if (!this.q) {
+      this.live.model = this.record.model
+      this.live.permissionMode = this.record.permissionMode
+      this.live.fastModeState = undefined
+      this.live.fastModeReason = undefined
+    }
+  }
+
+  /** getSettings is implemented by this SDK build, but not yet exposed by its Query declaration. */
+  async claudeConfig(): Promise<NativeConfigSnapshot> {
+    const saved = sessionConfig(this.record)
+    const q = this.q as (Query & { getSettings?(): Promise<{ effective?: ConfigValues }> }) | null
+    try { return { saved, effective: q?.getSettings ? (await q.getSettings()).effective : undefined } }
+    catch { return { saved } }
+  }
+
+  setClaudeConfig(values: ConfigValues, revision: string): Promise<{ pending: boolean; restartRequired: string[] }> {
+    const write = this.configWrite.then(() => this.saveClaudeConfig(values, revision))
+    this.configWrite = write.catch(() => undefined)
+    return write
+  }
+
+  private async saveClaudeConfig(values: ConfigValues, revision: string): Promise<{ pending: boolean; restartRequired: string[] }> {
+    if (this.configApplying) await this.configApplying
+    const before = sessionConfig(this.record)
+    if (createHash('sha256').update(JSON.stringify(before)).digest('hex') !== revision) throw new Error('This chat’s settings changed elsewhere. Reload before saving; nothing was overwritten.')
+    const errors = validateClaudeConfig(values, before, true)
+    if (errors.length) throw new Error(errors.join('\n'))
+    const patch = { ...this.pendingConfig, ...configPatch(before, values) }
+    const pending = Boolean(this.q && (this.live.status === 'running' || this.live.status === 'requires_action' || this.live.status === 'starting'))
+    if (this.q && !pending) await this.applyConfig(patch, values)
+    this.record.claudeSettings = structuredClone(values)
+    await this.syncConfigRecord(values)
+    this.deps.saveRecord(this.record)
+    this.pendingConfig = pending ? patch : null
+    this.live.configPending = pending
+    const restartRequired = this.q ? startupResets(this.startupConfig, values) : []
+    this.live.configRestartRequired = restartRequired.length ? restartRequired : undefined
+    this.live.configError = undefined
+    this.scheduleFlush()
+    return { pending, restartRequired }
+  }
+
+  /** The native flag layer shallow-replaces each supplied top-level key; null removes an override. */
+  private async applyConfig(patch: ConfigValues, values: ConfigValues): Promise<void> {
+    const q = this.q
+    if (!q || !Object.keys(patch).length) return
+    const native = { ...patch }
+    let runAs = this.runAs
+    if (this.record.provider) {
+      delete native.fastMode
+      if ('model' in patch || 'fastMode' in patch) {
+        const base = typeof values.model === 'string' ? values.model : this.record.model
+        const fast = (values.fastMode ?? (await this.inheritedConfig()).fastMode) === true
+        const run = base && fast ? await this.deps.fastModel(this.record.provider, base) : undefined
+        native.model = run ?? base ?? null
+        runAs = run && base ? { run, model: base } : null
+      }
+    }
+    try {
+      if (Object.keys(native).length) await q.applyFlagSettings(native as Parameters<Query['applyFlagSettings']>[0])
+      if (Object.hasOwn(patch, 'permissions')) {
+        const inherited = await this.inheritedConfig()
+        const mode = configValueAt(values, ['permissions', 'defaultMode']) ?? configValueAt(inherited, ['permissions', 'defaultMode']) ?? 'default'
+        if (mode !== this.live.permissionMode) await q.setPermissionMode(mode as SdkPermissionMode)
+        this.live.permissionMode = mode as PermissionMode
+      }
+      if (this.q !== q) throw new Error('process ended')
+      this.runAs = runAs
+      if ('fastMode' in patch || 'model' in patch) {
+        this.live.fastModeState = undefined
+        this.live.fastModeReason = undefined
+      }
+      if ('model' in patch) this.live.model = typeof values.model === 'string' ? values.model : undefined
+    } catch {
+      // Do not forward native validation output: it can contain environment or credential values.
+      throw new Error('Claude Code did not accept the live configuration. Some settings may already have applied. Reload the configuration to inspect it; no process was stopped.')
+    }
+  }
+
+  private applyPendingConfig(): Promise<void> {
+    if (this.configApplying) return this.configApplying
+    if (!this.pendingConfig || !this.q) return Promise.resolve()
+    const q = this.q
+    this.configApplying = (async () => {
+      while (this.pendingConfig && this.q === q) {
+        const patch = this.pendingConfig
+        await this.applyConfig(patch, sessionConfig(this.record))
+        if (this.pendingConfig === patch) this.pendingConfig = null
+      }
+      if (this.q === q) {
+        this.live.configPending = this.pendingConfig !== null
+        this.live.configError = undefined
+      }
+    })().catch((err) => {
+      if (this.q === q) this.live.configError = (err as Error).message
+    }).finally(() => {
+      this.configApplying = null
+      this.scheduleFlush()
+    })
+    return this.configApplying
+  }
+
+  /** Keep the full editor and the existing toolbar as two views of the same chat overrides. */
+  private noteConfig(path: string[], value: unknown): void {
+    if (this.record.claudeSettings === undefined) return
+    this.record.claudeSettings = setConfigValue(this.record.claudeSettings, path, value)
+    if (this.pendingConfig && Object.hasOwn(this.pendingConfig, path[0])) this.pendingConfig[path[0]] = this.record.claudeSettings[path[0]] ?? null
+    const restartRequired = this.q ? startupResets(this.startupConfig, this.record.claudeSettings) : []
+    this.live.configRestartRequired = restartRequired.length ? restartRequired : undefined
+  }
+
   /**
    * Change the model, and with it possibly the provider ('codex', 'deepseek', ... or undefined for
    * Anthropic). A provider lives in the process environment, so changing it replaces the process;
@@ -1643,6 +1795,7 @@ export class SessionRuntime {
     const providerChanged = previous.provider !== next
     const wasRunning = Boolean(this.q)
     this.record.model = model || undefined
+    this.noteConfig(['model'], model || undefined)
     this.record.provider = next
     this.live.model = model || undefined
     // What Claude Code said about fast mode was about the model before; it says it again after a turn.
@@ -1657,6 +1810,7 @@ export class SessionRuntime {
         // Nothing was lost: the conversation is on disk, so run it again as it did before.
         this.deps.log(`[session ${this.id}] switching to ${next} failed: ${(err as Error).message}`)
         this.record.model = previous.model
+        this.noteConfig(['model'], previous.model)
         this.record.provider = previous.provider
         this.live.model = previous.model
         this.live.error = undefined
@@ -1699,6 +1853,7 @@ export class SessionRuntime {
    */
   async setFastMode(on: boolean): Promise<void> {
     this.record.fastMode = on || undefined
+    this.noteConfig(['fastMode'], on)
     this.live.fastModeState = undefined
     this.live.fastModeReason = undefined
     this.deps.saveRecord(this.record)
@@ -1746,6 +1901,7 @@ export class SessionRuntime {
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     this.record.permissionMode = mode
+    this.noteConfig(['permissions', 'defaultMode'], mode)
     this.live.permissionMode = mode
     this.deps.saveRecord(this.record)
     if (this.q) await this.q.setPermissionMode(mode as SdkPermissionMode)
@@ -1754,6 +1910,7 @@ export class SessionRuntime {
 
   async setEffort(level: EffortLevel | ''): Promise<void> {
     this.record.effort = level || undefined
+    this.noteConfig(['effortLevel'], level || undefined)
     this.live.effort = level || null
     this.deps.saveRecord(this.record)
     if (this.q) await this.q.applyFlagSettings({ effortLevel: level ? level : null } as never)
@@ -2014,6 +2171,7 @@ export class SessionRuntime {
         this.deps.onTurnFinished(this, this.live.lastPreview, Boolean(msg.is_error) || msg.subtype !== 'success', compactionOnly)
         this.refreshTitle()
         void this.refreshContextUsage('summary')
+        if (this.pendingConfig && this.live.status === 'idle') void this.applyPendingConfig()
         break
       }
       case 'tool_progress': {

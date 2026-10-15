@@ -202,14 +202,16 @@ export function Composer({ sessionId, live, onSend, onInterrupt }: Props) {
     if (!slash) return []
     const q = slash.query.toLowerCase()
     const builtin: SlashCommandView[] = [
+      { name: 'config', description: 'Edit this chat’s configuration or shared Claude Code settings', argumentHint: '[search]' },
       { name: 'compact', description: 'Compact the conversation context', argumentHint: '[instructions]' },
       { name: 'clear', description: 'Start a fresh conversation in this session', argumentHint: '' },
       { name: 'context', description: 'Show context window usage', argumentHint: '' },
       { name: 'cost', description: 'Show token usage and cost', argumentHint: '' },
       { name: 'usage', description: 'Show plan usage limits', argumentHint: '' }
     ]
-    const names = new Set(commands.map((c) => c.name))
-    const all = [...commands, ...builtin.filter((b) => !names.has(b.name))]
+    const native = commands.filter((c) => c.name !== 'config')
+    const names = new Set(native.map((c) => c.name))
+    const all = [...native, ...builtin.filter((b) => !names.has(b.name))]
     return all
       .map((c) => ({ c, rank: rankCommand(c, q) }))
       .filter((x) => x.rank >= 0)

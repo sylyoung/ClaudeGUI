@@ -18,6 +18,7 @@ import os from 'os'
 import path from 'path'
 import type { AppSettings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/defaults'
+import { sessionRecordForWindow } from '@shared/claudeConfig'
 import { SessionsStore, SettingsStore } from '../main/store'
 import { getLoginShellEnv, getSpawnEnv, parseExtraEnv, resetLoginShellEnvCache } from '../main/env'
 import { ProviderService } from './providers/ProviderService'
@@ -83,6 +84,7 @@ let exitTimer: NodeJS.Timeout | null = null
 const store = new SessionsStore(dataDir)
 
 function emit(ev: HostEvent): void {
+  if (ev.e === 'session' && ev.d.type === 'record') ev = { ...ev, d: { ...ev.d, record: sessionRecordForWindow(ev.d.record) } }
   if (!client) {
     if (ev.e === 'notify') log(`[notify while detached] ${ev.d.title}: ${ev.d.body}`)
     return
@@ -144,11 +146,11 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
     case 'toolImages':
       return manager.toolImages(a[0], a[1])
     case 'create':
-      return manager.create(a[0])
+      return sessionRecordForWindow(manager.create(a[0]))
     case 'importCli':
-      return manager.importCli(a[0], a[1], a[2])
+      return sessionRecordForWindow(await manager.importCli(a[0], a[1], a[2]))
     case 'fork':
-      return manager.fork(a[0], a[1])
+      return sessionRecordForWindow(await manager.fork(a[0], a[1]))
     case 'runShell':
       return manager.runShell(a[0], a[1])
     case 'stopShell':
@@ -181,6 +183,10 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.get(a[0]).setEffort(a[1])
     case 'setFastMode':
       return manager.get(a[0]).setFastMode(Boolean(a[1]))
+    case 'claudeConfig':
+      return manager.get(a[0]).claudeConfig()
+    case 'setClaudeConfig':
+      return manager.get(a[0]).setClaudeConfig(a[1], a[2])
     case 'rename':
       return manager.rename(a[0], a[1])
     case 'setPinned':
@@ -222,7 +228,7 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
     case 'moveSession':
       return manager.moveSession(a[0], a[1] ?? {})
     case 'relocate':
-      return manager.relocate(a[0], a[1])
+      return sessionRecordForWindow(await manager.relocate(a[0], a[1]))
     case 'providers':
       return providers.list(Boolean(a[0]))
     case 'planUsage':

@@ -1,0 +1,54 @@
+.config-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 10px; }
+.config-heading, .config-scope-row, .config-search-row, .config-setting-head, .config-child-input, .config-leave { display: flex; align-items: center; gap: 9px; }
+.config-heading > b { max-width: 55%; }
+.config-scope-row > label { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
+.config-scope-row > .select { width: 180px; }
+.config-scope-row > .faint { margin-left: auto; font-size: 11.5px; }
+.config-scope-info { font-size: 12px; line-height: 1.5; }
+.config-file { display: block; overflow-wrap: anywhere; color: var(--text-dim); font-size: 11px; }
+.config-search-row > .input { flex: 1; min-width: 120px; }
+.config-search-row > .check { white-space: nowrap; font-size: 12px; }
+.config-search-row > .seg { flex-shrink: 0; }
+.config-content { flex: 1; min-height: 100px; display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 16px; overflow: hidden; }
+.config-content > .settings-nav { overflow-y: auto; }
+.config-fields { overflow: auto; min-width: 0; padding-right: 8px; scroll-behavior: smooth; }
+.config-results { font-size: 11.5px; padding-bottom: 6px; }
+.config-setting { border-top: 1px solid var(--border); padding: 12px 0; display: flex; flex-direction: column; gap: 7px; }
+.config-setting-head { min-height: 27px; }
+.config-setting-head > label { font-size: 13px; font-weight: 600; }
+.config-setting-head > .faint { font-size: 11px; white-space: nowrap; }
+.config-reset { width: 50px; flex-shrink: 0; }
+.config-key { color: var(--text-faint); font-size: 11px; overflow-wrap: anywhere; }
+.config-description { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; }
+.config-description > summary { cursor: pointer; }
+.config-description > p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 2px; }
+.config-setting > .input, .config-setting > .select { width: 100%; max-width: none; }
+.config-setting-notice { color: var(--text-dim); background: var(--bg-hover); border-radius: 5px; padding: 6px 8px; font-size: 11.5px; line-height: 1.5; }
+.config-object { border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.config-object > summary { cursor: pointer; padding: 8px 10px; }
+.config-object > summary > .faint { float: right; }
+.config-nested { border-top: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.config-child { display: flex; flex-direction: column; gap: 5px; }
+.config-child > label { color: var(--text-dim); font-size: 12px; }
+.config-child > label > code { font-size: 10.5px; color: var(--text-faint); margin-left: 5px; }
+.config-child-input { align-items: flex-start; }
+.config-child-input > :first-child { flex: 1; min-width: 0; max-width: none; }
+.config-child-input > .btn { flex-shrink: 0; width: 50px; }
+.config-json-field > textarea { resize: vertical; min-height: 76px; font-size: 11.5px; tab-size: 2; }
+.config-full-json { width: 100%; min-height: 320px; height: calc(100% - 55px); margin-top: 10px; resize: vertical; font-size: 12px; line-height: 1.5; }
+.config-readonly { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-hover); padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.config-fields h3 { font-size: 13px; margin: 8px 0; }
+.config-warning { display: flex; align-items: flex-start; gap: 7px; border: 1px solid var(--border-strong); border-radius: 6px; padding: 9px; font-size: 12px; line-height: 1.5; }
+.config-warning > svg { flex-shrink: 0; margin-top: 2px; }
+.config-error { color: var(--red); white-space: pre-wrap; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.config-footer { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+.config-status { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; min-height: 34px; max-height: 88px; overflow: auto; }
+.config-confirm { font-size: 12px; }
+.config-footer .actions > .btn.primary { min-width: 205px; }
+.config-leave { min-height: 80px; flex-wrap: wrap; }
+.config-editor .faint { line-height: 1.45; }
+@media (max-width: 820px) {
+  .config-content { grid-template-columns: 135px minmax(0, 1fr); gap: 10px; }
+  .config-search-row { flex-wrap: wrap; }
+  .config-scope-row > .faint { display: none; }
+}

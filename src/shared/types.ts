@@ -28,6 +28,8 @@ export interface SessionRecord {
    * own id either way. A model without fast mode runs at standard speed and the switch is kept.
    */
   fastMode?: boolean
+  /** Native Claude Code setting overrides for this chat, separate from shared settings files. */
+  claudeSettings?: Record<string, unknown>
   createdAt: number
   lastActiveAt: number
   /** When you last sent a prompt (not when Claude last answered); drives the "recent" order. */
@@ -214,6 +216,11 @@ export interface SessionLiveState {
   id: string
   status: SessionStatus
   processAlive: boolean
+  /** Saved configuration waiting for the current turn, or a native settings rejection. */
+  configPending?: boolean
+  /** Resets of startup flag values that cannot fully inherit until the process next starts. */
+  configRestartRequired?: string[]
+  configError?: string
   model?: string
   permissionMode?: PermissionMode
   effort?: EffortLevel | null

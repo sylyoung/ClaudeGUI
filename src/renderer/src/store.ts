@@ -25,7 +25,7 @@ import { comparatorFor } from '@shared/util'
 import { emptyUsageState } from '@shared/defaults'
 import { rowPlace, trimLimit, withKeptChildren } from '@shared/rows'
 
-export type DialogKind = null | 'new-session' | 'import-session' | 'settings' | 'shortcuts' | 'sign-in'
+export type DialogKind = null | 'new-session' | 'import-session' | 'settings' | 'chat-settings' | 'shortcuts' | 'sign-in'
 export type SettingsTab = 'general' | 'appearance' | 'claude' | 'files' | 'git' | 'usage' | 'advanced' | 'about'
 
 export interface Toast {
@@ -114,6 +114,8 @@ interface State {
   earlierBusy: Record<string, boolean>
   activeId?: string
   dialog: DialogKind
+  configSessionId?: string
+  configSearch?: string
   /** Tab to open the Settings dialog on (null = last used). */
   settingsTab: SettingsTab | null
   sidebarOpen: boolean
@@ -160,6 +162,7 @@ interface State {
   answerPermission: (id: string, requestId: string, decision: PermissionDecision) => Promise<void>
   setDialog: (d: DialogKind) => void
   openSettings: (tab?: SettingsTab) => void
+  openChatSettings: (id: string, search?: string) => void
   setUpdate: (u: UpdateState) => void
   /** Re-read records and live states from the main process (after the session host was replaced). */
   reloadSessions: () => Promise<void>
@@ -523,6 +526,12 @@ export const useStore = create<State>((set, get) => ({
   },
 
   send: async (id, text, images) => {
+    // Configuration is a local UI action, never an inference prompt or a queued chat message.
+    const config = /^\/config(?:\s+([^\n]*))?$/.exec(text.trim())
+    if (config && !images?.length) {
+      get().openChatSettings(id, config[1]?.trim())
+      return
+    }
     // "!" at the start runs the line as a shell command, as in the terminal ("！" is the same key
     // typed with a Chinese input method on).
     if (/^[!！]/.test(text) && !images?.length) {
@@ -629,6 +638,7 @@ export const useStore = create<State>((set, get) => ({
     if (following && (get().messages[id]?.length ?? 0) > ROWS_MAX) void trimChat(id, ROWS_MAX)
   },
   openSettings: (tab) => set({ dialog: 'settings', settingsTab: tab ?? null }),
+  openChatSettings: (id, search) => set({ dialog: 'chat-settings', configSessionId: id, configSearch: search ?? '' }),
   setUpdate: (update) => set({ update }),
 
   toast: (text, kind = 'info') => {
