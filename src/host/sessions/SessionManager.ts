@@ -31,6 +31,7 @@ import type { SessionsStore } from '../../main/store'
 import { SessionRuntime, lastPromptTimeFromFile, projectDirFor, type RateLimitEventInfo } from './SessionRuntime'
 import { branchChat } from './branch'
 import { messagesForWindow } from './forWindow'
+import { IDLE_COMPACTION_POLL_MS } from './idleCompaction'
 import type { ProviderLaunch } from '../providers/ProviderService'
 
 export type NotifyKind = 'turn' | 'permission' | 'error'
@@ -78,6 +79,7 @@ export class SessionManager {
   private recapTimer: NodeJS.Timeout | null = null
   /** Chats that finished a turn out of sight and are waiting to be quiet enough to recap, by id. */
   private recapSoon = new Map<string, NodeJS.Timeout>()
+  private idleCompactionTimer: NodeJS.Timeout | null = null
 
   constructor(
     private store: SessionsStore,
@@ -86,6 +88,7 @@ export class SessionManager {
     for (const record of store.listSessions()) this.runtimes.set(record.id, this.makeRuntime(record))
     this.activeSessionId = store.getActiveSession()
     this.assignMissingGroupColors()
+    this.startIdleCompactionChecks()
     void this.backfillPromptTimes().then(() => this.fillSnapshots())
   }
 
@@ -145,6 +148,7 @@ export class SessionManager {
         this.host.broadcast({ type: 'record', record: r })
       },
       onTurnFinished: (rt, preview, isError, silent) => {
+        this.startIdleCompactionChecks()
         const foreground = this.host.isWindowFocused() && this.activeSessionId === rt.id
         if (!foreground && !silent) {
           rt.bumpUnread()
@@ -568,6 +572,20 @@ export class SessionManager {
     this.refreshBadge()
   }
 
+  /** Human input only: no key text, pointer coordinates or transcript content crosses this call. */
+  noteUserActivity(id?: string): void {
+    const rt = this.runtimes.get(id ?? this.activeSessionId ?? '')
+    rt?.noteUserActivity()
+  }
+
+  private startIdleCompactionChecks(): void {
+    if (this.idleCompactionTimer) return
+    this.idleCompactionTimer = setInterval(() => {
+      for (const rt of this.runtimes.values()) void rt.checkIdleCompaction()
+    }, IDLE_COMPACTION_POLL_MS)
+    this.idleCompactionTimer.unref?.()
+  }
+
   /**
    * The window was left or come back to. Claude Code writes its recap when the terminal it is in
    * loses focus and the session is then left alone for a while; this window's focus stands in for
@@ -635,6 +653,8 @@ export class SessionManager {
   async stopAll(): Promise<void> {
     const all = [...this.runtimes.values()].filter((r) => r.isAlive)
     await Promise.all(all.map((r) => r.stop(true).catch(() => undefined)))
+    if (this.idleCompactionTimer) clearInterval(this.idleCompactionTimer)
+    this.idleCompactionTimer = null
   }
 
   aliveCount(): number {

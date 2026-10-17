@@ -258,6 +258,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle('sessions:backgroundTasks', (id: string, toolUseId?: string) => host.backgroundTasks(id, toolUseId))
   handle('sessions:clearHandoffNote', (id: string) => host.clearHandoffNote(id))
   handle('sessions:setDraft', (id: string, text: string) => host.setDraft(id, text))
+  handle('sessions:noteUserActivity', (id: string) => host.noteUserActivity(id))
   handle('sessions:commands', (id: string) => host.commands(id))
   handle('sessions:models', (id: string) => host.models(id))
   handle('sessions:contextUsage', (id: string, full?: boolean) => host.contextUsage(id, full))

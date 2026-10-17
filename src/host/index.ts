@@ -205,6 +205,8 @@ async function call(m: string, p: unknown[]): Promise<unknown> {
       return manager.get(a[0]).clearHandoffNote()
     case 'setDraft':
       return manager.get(a[0]).setDraft(a[1])
+    case 'noteUserActivity':
+      return manager.noteUserActivity(a[0])
     case 'commands':
       return manager.get(a[0]).getCommands()
     case 'models':

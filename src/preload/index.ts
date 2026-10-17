@@ -175,6 +175,8 @@ const api = {
     clearHandoffNote: (id: string) => invoke<void>('sessions:clearHandoffNote', id),
     /** The unsent text of the chat's input box, kept with the chat. */
     setDraft: (id: string, text: string) => invoke<void>('sessions:setDraft', id, text),
+    /** Presence only: never sends key text or pointer coordinates. */
+    noteUserActivity: (id: string) => invoke<void>('sessions:noteUserActivity', id),
     commands: (id: string) => invoke<SlashCommandView[]>('sessions:commands', id),
     models: (id: string) => invoke<ModelInfoView[]>('sessions:models', id),
     contextUsage: (id: string, full?: boolean) => invoke<SessionLiveState['contextUsage'] | null>('sessions:contextUsage', id, full),

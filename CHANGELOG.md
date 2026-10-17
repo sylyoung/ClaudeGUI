@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.65 — 2026-10-17
+
+### Idle compaction
+
+- Chat settings and `/config idle` now expose Idle compaction and its minimum-context-token
+  setting, with independent chat, user, project and local-project scopes. It is off in ClaudeGUI
+  until explicitly enabled in one of those scopes.
+- ClaudeGUI schedules Claude Code's own `/compact` command at about 54 minutes, before a warm
+  one-hour prompt cache expires, with a default 200,000-token minimum. The app supplies the idle
+  scheduling that ordinary SDK sessions lack; it does not claim to activate the terminal-only
+  timer or replace Claude Code's summarization implementation.
+- Eligibility is shown in the dialog. Busy chats, queued prompts, permissions, background tasks,
+  recent human activity, request-setting changes, usage warnings/limits and fast mode prevent an
+  automatic request. Five-minute/expired caches and missed wakeups are skipped. Compaction uses
+  model tokens; saving settings does not itself send a prompt or start a stopped process.
+- Automatic compaction does not mark a chat read, raise an answer notification, replace its recap,
+  or move it in recent-chat order. Incoming prompts and settings edits invalidate an in-flight
+  eligibility check; a failed compaction is not retried on the same cache window.
+- Bundles Claude Agent SDK 0.3.301 / Claude Code 2.1.301 and regenerates the complete 174-setting
+  catalogue. The new idle setting requires session host 1.0.65 or later; older hosts stay running
+  and the dialog explains when a full quit/reopen is needed after ongoing work finishes.
+
 ## 1.0.64 — 2026-10-15
 
 ### Full chat configuration

@@ -13,7 +13,7 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.64** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.65** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
@@ -65,6 +65,18 @@ repository (ClaudeGUI → Check for Updates…).
   never restarts a process; startup-only changes and resets are labelled. Chat overrides need a
   session host from 1.0.64 or later. Detected secrets are hidden in the editor but remain in local
   JSON storage, so prefer credential helpers rather than storing secret values directly.
+- **Idle compaction**: open `/config idle` or Chat settings, select a scope, and explicitly set
+  **Idle compaction → On**. ClaudeGUI schedules Claude Code's native `/compact` after about 54
+  minutes without a request, only while the CLI reports a warm one-hour prompt cache and the
+  context reaches the default 200,000-token minimum. The same field includes a minimum-token
+  editor; values below 100,000 are raised to 100,000. The app owns the scheduling because Claude
+  Code's terminal idle timer does not run in ordinary SDK sessions; it does not implement another
+  summarizer or impersonate a terminal client. This is opt-in and uses model tokens. Busy chats,
+  queued prompts, permissions, background tasks, recent human activity, request-setting changes,
+  usage warnings/limits and fast mode prevent an automatic request. Cold/five-minute caches and
+  missed wakeups are skipped rather than triggering a costly late compaction. Eligibility is shown
+  in the dialog. Requires session host 1.0.65 or later; finish ongoing work before fully quitting
+  and reopening to replace an older host. Updating the window alone keeps that host and its chats.
 - **Rendered chat**: GitHub-flavoured markdown with tables and syntax-highlighted code, collapsible
   tool cards (Bash command + output, Edit diffs, Write previews, Read results, Grep/Glob, Agent
   subagents with nested transcripts, TodoWrite checklists), thinking blocks, per-turn duration.
@@ -230,4 +242,7 @@ transcript as well. `CLAUDEGUI_USER_DATA=<dir>` moves the settings/session index
 - `npm run test:configuration` checks the settings catalogue, scoped persistence, conflicts, secret
   preservation and native startup/live controls in an isolated home and Git repository. It sends no
   inference prompts and does not use real credentials or chats.
+- `npm run test:idle-compaction` also checks idle timing, cache eligibility, presence and message
+  races, host compatibility, and native compaction against a local synthetic API fixture. No
+  provider inference is sent, no fast-mode prompts run, and no real credentials or chats are used.
 - Architecture: `docs/ARCHITECTURE.md`; release notes: `CHANGELOG.md`.

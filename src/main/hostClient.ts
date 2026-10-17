@@ -37,6 +37,7 @@ import type {
 import { HOST_PROTOCOL, LineParser, writeFrame, type Frame, type HostEvent, type HostFile } from '../host/protocol'
 import type { RowPlace } from '@shared/rows'
 import type { ConfigValues, NativeConfigSnapshot } from '@shared/claudeConfig'
+import { compareVersions, parseVersion } from '@shared/util'
 
 export interface HostClientDeps {
   userDataPath: string
@@ -505,6 +506,11 @@ export class HostClient extends EventEmitter {
   /** Keep the unsent text of a chat's input box with the chat, so quitting cannot lose it. */
   setDraft(id: string, text: string): Promise<void> {
     return this.call('setDraft', id, text)
+  }
+  /** Activity never starts a host, and older hosts keep running without unknown-method calls. */
+  noteUserActivity(id: string): Promise<void> {
+    if (!this.connected || !parseVersion(this.status.version ?? '') || compareVersions(this.status.version!, '1.0.65') < 0) return Promise.resolve()
+    return this.call('noteUserActivity', id)
   }
   commands(id: string): Promise<SlashCommandView[]> {
     return this.call('commands', id)

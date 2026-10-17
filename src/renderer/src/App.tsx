@@ -71,6 +71,24 @@ export default function App() {
     return () => offs.forEach((off) => off())
   }, [init, applyEvent])
 
+  // Idle compaction needs human presence, not message text or programmatic scrolling.
+  useEffect(() => {
+    let lastSentAt = 0
+    const noteActivity = (event: Event) => {
+      if (!event.isTrusted || !document.hasFocus()) return
+      const now = Date.now()
+      if (now - lastSentAt < 1000) return
+      const s = useStore.getState()
+      const id = s.dialog === 'chat-settings' ? s.configSessionId ?? s.activeId : s.activeId
+      if (!id) return
+      lastSentAt = now
+      void window.api.sessions.noteUserActivity(id).catch(() => undefined)
+    }
+    const events = ['keydown', 'pointerdown', 'pointermove', 'wheel', 'focus']
+    for (const event of events) window.addEventListener(event, noteActivity, { capture: true, passive: true })
+    return () => { for (const event of events) window.removeEventListener(event, noteActivity, true) }
+  }, [])
+
   // keyboard shortcuts + menu commands
   useEffect(() => {
     const cycle = (dir: 1 | -1) => {

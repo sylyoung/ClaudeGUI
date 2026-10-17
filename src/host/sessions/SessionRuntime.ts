@@ -24,6 +24,7 @@ import type {
   EarlierMessages,
   EffortLevel,
   HistoryPage,
+  IdleCompactionState,
   ImageAttachment,
   ModelInfoView,
   PendingPermission,
@@ -50,7 +51,8 @@ import { resumePointBefore } from './branch'
 import { readTranscriptIndex } from './transcriptIndex'
 import { projectDirFor } from './paths'
 import { splitList } from '@shared/util'
-import { configPatch, configValueAt, sessionConfig, setConfigValue, startupResets, validateClaudeConfig, type ConfigValues, type NativeConfigSnapshot } from '@shared/claudeConfig'
+import { IDLE_COMPACTION_MIN_TOKENS_ENV, configPatch, configValueAt, sameConfig, sessionConfig, setConfigValue, startupResets, validateClaudeConfig, type ConfigValues, type NativeConfigSnapshot } from '@shared/claudeConfig'
+import { idleCompactionCache, idleCompactionPlan, idleCompactionRequestSettingsChanged, idleCompactionRequestSettingsKey } from './idleCompaction'
 
 /** Unbounded async queue used as the SDK's streaming-input prompt. */
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -301,9 +303,18 @@ export class SessionRuntime {
    */
   private runAs: { run: string; model: string } | null = null
   private pendingConfig: ConfigValues | null = null
+  private pendingConfigInvalidatesCache = false
   private startupConfig: ConfigValues = {}
   private configWrite: Promise<unknown> = Promise.resolve()
   private configApplying: Promise<void> | null = null
+  private idleCompactionCheck: Promise<void> | null = null
+  private idleCompactionGeneration = 0
+  private idleCompactionAttempted = false
+  private idleCompactionInvalidated = true
+  private idleCompactionSettingsKey: string | undefined
+  private idleCompactionInteractionAt = 0
+  private idleCompactionEnv: Record<string, string | undefined> = {}
+  private idleCompactionTurn: { id: string; previousAssistantText: string } | null = null
 
   constructor(
     public record: SessionRecord,
@@ -665,6 +676,90 @@ export class SessionRuntime {
     }
   }
 
+  // --------------------------------------------------------- idle compaction
+
+  noteUserActivity(): void {
+    this.idleCompactionInteractionAt = Date.now()
+    this.idleCompactionGeneration += 1
+  }
+
+  private noteRequestSettingsChanged(): void {
+    this.idleCompactionGeneration += 1
+    this.idleCompactionInvalidated = true
+  }
+
+  private noteIdleCompaction(state: IdleCompactionState): void {
+    if (sameConfig(this.live.idleCompaction, state)) return
+    this.live.idleCompaction = state
+    this.scheduleFlush()
+  }
+
+  private idleCompactionContext() {
+    return {
+      busy: this.stopping || this.live.status !== 'idle' || this.hasUnfinishedPrompt() || this.live.queuedCount > 0 || Boolean(this.queue?.size) ||
+        this.live.pendingPermissions.length > 0 || this.live.activeTools.length > 0 || this.shellRuns.size > 0 || Boolean(this.live.runningShellIds?.length) ||
+        this.live.backgroundTasks.some((t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused' || t.status === undefined) ||
+        this.recapInFlight || Boolean(this.pendingConfig || this.configApplying || this.live.configError),
+      invalidated: this.idleCompactionInvalidated,
+      fastMode: this.record.fastMode === true || this.live.fastModeState === 'on' || this.runAs !== null,
+      rateLimited: Boolean(this.live.rateLimit && this.live.rateLimit.status !== 'allowed'),
+      lastInteractionAt: this.idleCompactionInteractionAt,
+      contextTokens: this.live.contextTokens ?? 0
+    }
+  }
+
+  /** Only read-only controls until every condition is met; never start a stopped chat. */
+  checkIdleCompaction(): Promise<void> {
+    if (this.idleCompactionCheck) return this.idleCompactionCheck
+    if (!this.q || !this.queue || this.stopping || this.idleCompactionTurn || this.idleCompactionAttempted) return Promise.resolve()
+    const q = this.q as Query & {
+      getSettings?(): Promise<{ effective?: ConfigValues }>
+      request?(request: { subtype: string }): Promise<{ response?: { text?: string } }>
+    }
+    const generation = this.idleCompactionGeneration
+    const current = () => this.q === q && generation === this.idleCompactionGeneration && !this.stopping
+    if (this.idleCompactionContext().busy) {
+      if (this.live.idleCompaction?.status === 'scheduled') this.noteIdleCompaction({ ...this.live.idleCompaction, status: 'waiting', nextAt: undefined, reason: 'Waiting for the chat, its queue, permissions and background tasks to become idle.' })
+      return Promise.resolve()
+    }
+    this.idleCompactionCheck = (async () => {
+      if (!q.getSettings || !q.request || !this.live.slashCommands?.some((c) => c.name === 'compact')) {
+        if (current()) this.noteIdleCompaction({ status: 'unsupported', reason: 'This Claude Code runtime does not expose the native settings, cache report and /compact command required for safe idle compaction.' })
+        return
+      }
+      const settings = (await q.getSettings()).effective
+      if (!current() || !settings) return
+      const settingsKey = idleCompactionRequestSettingsKey(settings)
+      if (this.idleCompactionSettingsKey && settingsKey !== this.idleCompactionSettingsKey) this.idleCompactionInvalidated = true
+      if (!this.idleCompactionInvalidated) this.idleCompactionSettingsKey = settingsKey
+      if (settings.idleCompaction !== true) {
+        this.noteIdleCompaction(idleCompactionPlan(settings, this.idleCompactionEnv, null, this.idleCompactionContext(), Date.now()))
+        return
+      }
+      const checkedAt = Date.now()
+      const report = await q.request({ subtype: 'get_session_cost' })
+      if (!current()) return
+      const cache = typeof report.response?.text === 'string' ? idleCompactionCache(report.response.text, checkedAt) : null
+      const plan = idleCompactionPlan(settings, this.idleCompactionEnv, cache, this.idleCompactionContext(), Date.now())
+      if (plan.status !== 'ready') { this.noteIdleCompaction(plan); return }
+      // There is no await between the final guards and queueing the native command. A prompt or
+      // settings change during either read-only control invalidates the captured generation above.
+      if (!current() || this.idleCompactionContext().busy || !this.queue) return
+      const id = randomUUID()
+      this.idleCompactionAttempted = true
+      this.idleCompactionTurn = { id, previousAssistantText: this.lastAssistantText }
+      this.setDelivery(id, 'working')
+      this.setStatus('running')
+      this.setActivity('compacting', Date.now())
+      this.noteIdleCompaction({ ...plan, status: 'compacting', reason: 'Compacting while idle with Claude Code’s native /compact command. This uses model tokens.' })
+      this.queue.push({ type: 'user', message: { role: 'user', content: '/compact' }, isSynthetic: true, parent_tool_use_id: null, uuid: id as never, session_id: this.record.claudeSessionId })
+    })().catch(() => {
+      // A native error can contain settings or account data; keep it out of state and logs.
+      if (current()) this.noteIdleCompaction({ status: 'unsupported', reason: 'The native cache/settings report could not be read. No automatic compaction was requested.' })
+    }).finally(() => { this.idleCompactionCheck = null })
+    return this.idleCompactionCheck
+  }
+
   // ------------------------------------------------------------------ process
 
   async ensureStarted(): Promise<void> {
@@ -679,6 +774,12 @@ export class SessionRuntime {
 
   private async start(): Promise<void> {
     this.stopping = false
+    this.idleCompactionGeneration += 1
+    this.idleCompactionAttempted = false
+    this.idleCompactionInvalidated = true
+    this.idleCompactionSettingsKey = undefined
+    this.idleCompactionTurn = null
+    this.live.idleCompaction = undefined
     if (!isDirectory(this.record.cwd)) {
       this.live.cwdMissing = true
       this.live.error = `Working directory not found: ${this.record.cwd}. Use "Change working directory…" to point the session at the folder's new location.`
@@ -689,6 +790,7 @@ export class SessionRuntime {
     this.live.cwdMissing = false
     if (this.record.claudeSettings !== undefined) await this.syncConfigRecord(this.record.claudeSettings)
     this.pendingConfig = null
+    this.pendingConfigInvalidatesCache = false
     this.live.configPending = false
     this.live.configRestartRequired = undefined
     this.live.configError = undefined
@@ -723,6 +825,7 @@ export class SessionRuntime {
     }
     this.runAs = launch?.fast ? { run: launch.runModel, model: launch.model } : null
     const env = launch ? launch.env : await this.deps.getEnv()
+    this.idleCompactionEnv = Object.fromEntries(['DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT', IDLE_COMPACTION_MIN_TOKENS_ENV].map((key) => [key, env[key]]))
     let resume = false
     try {
       const info = await getSessionInfo(this.record.claudeSessionId, { dir: this.record.cwd })
@@ -842,7 +945,11 @@ export class SessionRuntime {
       this.live.pendingPermissions = []
       this.live.activeTools = []
       this.live.processAlive = false
+      this.idleCompactionGeneration += 1
+      this.idleCompactionTurn = null
+      this.live.idleCompaction = undefined
       this.pendingConfig = null
+      this.pendingConfigInvalidatesCache = false
       this.live.configPending = false
       this.live.configRestartRequired = undefined
       this.setActivity(null, Date.now())
@@ -930,6 +1037,7 @@ export class SessionRuntime {
   setDraft(text: string): void {
     const draft = text || undefined
     if (this.record.draft === draft) return
+    this.noteUserActivity()
     this.record.draft = draft
     this.deps.saveRecord(this.record)
   }
@@ -943,6 +1051,7 @@ export class SessionRuntime {
   }
 
   async stop(graceful = true): Promise<void> {
+    this.idleCompactionGeneration += 1
     // The note is written as the stop begins, not once the process has ended: a chat in the middle
     // of work can take longer to end than a quitting session host waits for it, and those are the
     // chats the note is for (five of 41 were still ending when the host exited on 23 Sep).
@@ -1114,6 +1223,7 @@ export class SessionRuntime {
    * go on instead of being left "not running".
    */
   async rewind(messageId: string, restoreFiles: boolean): Promise<RewindResult> {
+    this.noteRequestSettingsChanged()
     const point = await this.rewindPoint(messageId)
     const forkAt = point.forkAt
     if (!forkAt) throw new Error(point.reason ?? this.noForkReason(messageId))
@@ -1297,6 +1407,7 @@ export class SessionRuntime {
    * prompt. Returns the id of the row.
    */
   async runShell(command: string): Promise<string> {
+    this.noteUserActivity()
     const cmd = command.trim()
     if (!cmd) throw new Error('Type a command after "!"')
     // As with a prompt: the line appears in the chat first, and is taken out again if the chat
@@ -1688,6 +1799,7 @@ export class SessionRuntime {
   }
 
   setClaudeConfig(values: ConfigValues, revision: string): Promise<{ pending: boolean; restartRequired: string[] }> {
+    this.noteUserActivity()
     const write = this.configWrite.then(() => this.saveClaudeConfig(values, revision))
     this.configWrite = write.catch(() => undefined)
     return write
@@ -1700,24 +1812,31 @@ export class SessionRuntime {
     const errors = validateClaudeConfig(values, before, true)
     if (errors.length) throw new Error(errors.join('\n'))
     const patch = { ...this.pendingConfig, ...configPatch(before, values) }
+    const invalidatesCache = this.pendingConfigInvalidatesCache || idleCompactionRequestSettingsChanged(before, values)
+    this.idleCompactionGeneration += 1
+    if (invalidatesCache) this.idleCompactionInvalidated = true
     const pending = Boolean(this.q && (this.live.status === 'running' || this.live.status === 'requires_action' || this.live.status === 'starting'))
-    if (this.q && !pending) await this.applyConfig(patch, values)
+    if (this.q && !pending) await this.applyConfig(patch, values, invalidatesCache)
     this.record.claudeSettings = structuredClone(values)
     await this.syncConfigRecord(values)
     this.deps.saveRecord(this.record)
     this.pendingConfig = pending ? patch : null
+    this.pendingConfigInvalidatesCache = pending && invalidatesCache
     this.live.configPending = pending
     const restartRequired = this.q ? startupResets(this.startupConfig, values) : []
     this.live.configRestartRequired = restartRequired.length ? restartRequired : undefined
     this.live.configError = undefined
     this.scheduleFlush()
+    if (!pending) void this.checkIdleCompaction()
     return { pending, restartRequired }
   }
 
   /** The native flag layer shallow-replaces each supplied top-level key; null removes an override. */
-  private async applyConfig(patch: ConfigValues, values: ConfigValues): Promise<void> {
+  private async applyConfig(patch: ConfigValues, values: ConfigValues, invalidatesCache: boolean): Promise<void> {
     const q = this.q
     if (!q || !Object.keys(patch).length) return
+    this.idleCompactionGeneration += 1
+    if (invalidatesCache) this.idleCompactionInvalidated = true
     const native = { ...patch }
     let runAs = this.runAs
     if (this.record.provider) {
@@ -1758,8 +1877,8 @@ export class SessionRuntime {
     this.configApplying = (async () => {
       while (this.pendingConfig && this.q === q) {
         const patch = this.pendingConfig
-        await this.applyConfig(patch, sessionConfig(this.record))
-        if (this.pendingConfig === patch) this.pendingConfig = null
+        await this.applyConfig(patch, sessionConfig(this.record), this.pendingConfigInvalidatesCache)
+        if (this.pendingConfig === patch) { this.pendingConfig = null; this.pendingConfigInvalidatesCache = false }
       }
       if (this.q === q) {
         this.live.configPending = this.pendingConfig !== null
@@ -1790,6 +1909,7 @@ export class SessionRuntime {
    * When the new provider cannot start, the chat goes back to what it ran on and stays usable.
    */
   async setModel(model: string, provider?: string): Promise<void> {
+    this.noteRequestSettingsChanged()
     const next = provider && provider !== 'anthropic' ? provider : undefined
     const previous = { model: this.record.model, provider: this.record.provider ?? undefined }
     const providerChanged = previous.provider !== next
@@ -1852,6 +1972,7 @@ export class SessionRuntime {
    * bridge the running process switches to the model's fast variant, or back, as to any other model.
    */
   async setFastMode(on: boolean): Promise<void> {
+    this.noteRequestSettingsChanged()
     this.record.fastMode = on || undefined
     this.noteConfig(['fastMode'], on)
     this.live.fastModeState = undefined
@@ -1900,6 +2021,7 @@ export class SessionRuntime {
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
+    this.noteRequestSettingsChanged()
     this.record.permissionMode = mode
     this.noteConfig(['permissions', 'defaultMode'], mode)
     this.live.permissionMode = mode
@@ -1909,6 +2031,7 @@ export class SessionRuntime {
   }
 
   async setEffort(level: EffortLevel | ''): Promise<void> {
+    this.noteRequestSettingsChanged()
     this.record.effort = level || undefined
     this.noteConfig(['effortLevel'], level || undefined)
     this.live.effort = level || null
@@ -2003,6 +2126,7 @@ export class SessionRuntime {
   }
 
   markRead(): void {
+    this.noteUserActivity()
     if (this.live.unread) {
       this.live.unread = 0
       this.scheduleFlush()
@@ -2065,7 +2189,15 @@ export class SessionRuntime {
         const usage = msg.message.usage as unknown as Record<string, number> | undefined
         if (usage && !msg.parent_tool_use_id) {
           const ctx = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0)
-          if (ctx > 0) this.live.contextTokens = ctx
+          if (ctx > 0) {
+            this.live.contextTokens = ctx
+            if (!this.idleCompactionTurn && msg.message.model !== '<synthetic>') {
+              this.idleCompactionGeneration += 1
+              this.idleCompactionInvalidated = false
+              this.idleCompactionSettingsKey = undefined
+              this.idleCompactionAttempted = false
+            }
+          }
         }
         for (const b of msg.message.content) {
           if (b.type === 'text' && !msg.parent_tool_use_id && b.text.trim()) {
@@ -2076,7 +2208,7 @@ export class SessionRuntime {
         break
       }
       case 'user': {
-        this.transcript.apply(msg, ts)
+        this.transcript.apply(msg.uuid === this.idleCompactionTurn?.id ? { ...msg, isSynthetic: true } : msg, ts)
         const content = msg.message.content
         if (Array.isArray(content)) {
           const done = new Set<string>()
@@ -2095,6 +2227,12 @@ export class SessionRuntime {
           this.setActivity(null, ts)
           break
         }
+        const idleTurn = this.idleCompactionTurn
+        const idlePreview = idleTurn ? {
+          preview: this.live.lastPreview, recap: this.live.lastRecap,
+          savedRecap: this.record.lastRecap, savedRecapAt: this.record.lastRecapAt,
+          lastActiveAt: this.record.lastActiveAt, turnEndedAt: this.lastTurnEndedAt
+        } : undefined
         this.transcript.apply(msg, ts)
         this.noteFastMode(msg.fast_mode_state, msg.fast_mode_disabled_reason)
         // Claude Code's prompt cache holds this turn's conversation from here; a recap asked for
@@ -2145,7 +2283,7 @@ export class SessionRuntime {
         this.record.lastRecap = undefined
         this.record.lastRecapAt = undefined
         this.record.lastActiveAt = ts
-        this.deps.saveRecord(this.record)
+        if (!idleTurn) this.deps.saveRecord(this.record)
         // A turn that only compacted the context is housekeeping, not an answer: it must not mark
         // the chat unread or raise a notification. A "/compact" the user typed counts as
         // housekeeping even though compacting writes a summary — that summary is not an answer to
@@ -2165,13 +2303,38 @@ export class SessionRuntime {
           compactAsked || this.turnHadManualCompaction
             ? otherPrompts.length === 0
             : this.turnHadCompaction && !this.turnHadText
+        const idleOnly = Boolean(idleTurn && otherPrompts.length === 0)
+        if (idleTurn && !idleOnly && this.turnHadText && !msg.is_error && msg.subtype === 'success') {
+          this.idleCompactionGeneration += 1
+          this.idleCompactionAttempted = false
+          this.idleCompactionInvalidated = false
+          this.idleCompactionSettingsKey = undefined
+        }
+        if (idleTurn) {
+          const completed = this.turnHadCompaction && !msg.is_error && msg.subtype === 'success'
+          this.idleCompactionTurn = null
+          this.setDelivery(idleTurn.id, null)
+          this.noteIdleCompaction({ status: completed ? 'completed' : 'failed', reason: completed ? 'Compacted while idle, before the prompt cache expired.' : 'Idle compaction did not complete. It will not be retried automatically until a new model response.', lastCompactedAt: completed ? ts : undefined })
+          if (idleOnly && idlePreview) {
+            this.live.lastPreview = idlePreview.preview
+            this.live.lastRecap = idlePreview.recap
+            this.record.lastRecap = idlePreview.savedRecap
+            this.record.lastRecapAt = idlePreview.savedRecapAt
+            this.record.lastActiveAt = idlePreview.lastActiveAt
+            this.lastTurnEndedAt = idlePreview.turnEndedAt
+            this.lastAssistantText = idleTurn.previousAssistantText
+          }
+          this.deps.saveRecord(this.record)
+          if (completed) this.transcript.addLocalNotice('Compacted while idle, before the prompt cache expired.', 'notice')
+        }
         this.turnHadCompaction = false
         this.turnHadManualCompaction = false
         this.turnHadText = false
-        this.deps.onTurnFinished(this, this.live.lastPreview, Boolean(msg.is_error) || msg.subtype !== 'success', compactionOnly)
-        this.refreshTitle()
+        this.deps.onTurnFinished(this, this.live.lastPreview ?? '', Boolean(msg.is_error) || msg.subtype !== 'success', compactionOnly || idleOnly)
+        if (!idleOnly) this.refreshTitle()
         void this.refreshContextUsage('summary')
         if (this.pendingConfig && this.live.status === 'idle') void this.applyPendingConfig()
+        if (!idleTurn) void this.checkIdleCompaction()
         break
       }
       case 'tool_progress': {
@@ -2192,6 +2355,9 @@ export class SessionRuntime {
         break
       }
       case 'conversation_reset': {
+        this.noteRequestSettingsChanged()
+        this.idleCompactionTurn = null
+        this.live.idleCompaction = undefined
         this.transcript.reset()
         this.record.conversationId = msg.new_conversation_id
         // The conversation starts again here, so there is nothing above it to scroll up to: what
@@ -2225,7 +2391,9 @@ export class SessionRuntime {
         // The CLI accepted the fork point; a later restart must not truncate again.
         this.resumeAt = null
         const reported = String(s.model ?? this.live.model ?? '')
+        const previousModel = this.live.model
         this.live.model = this.runAs && reported === this.runAs.run ? this.runAs.model : reported
+        if (previousModel && previousModel !== this.live.model) this.noteRequestSettingsChanged()
         if (this.live.model && this.record.lastModel !== this.live.model) {
           this.record.lastModel = this.live.model
           this.deps.saveRecord(this.record)

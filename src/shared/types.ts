@@ -212,6 +212,14 @@ export interface ProviderView {
   staleEnv?: { at: number }
 }
 
+export interface IdleCompactionState {
+  status: 'off' | 'waiting' | 'scheduled' | 'ready' | 'compacting' | 'completed' | 'skipped' | 'unsupported' | 'failed'
+  reason: string
+  minimumTokens?: number
+  nextAt?: number
+  lastCompactedAt?: number
+}
+
 export interface SessionLiveState {
   id: string
   status: SessionStatus
@@ -221,6 +229,8 @@ export interface SessionLiveState {
   /** Resets of startup flag values that cannot fully inherit until the process next starts. */
   configRestartRequired?: string[]
   configError?: string
+  /** App-owned idle scheduling of Claude Code's native /compact, not the terminal-only timer. */
+  idleCompaction?: IdleCompactionState
   model?: string
   permissionMode?: PermissionMode
   effort?: EffortLevel | null

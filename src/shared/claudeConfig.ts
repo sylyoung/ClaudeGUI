@@ -31,6 +31,7 @@ export interface ClaudeConfigView {
   managedKeys: string[]
   running: boolean
   chatSupported: boolean
+  idleCompactionSupported?: boolean
   live?: ConfigValues
 }
 export interface NativeConfigSnapshot {
@@ -58,12 +59,14 @@ export const CONFIG_SCOPES: { value: ConfigScope; label: string; hint: string }[
   { value: 'local', label: 'Local project', hint: 'Private settings for chats in this project. Do not commit this file.' }
 ]
 export const REDACTED_CONFIG_VALUE = '•••• (unchanged secret)'
+export const IDLE_COMPACTION_MIN_TOKENS_ENV = 'CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS'
 const PRIVATE_KEY = /token|password|secret|credential|authorization|api.?key|access.?key|private.?key|cookie/i
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const TITLES: Record<string, string> = {
   autoCompactEnabled: 'Automatic compaction',
   autoCompactWindow: 'Automatic compaction context limit (tokens)',
   precomputeCompactionEnabled: 'Prepare compaction in the background',
+  idleCompaction: 'Idle compaction',
   env: 'Environment variables',
   permissions: 'Tool permissions',
   effortLevel: 'Reasoning effort',
@@ -86,6 +89,7 @@ export function settingCategory(key: string): string {
 export const CONFIG_CATEGORIES = ['All settings', 'Context & memory', 'Models & reasoning', 'Permissions & security', 'Tools & extensions', 'Environment & system', 'Behaviour & display']
 export function settingNotice(key: string): string | undefined {
   if (/^(theme|editorMode|keybindingFlavor|vimInsertModeRemaps|tui|defaultView|timeFormat|timeZone|viewMode|verbose|preferredNotifChannel|spinner|syntaxHighlighting|spellcheck|terminalTitle|autoScroll|wheelScroll|terminalProgress|showTurnDuration|showMessageTimestamps|voice)/.test(key)) return 'Claude Code terminal setting; this does not change ClaudeGUI’s appearance or controls.'
+  if (key === 'idleCompaction') return 'In ClaudeGUI, explicitly choosing On enables app-owned idle scheduling of Claude Code’s native /compact command; the terminal-only timer is not used. Default: off unless enabled here or in an inherited scope. Requires a warm one-hour cache, about 54 minutes idle and at least 200,000 context tokens by default. Busy chats, recent interaction, usage limits and fast mode prevent an automatic request. Compaction uses model tokens. Saving never starts a stopped chat.'
   if (key === 'fastMode') return 'Fast mode may use additional paid usage. Saving this setting does not send a prompt.'
   if (key === 'autoCompactWindow') return 'Claude Code accepts 100,000–1,000,000 tokens. This does not enlarge the model’s actual context window.'
   if (/^(env|processWrapper|apiKeyHelper|proxyAuthHelper|aws|gcp|defaultShell|forceLogin|autoUpdates|minimumVersion|required|fileCheckpointing)/.test(key)) return 'May require the chat process to start again. Saving never stops a running chat.'
@@ -138,7 +142,7 @@ export function redactConfig(values: ConfigValues): ConfigValues {
     if (secretValue(value)) return REDACTED_CONFIG_VALUE
     if (Array.isArray(value)) return value.map(visit)
     if (!isConfigObject(value)) return value
-    return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, PRIVATE_KEY.test(key) && v != null || secretValue(v) ? REDACTED_CONFIG_VALUE : visit(v)]))
+    return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, !(key === IDLE_COMPACTION_MIN_TOKENS_ENV && typeof v === 'string' && /^\d+$/.test(v)) && PRIVATE_KEY.test(key) && v != null || secretValue(v) ? REDACTED_CONFIG_VALUE : visit(v)]))
   }
   return visit(values) as ConfigValues
 }
@@ -185,6 +189,10 @@ export function validateClaudeConfig(value: unknown, original: ConfigValues = {}
     if (!Object.hasOwn(SETTINGS, key)) errors.push(`${key}: not a setting supported by the installed Claude Code SDK.`)
     else if (!(chat && key === 'effortLevel' && v === 'max') && !matches(v, SETTINGS[key])) errors.push(`${key}: the value does not match the documented setting type. Check required fields and allowed choices.`)
     if (key === 'autoCompactWindow' && (typeof v !== 'number' || !Number.isInteger(v) || v < 100_000 || v > 1_000_000)) errors.push('autoCompactWindow: enter a whole number between 100,000 and 1,000,000 tokens.')
+    if (key === 'env') {
+      const minimum = configValueAt(v, [IDLE_COMPACTION_MIN_TOKENS_ENV])
+      if (minimum !== undefined && !sameConfig(minimum, configValueAt(original, ['env', IDLE_COMPACTION_MIN_TOKENS_ENV])) && (typeof minimum !== 'string' || !/^\d+$/.test(minimum) || !Number.isSafeInteger(Number(minimum)) || Number(minimum) <= 0)) errors.push(`${IDLE_COMPACTION_MIN_TOKENS_ENV}: enter a positive whole number as an environment-variable string. Values below 100,000 are raised to 100,000.`)
+    }
   }
   return errors
 }

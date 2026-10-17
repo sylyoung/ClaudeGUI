@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, RefreshCw, Search, Settings, SlidersHorizontal } from 'lucide-react'
 import {
-  CONFIG_CATEGORIES, CONFIG_SCOPES, REDACTED_CONFIG_VALUE, SETTINGS, SETTINGS_SDK_VERSION,
+  CONFIG_CATEGORIES, CONFIG_SCOPES, IDLE_COMPACTION_MIN_TOKENS_ENV, REDACTED_CONFIG_VALUE, SETTINGS, SETTINGS_SDK_VERSION,
   configValueAt, isConfigObject, sameConfig, setConfigValue, settingCategory, settingNotice, settingTitle, validateClaudeConfig,
   type ClaudeConfigView, type ConfigScope, type ConfigValues, type SettingSchema
 } from '@shared/claudeConfig'
@@ -50,7 +50,7 @@ function JsonSetting({ path, value, inherited, onChange, onInvalid, disabled }: 
 function SettingControl(props: ControlProps) {
   const { path, schema, value, inherited, onChange, disabled, depth = 0 } = props
   const id = `config-${path.join('.')}`
-  const inheritedLabel = `Inherit — ${preview(inherited)}`
+  const inheritedLabel = `Inherit — ${path[0] === 'idleCompaction' && inherited === undefined ? 'Off in ClaudeGUI' : preview(inherited)}`
   if (schema.type === 'boolean') return (
     <select className="select" id={id} aria-label={path.join('.')} disabled={disabled} value={value === undefined ? 'inherit' : value ? 'on' : 'off'} onChange={(e) => onChange(path, e.target.value === 'inherit' ? undefined : e.target.value === 'on')}>
       <option value="inherit">{inheritedLabel}</option><option value="on">On</option><option value="off">Off</option>
@@ -65,7 +65,7 @@ function SettingControl(props: ControlProps) {
   )
   if (schema.type === 'string' || schema.type === 'number') return (
     <input className="input" id={id} aria-label={path.join('.')} disabled={disabled}
-      type={schema.type === 'number' ? 'number' : value === REDACTED_CONFIG_VALUE || /token|secret|password|api.?key/i.test(path.at(-1)!) ? 'password' : 'text'}
+      type={schema.type === 'number' || path.at(-1) === IDLE_COMPACTION_MIN_TOKENS_ENV ? 'number' : value === REDACTED_CONFIG_VALUE || /token|secret|password|api.?key/i.test(path.at(-1)!) ? 'password' : 'text'}
       value={typeof value === 'string' || typeof value === 'number' ? value : ''} spellCheck={false} autoComplete="off"
       min={path[0] === 'autoCompactWindow' ? 100000 : undefined} max={path[0] === 'autoCompactWindow' ? 1000000 : undefined} step={schema.type === 'number' ? 'any' : undefined}
       placeholder={inheritedLabel} onChange={(e) => onChange(path, schema.type === 'number' ? e.target.value === '' ? undefined : Number(e.target.value) : e.target.value)} />
@@ -93,13 +93,14 @@ function SettingControl(props: ControlProps) {
 }
 
 type LeaveAction = ConfigScope | 'close' | 'reload' | 'app'
-const PRIORITY = ['autoCompactEnabled', 'autoCompactWindow', 'precomputeCompactionEnabled', 'model', 'effortLevel', 'permissions', 'env']
+const PRIORITY = ['idleCompaction', 'autoCompactEnabled', 'autoCompactWindow', 'precomputeCompactionEnabled', 'model', 'effortLevel', 'permissions', 'env']
 
 export function ChatSettingsDialog({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
   const title = useStore((s) => s.records[sessionId]?.title ?? 'Chat')
   const initialSearch = useStore((s) => s.configSearch ?? '')
   const configError = useStore((s) => s.live[sessionId]?.configError)
   const configPending = useStore((s) => s.live[sessionId]?.configPending)
+  const idleCompaction = useStore((s) => s.live[sessionId]?.idleCompaction)
   const openSettings = useStore((s) => s.openSettings)
   const [view, setView] = useState<ClaudeConfigView | null>(null)
   const [scope, setScope] = useState<ConfigScope>('chat')
@@ -238,16 +239,30 @@ export function ChatSettingsDialog({ sessionId, onClose }: { sessionId: string; 
                 const schema = key === 'effortLevel' && scope === 'chat' ? { ...declared, enum: [...(declared.enum ?? []), 'max'] } : declared
                 const value = draft[key], inherited = layer?.inherited[key]
                 const notice = settingNotice(key)
+                const idleUnavailable = key === 'idleCompaction' && view?.idleCompactionSupported !== true
+                const fieldBlocked = blocked || (scope === 'chat' && idleUnavailable)
                 return <section className="config-setting" data-config-key={key} key={key}>
                   <div className="config-setting-head"><label htmlFor={`config-${key}`}>{settingTitle(key)}</label><span className="spacer" />
                     <span className="faint">{Object.hasOwn(draft, key) ? 'Set here' : 'Inherited'}</span>
-                    <button className="btn ghost sm config-reset" disabled={blocked || !Object.hasOwn(draft, key)} data-tip="Remove this setting from this scope and inherit its value" onClick={() => update([key], undefined)}>Reset</button>
+                    <button className="btn ghost sm config-reset" disabled={fieldBlocked || !Object.hasOwn(draft, key)} data-tip="Remove this setting from this scope and inherit its value" onClick={() => update([key], undefined)}>Reset</button>
                   </div>
                   <code className="config-key">{key}</code>
-                  {declared.description && <details className="config-description"><summary>{declared.description.length > 180 ? declared.description.slice(0, 177) + '…' : declared.description}</summary><p>{declared.description}</p></details>}
+                  {declared.description && <details className="config-description"><summary>{key === 'idleCompaction' ? 'Native SDK description (terminal behavior)' : declared.description.length > 180 ? declared.description.slice(0, 177) + '…' : declared.description}</summary><p>{declared.description}</p></details>}
                   {notice && <div className="config-setting-notice">{notice}</div>}
                   {view?.managedKeys.includes(key) && <div className="config-setting-notice">Administrator policy also sets this key and may override or restrict this value.</div>}
-                  <SettingControl path={[key]} schema={schema} value={value} inherited={inherited} onChange={update} onInvalid={onInvalid} disabled={blocked} />
+                  {idleUnavailable && <div className="config-setting-notice" role="status">Idle compaction needs session host 1.0.65 or later. An app update preserves the existing host. Finish running work before fully quitting and reopening; no chat is restarted by this dialog.</div>}
+                  <SettingControl path={[key]} schema={schema} value={value} inherited={inherited} onChange={update} onInvalid={onInvalid} disabled={fieldBlocked} />
+                  {key === 'idleCompaction' && <>
+                    <div className="config-child">
+                      <label htmlFor={`config-env.${IDLE_COMPACTION_MIN_TOKENS_ENV}`} data-tip="Minimum context size for idle compaction, stored as a native environment setting in this scope. Default 200,000; values below 100,000 are raised to 100,000.">Minimum context tokens for idle compaction</label>
+                      <div className="config-child-input">
+                        <SettingControl path={['env', IDLE_COMPACTION_MIN_TOKENS_ENV]} schema={{ type: 'string' }} value={configValueAt(draft, ['env', IDLE_COMPACTION_MIN_TOKENS_ENV])} inherited={configValueAt(layer?.inherited, ['env', IDLE_COMPACTION_MIN_TOKENS_ENV]) ?? '200000'} onChange={update} onInvalid={onInvalid} disabled={fieldBlocked} />
+                        <button className="btn ghost sm" disabled={fieldBlocked || configValueAt(draft, ['env', IDLE_COMPACTION_MIN_TOKENS_ENV]) === undefined} onClick={() => update(['env', IDLE_COMPACTION_MIN_TOKENS_ENV], undefined)} data-tip="Remove this scope’s idle-compaction threshold and inherit it">Reset</button>
+                      </div>
+                      <div className="faint">Default: 200,000 tokens. Claude Code raises lower values to 100,000. Environment and request-setting changes may need a new response before their cache can be used.</div>
+                    </div>
+                    {!idleUnavailable && <div className="config-setting-notice config-idle-status" role="status">{idleCompaction?.reason ?? 'Eligibility is checked while this chat’s process is idle. No process is started by this dialog.'}{idleCompaction?.nextAt && ` Next eligible check: ${new Date(idleCompaction.nextAt).toLocaleTimeString()}.`}</div>}
+                  </>}
                 </section>
               })}
               {!entries.length && <div className="faint">No matching settings. Clear the search or choose another category.</div>}

@@ -5,9 +5,9 @@ import os from 'os'
 import path from 'path'
 import { resolveSettings, type SettingSource } from '@anthropic-ai/claude-agent-sdk'
 import type { AppSettings, SessionLiveState, SessionRecord } from '@shared/types'
-import { compareVersions } from '@shared/util'
+import { compareVersions, parseVersion } from '@shared/util'
 import {
-  CONFIG_SCOPES, isConfigObject, redactConfig, restoreConfigSecrets, sessionConfig, validateClaudeConfig,
+  CONFIG_SCOPES, isConfigObject, redactConfig, restoreConfigSecrets, sameConfig, sessionConfig, validateClaudeConfig,
   type ClaudeConfigView, type ConfigLayer, type ConfigSaveRequest, type ConfigSaveResult, type ConfigScope, type ConfigValues, type NativeConfigSnapshot
 } from '@shared/claudeConfig'
 
@@ -83,6 +83,7 @@ interface ConfigHost {
   list(): Promise<{ records: SessionRecord[]; live: SessionLiveState[] }>
   claudeConfig(id: string): Promise<NativeConfigSnapshot>
   setClaudeConfig(id: string, values: ConfigValues, revision: string): Promise<{ pending: boolean; restartRequired?: string[] }>
+  noteUserActivity?(id: string): Promise<void>
 }
 
 /** The CLI canonicalizes its local consent store to an owned Git root on POSIX. */
@@ -115,11 +116,12 @@ export class ClaudeConfigService {
       local: resolved.sources.find((s) => s.source === 'local')?.path ?? path.join(localProjectRoot(record.cwd), '.claude', 'settings.local.json')
     }
     const chatSupported = compareVersions(this.host.status.version ?? '0.0.0', '1.0.64') >= 0
+    const idleCompactionSupported = Boolean(parseVersion(this.host.status.version ?? '') && compareVersions(this.host.status.version!, '1.0.65') >= 0)
     const snapshot = chatSupported ? await this.host.claudeConfig(id) : { saved: sessionConfig(record) }
     const live = sessions.live.find((s) => s.id === id)
     const resetWarning = live?.configRestartRequired?.length ? `Resetting these startup overrides fully applies when this chat next starts: ${live.configRestartRequired.join(', ')}. The running process has not been stopped.` : undefined
     const configWarning = [live?.configError, live?.configPending ? 'Saved changes are waiting for the current turn to finish.' : undefined, resetWarning].filter(Boolean).join(' ') || undefined
-    return { record, enabled, resolved, paths, chatSupported, snapshot, running: Boolean(live?.processAlive), configWarning }
+    return { record, enabled, resolved, paths, chatSupported, idleCompactionSupported, snapshot, running: Boolean(live?.processAlive), configWarning }
   }
 
   async get(id: string): Promise<ClaudeConfigView> {
@@ -149,7 +151,7 @@ export class ClaudeConfigService {
       }
     }
     const live = ctx.snapshot.effective ? redactConfig(ctx.snapshot.effective) : undefined
-    return { layers, managedKeys: Object.keys(ctx.resolved.sources.find((s) => s.source === 'managed')?.settings ?? {}), running: ctx.running, chatSupported: ctx.chatSupported, live }
+    return { layers, managedKeys: Object.keys(ctx.resolved.sources.find((s) => s.source === 'managed')?.settings ?? {}), running: ctx.running, chatSupported: ctx.chatSupported, idleCompactionSupported: ctx.idleCompactionSupported, live }
   }
 
   async save(id: string, request: ConfigSaveRequest): Promise<ConfigSaveResult> {
@@ -162,9 +164,11 @@ export class ClaudeConfigService {
     const values = restoreConfigSecrets(request.values, current.values)
     const errors = validateClaudeConfig(values, current.values, scope === 'chat')
     if (errors.length) throw new Error(errors.join('\n'))
+    await this.host.noteUserActivity?.(id)
     let message: string
     if (scope === 'chat') {
       if (!ctx.chatSupported) throw new Error('Chat configuration needs the new session host. Finish running work, then fully quit and reopen ClaudeGUI; nothing has been stopped or changed.')
+      if (!ctx.idleCompactionSupported && !sameConfig(values.idleCompaction, current.values.idleCompaction)) throw new Error('Idle compaction needs session host 1.0.65 or later. Finish running work, then fully quit and reopen ClaudeGUI. No chat or settings were changed.')
       const result = await this.host.setClaudeConfig(id, values, request.revision)
       message = result.pending ? 'Chat settings saved. Live changes wait until the current turn finishes; startup-only settings apply when this chat next starts. No process was stopped.' : 'Chat settings saved. Claude Code accepted the live settings; startup-only settings apply when this chat next starts. No process was stopped.'
       if (result.restartRequired?.length) message += ' Resetting startup overrides fully takes effect when this chat next starts; see the warning above.'
