@@ -158,6 +158,8 @@ function createWindow(): BrowserWindow {
       backgroundThrottling: false
     }
   })
+  // Keep the native pointer visible instead of hiding it while typing.
+  if (process.platform === 'darwin') win.setAutoHideCursor(false)
   trackWindowState(win, app.getPath('userData'))
   win.on('ready-to-show', () => {
     if (saved?.maximized) win.maximize()

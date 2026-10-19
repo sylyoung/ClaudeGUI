@@ -1,7 +1,7 @@
 {
   "name": "claudegui",
   "productName": "ClaudeGUI",
-  "version": "1.0.65",
+  "version": "1.0.66",
   "description": "Local desktop manager for multiple long-running Claude Code sessions",
   "main": "./out/main/index.mjs",
   "author": "siyangli <lsyyoungll@gmail.com>",
@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:configuration": "node scripts/generate-settings-schema.mjs && node scripts/test-configuration.mjs",
     "test:idle-compaction": "node scripts/generate-settings-schema.mjs && node scripts/test-configuration.mjs --idle-compaction",
+    "test:window": "node --test tests/window.test.mjs",
     "build:mac": "electron-vite build && electron-builder --mac --dir",
     "dist:mac": "electron-vite build && electron-builder --mac"
   },

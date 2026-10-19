@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.66 — 2026-10-19
+
+### Mouse pointer visibility
+
+- The macOS window disables Electron's native cursor auto-hiding while typing, avoiding that
+  pointer-hiding path rather than drawing a replacement pointer or overriding cursor shapes.
+  Text, button and resize cursors retain their normal behavior.
+- This is a window-only change. Applying the update does not require replacing the session host
+  or restarting running chats.
+
 ## 1.0.65 — 2026-10-17
 
 ### Idle compaction
