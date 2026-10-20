@@ -61,6 +61,8 @@ export interface IdleCompactionContext {
   fastMode: boolean
   rateLimited: boolean
   lastInteractionAt: number
+  lastTurnEndedAt: number
+  cacheRequired: boolean
   contextTokens: number
 }
 
@@ -80,8 +82,14 @@ export function idleCompactionPlan(
   if (context.busy) return state('waiting', 'Waiting for the chat, its queue, permissions and background tasks to become idle.')
   if (context.fastMode) return state('waiting', 'Idle compaction does not start paid fast-mode requests. Turn fast mode off to allow it.')
   if (context.rateLimited) return state('waiting', 'Claude Code reports a usage warning or limit; no automatic compaction will be requested.')
-  if (context.invalidated) return state('waiting', 'The conversation or its request settings changed. Waiting for a new model response before using its cache.')
+  if (context.invalidated) return state('waiting', 'The conversation or its request settings changed. Waiting for a new model response before scheduling idle compaction.')
   if (context.contextTokens < minimumTokens) return state('waiting', `Waiting for at least ${minimumTokens.toLocaleString('en-US')} context tokens.`)
+  if (!context.cacheRequired) {
+    if (!Number.isFinite(context.lastTurnEndedAt) || context.lastTurnEndedAt <= 0) return state('waiting', 'Waiting for a new model response in this process before starting the idle timer.')
+    const nextAt = Math.max(context.lastTurnEndedAt, context.lastInteractionAt) + IDLE_COMPACTION_AFTER_MS
+    if (now < nextAt) return state('scheduled', 'Scheduled after 54 minutes without a finished turn or interaction in this chat. This provider does not require a one-hour cache; compaction may use uncached model tokens.', nextAt)
+    return state('ready', 'Ready to run Claude Code’s native /compact command after 54 minutes idle. This provider may use uncached model tokens.')
+  }
   if (!cache || cache.expiresAt <= now) return state('waiting', 'Claude Code has not reported a warm one-hour prompt cache. Five-minute and expired caches are not compacted automatically.')
   const nextAt = cache.activityAt + IDLE_COMPACTION_AFTER_MS
   if (now < nextAt) return state('scheduled', 'Scheduled before the one-hour prompt cache expires; the conditions are checked again before starting.', nextAt)

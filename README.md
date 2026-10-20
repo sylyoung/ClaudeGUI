@@ -13,7 +13,7 @@ servers and login. Nothing goes through a remote bridge. The Claude processes li
 background **session host** process, so the window can restart — for example to apply an update —
 without stopping sessions, background shells, monitors or subagents.
 
-Current version: **1.0.66** (see `CHANGELOG.md`). The app updates itself from the git tags of this
+Current version: **1.0.67** (see `CHANGELOG.md`). The app updates itself from the git tags of this
 repository (ClaudeGUI → Check for Updates…).
 
 ## Features
@@ -66,17 +66,20 @@ repository (ClaudeGUI → Check for Updates…).
   session host from 1.0.64 or later. Detected secrets are hidden in the editor but remain in local
   JSON storage, so prefer credential helpers rather than storing secret values directly.
 - **Idle compaction**: open `/config idle` or Chat settings, select a scope, and explicitly set
-  **Idle compaction → On**. ClaudeGUI schedules Claude Code's native `/compact` after about 54
-  minutes without a request, only while the CLI reports a warm one-hour prompt cache and the
-  context reaches the default 200,000-token minimum. The same field includes a minimum-token
-  editor; values below 100,000 are raised to 100,000. The app owns the scheduling because Claude
-  Code's terminal idle timer does not run in ordinary SDK sessions; it does not implement another
-  summarizer or impersonate a terminal client. This is opt-in and uses model tokens. Busy chats,
-  queued prompts, permissions, background tasks, recent human activity, request-setting changes,
-  usage warnings/limits and fast mode prevent an automatic request. Cold/five-minute caches and
-  missed wakeups are skipped rather than triggering a costly late compaction. Eligibility is shown
-  in the dialog. Requires session host 1.0.65 or later; finish ongoing work before fully quitting
-  and reopening to replace an older host. Updating the window alone keeps that host and its chats.
+  **Idle compaction → On**. ClaudeGUI schedules Claude Code's native `/compact`, with a default
+  200,000-token minimum. Claude chats run at about 54 minutes only with a reported warm one-hour
+  prompt cache; cold/five-minute caches and missed cache windows are skipped. GPT and other
+  providers instead use 54 minutes from the latest finished turn or interaction in that chat,
+  without a Claude cache report. Their overdue timers can run after sleep and may use uncached
+  model tokens. Both schedules start only after a model response in the current process and never
+  start stopped chats. The same field includes a minimum-token editor; values below 100,000 are
+  raised to 100,000. The app owns scheduling because Claude Code's terminal idle timer does not run
+  in ordinary SDK sessions; native `/compact` owns summarization. This is opt-in and uses model
+  tokens. Busy chats, queued prompts, permissions, background tasks, request-setting changes,
+  usage warnings/limits and fast mode prevent an automatic request. Eligibility is shown in the
+  dialog. Requires session host 1.0.65 or later for Claude and 1.0.67 or later for other providers;
+  finish ongoing work before fully quitting and reopening to replace an older host. Updating the
+  window alone keeps that host and its chats.
 - **Rendered chat**: GitHub-flavoured markdown with tables and syntax-highlighted code, collapsible
   tool cards (Bash command + output, Edit diffs, Write previews, Read results, Grep/Glob, Agent
   subagents with nested transcripts, TodoWrite checklists), thinking blocks, per-turn duration.

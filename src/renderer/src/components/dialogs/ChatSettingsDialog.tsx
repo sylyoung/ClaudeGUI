@@ -250,7 +250,7 @@ export function ChatSettingsDialog({ sessionId, onClose }: { sessionId: string; 
                   {declared.description && <details className="config-description"><summary>{key === 'idleCompaction' ? 'Native SDK description (terminal behavior)' : declared.description.length > 180 ? declared.description.slice(0, 177) + '…' : declared.description}</summary><p>{declared.description}</p></details>}
                   {notice && <div className="config-setting-notice">{notice}</div>}
                   {view?.managedKeys.includes(key) && <div className="config-setting-notice">Administrator policy also sets this key and may override or restrict this value.</div>}
-                  {idleUnavailable && <div className="config-setting-notice" role="status">Idle compaction needs session host 1.0.65 or later. An app update preserves the existing host. Finish running work before fully quitting and reopening; no chat is restarted by this dialog.</div>}
+                  {idleUnavailable && <div className="config-setting-notice" role="status">Idle compaction for this provider needs session host {view?.idleCompactionMinimumHostVersion ?? '1.0.65'} or later. An app update preserves the existing host. Finish running work before fully quitting and reopening; no chat is restarted by this dialog.</div>}
                   <SettingControl path={[key]} schema={schema} value={value} inherited={inherited} onChange={update} onInvalid={onInvalid} disabled={fieldBlocked} />
                   {key === 'idleCompaction' && <>
                     <div className="config-child">

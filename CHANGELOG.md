@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.67 — 2026-10-20
+
+### Idle compaction for other providers
+
+- With Idle compaction enabled, GPT and other providers now use a 54-minute timer from the
+  latest finished turn or interaction in the chat, without requiring a Claude one-hour cache
+  report. The timer can run when overdue, including after sleep; compaction may use uncached
+  model tokens. Claude chats retain the existing cache-preserving schedule.
+- Both schedules use Claude Code's native `/compact`, the same minimum-context-token setting
+  (200,000 by default), and the existing busy, queue, permission, background-task, request-setting,
+  usage-limit and fast-mode safeguards. Stopped chats are never started. A new model response is
+  required after starting a process or changing request settings; compaction does not rearm itself.
+- Completion messages no longer claim cache preservation for other providers. The settings dialog
+  identifies session host 1.0.67 as required for their timer; updating only the window preserves
+  the old host and its chats. Finish ongoing work before fully quitting and reopening to activate
+  the new host.
+
 ## 1.0.66 — 2026-10-19
 
 ### Mouse pointer visibility

@@ -116,12 +116,13 @@ export class ClaudeConfigService {
       local: resolved.sources.find((s) => s.source === 'local')?.path ?? path.join(localProjectRoot(record.cwd), '.claude', 'settings.local.json')
     }
     const chatSupported = compareVersions(this.host.status.version ?? '0.0.0', '1.0.64') >= 0
-    const idleCompactionSupported = Boolean(parseVersion(this.host.status.version ?? '') && compareVersions(this.host.status.version!, '1.0.65') >= 0)
+    const idleCompactionMinimumHostVersion = record.provider && record.provider !== 'anthropic' ? '1.0.67' : '1.0.65'
+    const idleCompactionSupported = Boolean(parseVersion(this.host.status.version ?? '') && compareVersions(this.host.status.version!, idleCompactionMinimumHostVersion) >= 0)
     const snapshot = chatSupported ? await this.host.claudeConfig(id) : { saved: sessionConfig(record) }
     const live = sessions.live.find((s) => s.id === id)
     const resetWarning = live?.configRestartRequired?.length ? `Resetting these startup overrides fully applies when this chat next starts: ${live.configRestartRequired.join(', ')}. The running process has not been stopped.` : undefined
     const configWarning = [live?.configError, live?.configPending ? 'Saved changes are waiting for the current turn to finish.' : undefined, resetWarning].filter(Boolean).join(' ') || undefined
-    return { record, enabled, resolved, paths, chatSupported, idleCompactionSupported, snapshot, running: Boolean(live?.processAlive), configWarning }
+    return { record, enabled, resolved, paths, chatSupported, idleCompactionSupported, idleCompactionMinimumHostVersion, snapshot, running: Boolean(live?.processAlive), configWarning }
   }
 
   async get(id: string): Promise<ClaudeConfigView> {
@@ -151,7 +152,7 @@ export class ClaudeConfigService {
       }
     }
     const live = ctx.snapshot.effective ? redactConfig(ctx.snapshot.effective) : undefined
-    return { layers, managedKeys: Object.keys(ctx.resolved.sources.find((s) => s.source === 'managed')?.settings ?? {}), running: ctx.running, chatSupported: ctx.chatSupported, idleCompactionSupported: ctx.idleCompactionSupported, live }
+    return { layers, managedKeys: Object.keys(ctx.resolved.sources.find((s) => s.source === 'managed')?.settings ?? {}), running: ctx.running, chatSupported: ctx.chatSupported, idleCompactionSupported: ctx.idleCompactionSupported, idleCompactionMinimumHostVersion: ctx.idleCompactionMinimumHostVersion, live }
   }
 
   async save(id: string, request: ConfigSaveRequest): Promise<ConfigSaveResult> {
@@ -168,7 +169,7 @@ export class ClaudeConfigService {
     let message: string
     if (scope === 'chat') {
       if (!ctx.chatSupported) throw new Error('Chat configuration needs the new session host. Finish running work, then fully quit and reopen ClaudeGUI; nothing has been stopped or changed.')
-      if (!ctx.idleCompactionSupported && !sameConfig(values.idleCompaction, current.values.idleCompaction)) throw new Error('Idle compaction needs session host 1.0.65 or later. Finish running work, then fully quit and reopen ClaudeGUI. No chat or settings were changed.')
+      if (!ctx.idleCompactionSupported && !sameConfig(values.idleCompaction, current.values.idleCompaction)) throw new Error(`Idle compaction for this provider needs session host ${ctx.idleCompactionMinimumHostVersion} or later. Finish running work, then fully quit and reopen ClaudeGUI. No chat or settings were changed.`)
       const result = await this.host.setClaudeConfig(id, values, request.revision)
       message = result.pending ? 'Chat settings saved. Live changes wait until the current turn finishes; startup-only settings apply when this chat next starts. No process was stopped.' : 'Chat settings saved. Claude Code accepted the live settings; startup-only settings apply when this chat next starts. No process was stopped.'
       if (result.restartRequired?.length) message += ' Resetting startup overrides fully takes effect when this chat next starts; see the warning above.'

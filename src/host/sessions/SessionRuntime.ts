@@ -314,7 +314,7 @@ export class SessionRuntime {
   private idleCompactionSettingsKey: string | undefined
   private idleCompactionInteractionAt = 0
   private idleCompactionEnv: Record<string, string | undefined> = {}
-  private idleCompactionTurn: { id: string; previousAssistantText: string } | null = null
+  private idleCompactionTurn: { id: string; previousAssistantText: string; cacheRequired: boolean } | null = null
 
   constructor(
     public record: SessionRecord,
@@ -704,6 +704,8 @@ export class SessionRuntime {
       fastMode: this.record.fastMode === true || this.live.fastModeState === 'on' || this.runAs !== null,
       rateLimited: Boolean(this.live.rateLimit && this.live.rateLimit.status !== 'allowed'),
       lastInteractionAt: this.idleCompactionInteractionAt,
+      lastTurnEndedAt: this.lastTurnEndedAt,
+      cacheRequired: !this.record.provider || this.record.provider === 'anthropic',
       contextTokens: this.live.contextTokens ?? 0
     }
   }
@@ -723,8 +725,9 @@ export class SessionRuntime {
       return Promise.resolve()
     }
     this.idleCompactionCheck = (async () => {
-      if (!q.getSettings || !q.request || !this.live.slashCommands?.some((c) => c.name === 'compact')) {
-        if (current()) this.noteIdleCompaction({ status: 'unsupported', reason: 'This Claude Code runtime does not expose the native settings, cache report and /compact command required for safe idle compaction.' })
+      const { cacheRequired } = this.idleCompactionContext()
+      if (!q.getSettings || (cacheRequired && !q.request) || !this.live.slashCommands?.some((c) => c.name === 'compact')) {
+        if (current()) this.noteIdleCompaction({ status: 'unsupported', reason: cacheRequired ? 'This Claude Code runtime does not expose the native settings, cache report and /compact command required for safe idle compaction.' : 'This Claude Code runtime does not expose the native settings and /compact command required for idle compaction.' })
         return
       }
       const settings = (await q.getSettings()).effective
@@ -737,9 +740,9 @@ export class SessionRuntime {
         return
       }
       const checkedAt = Date.now()
-      const report = await q.request({ subtype: 'get_session_cost' })
+      const report = cacheRequired ? await q.request!({ subtype: 'get_session_cost' }) : undefined
       if (!current()) return
-      const cache = typeof report.response?.text === 'string' ? idleCompactionCache(report.response.text, checkedAt) : null
+      const cache = typeof report?.response?.text === 'string' ? idleCompactionCache(report.response.text, checkedAt) : null
       const plan = idleCompactionPlan(settings, this.idleCompactionEnv, cache, this.idleCompactionContext(), Date.now())
       if (plan.status !== 'ready') { this.noteIdleCompaction(plan); return }
       // There is no await between the final guards and queueing the native command. A prompt or
@@ -747,7 +750,7 @@ export class SessionRuntime {
       if (!current() || this.idleCompactionContext().busy || !this.queue) return
       const id = randomUUID()
       this.idleCompactionAttempted = true
-      this.idleCompactionTurn = { id, previousAssistantText: this.lastAssistantText }
+      this.idleCompactionTurn = { id, previousAssistantText: this.lastAssistantText, cacheRequired }
       this.setDelivery(id, 'working')
       this.setStatus('running')
       this.setActivity('compacting', Date.now())
@@ -2312,9 +2315,10 @@ export class SessionRuntime {
         }
         if (idleTurn) {
           const completed = this.turnHadCompaction && !msg.is_error && msg.subtype === 'success'
+          const completedReason = idleTurn.cacheRequired ? 'Compacted while idle, before the prompt cache expired.' : 'Compacted while idle with Claude Code’s native /compact command.'
           this.idleCompactionTurn = null
           this.setDelivery(idleTurn.id, null)
-          this.noteIdleCompaction({ status: completed ? 'completed' : 'failed', reason: completed ? 'Compacted while idle, before the prompt cache expired.' : 'Idle compaction did not complete. It will not be retried automatically until a new model response.', lastCompactedAt: completed ? ts : undefined })
+          this.noteIdleCompaction({ status: completed ? 'completed' : 'failed', reason: completed ? completedReason : 'Idle compaction did not complete. It will not be retried automatically until a new model response.', lastCompactedAt: completed ? ts : undefined })
           if (idleOnly && idlePreview) {
             this.live.lastPreview = idlePreview.preview
             this.live.lastRecap = idlePreview.recap
@@ -2325,7 +2329,7 @@ export class SessionRuntime {
             this.lastAssistantText = idleTurn.previousAssistantText
           }
           this.deps.saveRecord(this.record)
-          if (completed) this.transcript.addLocalNotice('Compacted while idle, before the prompt cache expired.', 'notice')
+          if (completed) this.transcript.addLocalNotice(completedReason, 'notice')
         }
         this.turnHadCompaction = false
         this.turnHadManualCompaction = false

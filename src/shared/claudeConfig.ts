@@ -32,6 +32,7 @@ export interface ClaudeConfigView {
   running: boolean
   chatSupported: boolean
   idleCompactionSupported?: boolean
+  idleCompactionMinimumHostVersion?: string
   live?: ConfigValues
 }
 export interface NativeConfigSnapshot {
@@ -89,7 +90,7 @@ export function settingCategory(key: string): string {
 export const CONFIG_CATEGORIES = ['All settings', 'Context & memory', 'Models & reasoning', 'Permissions & security', 'Tools & extensions', 'Environment & system', 'Behaviour & display']
 export function settingNotice(key: string): string | undefined {
   if (/^(theme|editorMode|keybindingFlavor|vimInsertModeRemaps|tui|defaultView|timeFormat|timeZone|viewMode|verbose|preferredNotifChannel|spinner|syntaxHighlighting|spellcheck|terminalTitle|autoScroll|wheelScroll|terminalProgress|showTurnDuration|showMessageTimestamps|voice)/.test(key)) return 'Claude Code terminal setting; this does not change ClaudeGUI’s appearance or controls.'
-  if (key === 'idleCompaction') return 'In ClaudeGUI, explicitly choosing On enables app-owned idle scheduling of Claude Code’s native /compact command; the terminal-only timer is not used. Default: off unless enabled here or in an inherited scope. Requires a warm one-hour cache, about 54 minutes idle and at least 200,000 context tokens by default. Busy chats, recent interaction, usage limits and fast mode prevent an automatic request. Compaction uses model tokens. Saving never starts a stopped chat.'
+  if (key === 'idleCompaction') return 'In ClaudeGUI, explicitly choosing On enables app-owned idle scheduling of Claude Code’s native /compact command; the terminal-only timer is not used. Default: off unless enabled here or in an inherited scope. Claude chats require a warm one-hour cache and compact at about 54 minutes. GPT and other providers compact after 54 minutes without a finished turn or interaction in the chat, without requiring a Claude cache report; this may use uncached model tokens. Both require at least 200,000 context tokens by default. Busy chats, usage limits, request-setting changes and fast mode prevent an automatic request. Saving never starts a stopped chat.'
   if (key === 'fastMode') return 'Fast mode may use additional paid usage. Saving this setting does not send a prompt.'
   if (key === 'autoCompactWindow') return 'Claude Code accepts 100,000–1,000,000 tokens. This does not enlarge the model’s actual context window.'
   if (/^(env|processWrapper|apiKeyHelper|proxyAuthHelper|aws|gcp|defaultShell|forceLogin|autoUpdates|minimumVersion|required|fileCheckpointing)/.test(key)) return 'May require the chat process to start again. Saving never stops a running chat.'

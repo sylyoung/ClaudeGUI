@@ -18,15 +18,15 @@ import { IDLE_COMPACTION_AFTER_MS, IDLE_COMPACTION_POLL_MS, idleCompactionCache,
 
 const root = process.env.CONFIGURATION_TEST_ROOT!
 assert.ok(root && path.basename(root).startsWith('configuration-tests-'), 'Run through the isolated test script')
-const context: IdleCompactionContext = { busy: false, invalidated: false, fastMode: false, rateLimited: false, lastInteractionAt: 0, contextTokens: 250000 }
+const context: IdleCompactionContext = { busy: false, invalidated: false, fastMode: false, rateLimited: false, lastInteractionAt: 0, lastTurnEndedAt: 1, cacheRequired: true, contextTokens: 250000 }
 const report = (age: string, ttl = '1h') => `Prompt cache (main):   3 requests · no misses · warm (${ttl} TTL, last activity ${age} ago)`
 
-function fixture() {
+function fixture(provider?: string) {
   const cwd = path.join(root, 'idle-compaction-project')
   fs.mkdirSync(cwd, { recursive: true })
   const record: SessionRecord = {
     id: randomUUID(), claudeSessionId: randomUUID(), title: 'Idle compaction fixture', cwd,
-    permissionMode: 'default', createdAt: 1, lastActiveAt: 2, lastPromptAt: 2, source: 'gui',
+    permissionMode: 'default', provider, createdAt: 1, lastActiveAt: 2, lastPromptAt: 2, source: 'gui',
     lastRecap: 'Fixture recap', lastRecapAt: 3,
     claudeSettings: { idleCompaction: true, fastMode: false }
   }
@@ -132,12 +132,35 @@ test('idle scheduling uses the 54-minute cache window and refuses late wakeups',
   assert.equal(idleCompactionPlan(settings, {}, null, context, now).status, 'waiting')
 })
 
+test('other providers use a full idle timer, including after a missed wakeup, without a cache', () => {
+  const now = 10_000_000
+  const settings = { idleCompaction: true }
+  const timed = { ...context, cacheRequired: false, lastTurnEndedAt: now - IDLE_COMPACTION_AFTER_MS + 10000 }
+  assert.equal(idleCompactionPlan(settings, {}, null, timed, now).status, 'scheduled')
+  assert.equal(idleCompactionPlan(settings, {}, null, timed, now).nextAt, now + 10000)
+  for (const delay of [10000, 20 * 60_000, 24 * 60 * 60_000]) assert.equal(idleCompactionPlan(settings, {}, null, timed, now + delay).status, 'ready')
+  const interacting = { ...timed, lastInteractionAt: now - 1000 }
+  assert.equal(idleCompactionPlan(settings, {}, null, interacting, now).nextAt, now - 1000 + IDLE_COMPACTION_AFTER_MS)
+  for (const lastTurnEndedAt of [0, NaN, Infinity]) assert.equal(idleCompactionPlan(settings, {}, null, { ...timed, lastTurnEndedAt }, now).status, 'waiting')
+  assert.equal(idleCompactionPlan({}, {}, null, timed, now + 10000).status, 'off')
+})
+
 test('busy chats, recent presence, invalidated requests, fast mode and limits do not compact', () => {
   const now = 10_000_000
   const cache = { activityAt: now - IDLE_COMPACTION_AFTER_MS, expiresAt: now + 360000 }
   for (const patch of [{ busy: true }, { invalidated: true }, { fastMode: true }, { rateLimited: true }, { lastInteractionAt: now - 1000 }, { contextTokens: 199999 }]) {
     assert.equal(idleCompactionPlan({ idleCompaction: true }, {}, cache, { ...context, ...patch }, now).status, 'waiting')
   }
+})
+
+test('timed providers retain settings, context, busy, fast-mode and rate-limit guards', () => {
+  const now = 10_000_000
+  const timed = { ...context, cacheRequired: false }
+  for (const patch of [{ busy: true }, { invalidated: true }, { fastMode: true }, { rateLimited: true }, { contextTokens: 199999 }]) {
+    assert.equal(idleCompactionPlan({ idleCompaction: true }, {}, null, { ...timed, ...patch }, now).status, 'waiting')
+  }
+  assert.equal(idleCompactionPlan({ idleCompaction: true, autoCompactEnabled: false }, {}, null, timed, now).status, 'waiting')
+  for (const key of ['DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT']) assert.equal(idleCompactionPlan({ idleCompaction: true }, { [key]: '1' }, null, timed, now).status, 'waiting')
 })
 
 test('idle-only edits preserve a cache while request-setting changes invalidate it', () => {
@@ -156,17 +179,20 @@ test('request digests ignore only idle controls and object ordering, not model o
   assert.notEqual(idleCompactionRequestSettingsKey(first), idleCompactionRequestSettingsKey({ ...first, env: { EXAMPLE: 'second' } }))
 })
 
-test('a shared request-setting change invalidates an otherwise warm idle cache', async () => {
-  const f = fixture()
-  f.setCache(report('1s'))
-  await f.rt.checkIdleCompaction()
-  assert.equal(f.rt.live.idleCompaction?.status, 'scheduled')
-  f.setSettings({ idleCompaction: true, autoCompactEnabled: true, fastMode: false, model: 'fixture-other' })
-  f.setCache(report('54m 10s'))
-  await f.rt.checkIdleCompaction()
-  assert.equal(f.prompts.length, 0)
-  assert.equal(f.rt.live.idleCompaction?.status, 'waiting')
-  assert.ok(f.rt.live.idleCompaction?.reason.includes('settings changed'))
+test('a shared request-setting change invalidates idle scheduling for every provider', async () => {
+  for (const provider of [undefined, 'codex']) {
+    const f = fixture(provider)
+    f.internal.lastTurnEndedAt = Date.now()
+    f.setCache(report('1s'))
+    await f.rt.checkIdleCompaction()
+    assert.equal(f.rt.live.idleCompaction?.status, 'scheduled')
+    f.setSettings({ idleCompaction: true, autoCompactEnabled: true, fastMode: false, model: 'fixture-other' })
+    f.setCache(report('54m 10s'))
+    await f.rt.checkIdleCompaction()
+    assert.equal(f.prompts.length, 0)
+    assert.equal(f.rt.live.idleCompaction?.status, 'waiting')
+    assert.ok(f.rt.live.idleCompaction?.reason.includes('settings changed'))
+  }
 })
 
 test('an eligible idle chat queues only the native compact command without restarting or marking it read', async () => {
@@ -184,6 +210,86 @@ test('an eligible idle chat queues only the native compact command without resta
   assert.equal(f.internal.q, f.native)
   await f.rt.checkIdleCompaction()
   assert.equal(f.prompts.length, 1)
+})
+
+test('other providers queue native compaction without querying or requiring a cache control', async () => {
+  for (const provider of ['codex', 'deepseek', 'kimi', 'fixture-provider']) {
+    const f = fixture(provider)
+    delete (f.native as Partial<typeof f.native>).request
+    await f.rt.checkIdleCompaction()
+    assert.deepEqual(f.controls, ['get_settings'])
+    assert.equal(f.prompts.length, 1)
+    assert.equal(f.prompts[0].message.content, '/compact')
+    assert.equal(f.prompts[0].isSynthetic, true)
+    assert.equal(f.rt.live.idleCompaction?.status, 'compacting')
+    assert.equal(f.rt.live.unread, 3)
+    assert.equal(f.record.lastPromptAt, 2)
+    assert.equal(f.starts(), 0)
+    await f.rt.checkIdleCompaction()
+    assert.equal(f.prompts.length, 1)
+  }
+  const f = fixture('anthropic')
+  f.setCache(report('1s', '5m'))
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.prompts.length, 0, 'Explicit Anthropic keeps the cache-preserving policy')
+})
+
+test('a provider timer starts at turn completion, resets on interaction, and rearms only for a new answer', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 10_000_000 })
+  const f = fixture('codex')
+  f.internal.idleCompactionInvalidated = true
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.prompts.length, 0)
+  const answer = () => f.handle({ type: 'assistant', parent_tool_use_id: null, uuid: randomUUID(), message: { id: randomUUID(), model: 'fixture-provider-model', content: [{ type: 'text', text: 'Fixture answer' }], usage: { input_tokens: 250000, output_tokens: 20 } } })
+  answer()
+  t.mock.timers.tick(10 * 60_000)
+  f.handle(f.result())
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.rt.live.idleCompaction?.nextAt, Date.now() + IDLE_COMPACTION_AFTER_MS)
+  t.mock.timers.tick(IDLE_COMPACTION_AFTER_MS - 1000)
+  f.rt.noteUserActivity()
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.rt.live.idleCompaction?.nextAt, Date.now() + IDLE_COMPACTION_AFTER_MS)
+  t.mock.timers.tick(IDLE_COMPACTION_AFTER_MS - 1)
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.prompts.length, 0)
+  t.mock.timers.tick(1)
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.prompts.length, 1)
+  f.handle({ type: 'system', subtype: 'compact_boundary', uuid: randomUUID(), session_id: f.record.claudeSessionId, compact_metadata: { trigger: 'manual', pre_tokens: 250000 } })
+  f.handle(f.result({ user_message_uuids: [f.prompts[0].uuid] }))
+  assert.equal(f.rt.live.idleCompaction?.status, 'completed')
+  assert.ok(!f.rt.live.idleCompaction?.reason.includes('cache expired'))
+  assert.ok(!f.rt.transcript.messages.some((m) => m.kind === 'system' && m.text.includes('cache expired')))
+  t.mock.timers.tick(24 * 60 * 60_000)
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.prompts.length, 1, 'Housekeeping must never rearm its own idle timer')
+  answer()
+  f.handle(f.result())
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.rt.live.idleCompaction?.status, 'scheduled')
+  t.mock.timers.tick(IDLE_COMPACTION_AFTER_MS)
+  await f.rt.checkIdleCompaction()
+  assert.equal(f.prompts.length, 2)
+  assert.ok(!f.controls.includes('get_session_cost'))
+})
+
+test('provider timers invalidate pending settings reads on incoming prompts and settings changes', async () => {
+  for (const change of [
+    async (f: ReturnType<typeof fixture>) => { await f.rt.send('Fixture follow-up') },
+    async (f: ReturnType<typeof fixture>) => { f.rt.noteUserActivity() },
+    async (f: ReturnType<typeof fixture>) => { await f.rt.setEffort('high') }
+  ]) {
+    const f = fixture('codex')
+    let release: (() => void) | undefined
+    f.native.getSettings = async () => new Promise((resolve) => { release = () => resolve({ effective: { idleCompaction: true } }) })
+    const checking = f.rt.checkIdleCompaction()
+    assert.ok(release)
+    await change(f)
+    release!()
+    await checking
+    assert.ok(!f.prompts.some((m) => m.message.content === '/compact'))
+  }
 })
 
 test('automatic compact completion preserves recap, last-prompt order and unread state', async () => {
@@ -281,8 +387,8 @@ test('busy runtime states, native warnings and fast models never enqueue automat
     (f) => { f.rt.live.contextTokens = 150000 },
     (f) => { f.internal.idleCompactionInvalidated = true }
   ]
-  for (const change of changes) {
-    const f = fixture()
+  for (const provider of [undefined, 'codex']) for (const change of changes) {
+    const f = fixture(provider)
     change(f)
     await f.rt.checkIdleCompaction()
     assert.equal(f.prompts.length, 0)
@@ -340,6 +446,22 @@ test('idle configuration supports inheritance and refuses unsupported old hosts 
   assert.equal(view.idleCompactionSupported, false)
   await assert.rejects(old.save(f.record.id, { scope: 'chat', revision: view.layers.chat.revision, values: { ...view.layers.chat.values, idleCompaction: false } }), /session host 1\.0\.65/)
   assert.equal(f.record.claudeSettings?.idleCompaction, true)
+})
+
+test('other-provider settings identify the required host and refuse older hosts', async () => {
+  for (const provider of ['codex', 'deepseek', 'kimi']) {
+    const f = fixture(provider)
+    const host = { status: { version: '1.0.66' }, list: async () => ({ records: [f.record], live: [f.rt.live] }), claudeConfig: async () => ({ saved: sessionConfig(f.record) }), setClaudeConfig: async () => { throw new Error('An old host must not receive this setting') } }
+    const service = new ClaudeConfigService(host, () => ({ ...DEFAULT_SETTINGS }))
+    const old = await service.get(f.record.id)
+    assert.equal(old.idleCompactionSupported, false)
+    assert.equal(old.idleCompactionMinimumHostVersion, '1.0.67')
+    await assert.rejects(service.save(f.record.id, { scope: 'chat', revision: old.layers.chat.revision, values: { ...old.layers.chat.values, idleCompaction: false } }), /session host 1\.0\.67/)
+    host.status.version = '1.0.67'
+    assert.equal((await service.get(f.record.id)).idleCompactionSupported, true)
+    host.status.version = 'unknown'
+    assert.equal((await service.get(f.record.id)).idleCompactionSupported, false)
+  }
 })
 
 test('presence does not connect to a host and never calls unsupported host versions', async () => {
@@ -426,8 +548,10 @@ test('native idle flag, cache control and synthetic compact command work without
   }
 })
 
-test('native compaction produces a boundary against a local protocol fixture, without provider inference', { timeout: 30000 }, async (t) => {
+test('native compaction and provider idle scheduling produce boundaries against a local API fixture', { timeout: 30000 }, async (t) => {
   let apiCalls = 0
+  let providerTurn = false
+  let idleRuntime: ReturnType<typeof fixture> | undefined
   const unexpected: string[] = []
   const server = http.createServer(async (req, res) => {
     const route = new URL(req.url ?? '/', 'http://localhost').pathname
@@ -437,7 +561,7 @@ test('native compaction produces a boundary against a local protocol fixture, wi
     for await (const chunk of req) chunks.push(Buffer.from(chunk))
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     apiCalls++
-    const usage = { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 1000, cache_creation: { ephemeral_1h_input_tokens: 1000, ephemeral_5m_input_tokens: 0 } }
+    const usage = { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: providerTurn ? 250000 : 1000, cache_creation_input_tokens: providerTurn ? 0 : 1000, cache_creation: { ephemeral_1h_input_tokens: providerTurn ? 0 : 1000, ephemeral_5m_input_tokens: 0 } }
     const text = 'Fixture response. The fixture task is complete; no files or external services were used.'
     const message = { id: `msg_fixture_${apiCalls}`, type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text }], stop_reason: 'end_turn', stop_sequence: null, usage }
     if (!body.stream) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(message)); return }
@@ -469,7 +593,7 @@ test('native compaction produces a boundary against a local protocol fixture, wi
       settings: { fastMode: false, autoCompactEnabled: false, autoMemoryEnabled: false, promptSuggestionEnabled: false, promptCacheTtl: '1h' },
       env: { ...process.env, ANTHROPIC_API_KEY: 'synthetic-test-key', ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }
     } })
-    consume = (async () => { try { for await (const message of q!) { messages.push(message); if (message.type === 'result') finished?.() } } catch { /* owned query closing */ } })()
+    consume = (async () => { try { for await (const message of q!) { messages.push(message); idleRuntime?.handle(message); if (message.type === 'result') finished?.() } } catch { /* owned query closing */ } })()
     await q.initializationResult()
     const send = async (text: string, synthetic = false) => {
       const result = new Promise<void>((resolve) => { finished = resolve })
@@ -486,6 +610,42 @@ test('native compaction produces a boundary against a local protocol fixture, wi
     await send('/compact', true)
     assert.ok(messages.some((m) => m.type === 'system' && m.subtype === 'compact_boundary'))
     assert.ok(apiCalls >= 4, 'Native compaction must call only the local fixture after the three fixture turns')
+
+    waiter?.({ done: true, value: undefined as never }); waiter = undefined
+    q.close(); await consume
+    providerTurn = true
+    const f = fixture('codex')
+    q = query({ prompt, options: {
+      cwd: f.record.cwd, sessionId: f.record.claudeSessionId, settingSources: [], persistSession: false, maxTurns: 1,
+      settings: { idleCompaction: true, fastMode: false, autoCompactEnabled: true, autoMemoryEnabled: false, promptSuggestionEnabled: false, promptCacheTtl: '5m' },
+      env: { ...process.env, ANTHROPIC_API_KEY: 'synthetic-test-key', ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }
+    } })
+    f.internal.q = q
+    f.internal.idleCompactionInvalidated = true
+    f.internal.queue = { get size() { return items.length }, push: (message: SDKUserMessage) => {
+      f.prompts.push(message)
+      if (waiter) { const deliver = waiter; waiter = undefined; deliver({ value: message, done: false }) } else items.push(message)
+    } }
+    idleRuntime = f
+    consume = (async () => { try { for await (const message of q!) { messages.push(message); idleRuntime?.handle(message); if (message.type === 'result') finished?.() } } catch { /* owned query closing */ } })()
+    await q.initializationResult()
+    for (const text of ['Fixture provider first turn', 'Fixture provider second turn', 'Fixture provider third turn']) await send(text)
+    await f.rt.checkIdleCompaction()
+    assert.equal(f.rt.live.idleCompaction?.status, 'scheduled')
+    const providerCache = await (q as typeof native).request({ subtype: 'get_session_cost' })
+    assert.equal(idleCompactionCache(providerCache.response?.text ?? '', Date.now()), null, 'The provider fixture must not establish a warm one-hour cache')
+    f.internal.lastTurnEndedAt = Date.now() - 70 * 60_000
+    const automaticResult = new Promise<void>((resolve) => { finished = resolve })
+    await f.rt.checkIdleCompaction()
+    assert.equal(f.rt.live.idleCompaction?.status, 'compacting')
+    assert.equal(f.prompts.length, 1)
+    assert.equal(f.prompts[0].message.content, '/compact')
+    await automaticResult
+    assert.equal(f.rt.live.idleCompaction?.status, 'completed')
+    assert.equal(f.rt.live.unread, 3)
+    assert.equal(f.record.lastPromptAt, 2)
+    assert.equal(f.finished.at(-1)?.silent, true)
+    assert.ok(messages.filter((m) => m.type === 'system' && m.subtype === 'compact_boundary').length >= 2)
     assert.deepEqual(unexpected, [])
   } finally {
     waiter?.({ done: true, value: undefined as never }); q?.close(); await consume
