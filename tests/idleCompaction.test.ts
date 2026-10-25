@@ -153,12 +153,19 @@ test('busy chats, recent presence, invalidated requests, fast mode and limits do
   }
 })
 
-test('timed providers retain settings, context, busy, fast-mode and rate-limit guards', () => {
+test('timed providers retain settings, context, busy and rate-limit guards, and compact fast chats at fast speed', () => {
   const now = 10_000_000
   const timed = { ...context, cacheRequired: false }
-  for (const patch of [{ busy: true }, { invalidated: true }, { fastMode: true }, { rateLimited: true }, { contextTokens: 199999 }]) {
+  for (const patch of [{ busy: true }, { invalidated: true }, { rateLimited: true }, { contextTokens: 199999 }]) {
     assert.equal(idleCompactionPlan({ idleCompaction: true }, {}, null, { ...timed, ...patch }, now).status, 'waiting')
   }
+  const fast = idleCompactionPlan({ idleCompaction: true }, {}, null, { ...timed, fastMode: true }, now)
+  assert.equal(fast.status, 'ready')
+  assert.match(fast.reason, /fast-mode plan usage/)
+  const scheduled = idleCompactionPlan({ idleCompaction: true }, {}, null, { ...timed, fastMode: true, lastTurnEndedAt: now }, now)
+  assert.equal(scheduled.status, 'scheduled')
+  assert.match(scheduled.reason, /fast-mode plan usage/)
+  assert.doesNotMatch(idleCompactionPlan({ idleCompaction: true }, {}, null, timed, now).reason, /fast/)
   assert.equal(idleCompactionPlan({ idleCompaction: true, autoCompactEnabled: false }, {}, null, timed, now).status, 'waiting')
   for (const key of ['DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT']) assert.equal(idleCompactionPlan({ idleCompaction: true }, { [key]: '1' }, null, timed, now).status, 'waiting')
 })
@@ -374,7 +381,7 @@ test('disabling idle compaction during a pending native check cannot start compa
   assert.equal(f.prompts.length, 0)
 })
 
-test('busy runtime states, native warnings and fast models never enqueue automatic compaction', async () => {
+test('busy runtime states and native warnings never enqueue automatic compaction', async () => {
   const changes: ((f: ReturnType<typeof fixture>) => void)[] = [
     (f) => { f.rt.live.status = 'running' },
     (f) => { f.rt.live.queuedCount = 1 },
@@ -383,7 +390,6 @@ test('busy runtime states, native warnings and fast models never enqueue automat
     (f) => { f.rt.live.activeTools = [{} as never] },
     (f) => { f.rt.live.runningShellIds = ['fixture-shell'] },
     (f) => { f.rt.live.rateLimit = { status: 'allowed_warning' } },
-    (f) => { f.record.fastMode = true },
     (f) => { f.rt.live.contextTokens = 150000 },
     (f) => { f.internal.idleCompactionInvalidated = true }
   ]
@@ -392,6 +398,33 @@ test('busy runtime states, native warnings and fast models never enqueue automat
     change(f)
     await f.rt.checkIdleCompaction()
     assert.equal(f.prompts.length, 0)
+  }
+})
+
+test('Claude fast mode never enqueues automatic compaction; a GPT fast model compacts at fast speed', async () => {
+  const fast: ((f: ReturnType<typeof fixture>) => void)[] = [
+    (f) => { f.record.fastMode = true },
+    (f) => { f.rt.live.fastModeState = 'on' },
+    (f) => { (f.rt as unknown as { runAs: unknown }).runAs = { run: 'fixture-model-fast', model: 'fixture-model' } }
+  ]
+  for (const provider of [undefined, 'anthropic']) for (const change of fast) {
+    const f = fixture(provider)
+    change(f)
+    await f.rt.checkIdleCompaction()
+    assert.equal(f.prompts.length, 0)
+    assert.equal(f.rt.live.idleCompaction?.status, 'waiting')
+    assert.match(f.rt.live.idleCompaction?.reason ?? '', /paid fast-mode/)
+  }
+  for (const change of fast) {
+    const f = fixture('codex')
+    const models: unknown[] = []
+    f.native.setModel = async (model?: unknown) => { models.push(model) }
+    change(f)
+    await f.rt.checkIdleCompaction()
+    assert.equal(f.prompts.length, 1)
+    assert.equal(f.prompts[0].message.content, '/compact')
+    assert.equal(f.rt.live.idleCompaction?.status, 'compacting')
+    assert.deepEqual(models, [], 'The fast model stays selected for the compaction')
   }
 })
 

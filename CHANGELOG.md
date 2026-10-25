@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.68 — 2026-10-25
+
+### Idle compaction for fast GPT chats
+
+- A GPT or other-provider chat running its model's fast variant is now idle-compacted like any
+  other chat of that provider, at fast speed. The compaction request uses that plan's fast-mode
+  usage; the chat's model is not switched for it. Chat settings says so while the timer runs.
+- Claude fast mode still prevents idle compaction, because it draws paid usage credits.
+- The change is in the session host. Updating only the window keeps the existing host, which still
+  skips fast chats. Finish ongoing work before fully quitting and reopening to load it.
+
 ## 1.0.67 — 2026-10-20
 
 ### Idle compaction for other providers

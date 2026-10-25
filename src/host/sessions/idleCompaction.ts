@@ -80,15 +80,17 @@ export function idleCompactionPlan(
   const disabled = (key: string) => [env[key], configValueAt(settings, ['env', key])].some((value) => /^(1|true|yes|on)$/i.test(String(value ?? '')))
   if (settings.autoCompactEnabled === false || disabled('DISABLE_COMPACT') || disabled('DISABLE_AUTO_COMPACT')) return state('waiting', 'Compaction is disabled by Claude Code settings or the process environment.')
   if (context.busy) return state('waiting', 'Waiting for the chat, its queue, permissions and background tasks to become idle.')
-  if (context.fastMode) return state('waiting', 'Idle compaction does not start paid fast-mode requests. Turn fast mode off to allow it.')
+  // Claude's fast mode draws paid usage credits. Another provider's fast model uses its plan's usage.
+  if (context.fastMode && context.cacheRequired) return state('waiting', 'Idle compaction does not start paid fast-mode requests. Turn fast mode off to allow it.')
   if (context.rateLimited) return state('waiting', 'Claude Code reports a usage warning or limit; no automatic compaction will be requested.')
   if (context.invalidated) return state('waiting', 'The conversation or its request settings changed. Waiting for a new model response before scheduling idle compaction.')
   if (context.contextTokens < minimumTokens) return state('waiting', `Waiting for at least ${minimumTokens.toLocaleString('en-US')} context tokens.`)
   if (!context.cacheRequired) {
     if (!Number.isFinite(context.lastTurnEndedAt) || context.lastTurnEndedAt <= 0) return state('waiting', 'Waiting for a new model response in this process before starting the idle timer.')
+    const fast = context.fastMode ? ' This chat runs in fast mode, so compaction uses fast-mode plan usage.' : ''
     const nextAt = Math.max(context.lastTurnEndedAt, context.lastInteractionAt) + IDLE_COMPACTION_AFTER_MS
-    if (now < nextAt) return state('scheduled', 'Scheduled after 54 minutes without a finished turn or interaction in this chat. This provider does not require a one-hour cache; compaction may use uncached model tokens.', nextAt)
-    return state('ready', 'Ready to run Claude Code’s native /compact command after 54 minutes idle. This provider may use uncached model tokens.')
+    if (now < nextAt) return state('scheduled', `Scheduled after 54 minutes without a finished turn or interaction in this chat. This provider does not require a one-hour cache; compaction may use uncached model tokens.${fast}`, nextAt)
+    return state('ready', `Ready to run Claude Code’s native /compact command after 54 minutes idle. This provider may use uncached model tokens.${fast}`)
   }
   if (!cache || cache.expiresAt <= now) return state('waiting', 'Claude Code has not reported a warm one-hour prompt cache. Five-minute and expired caches are not compacted automatically.')
   const nextAt = cache.activityAt + IDLE_COMPACTION_AFTER_MS
