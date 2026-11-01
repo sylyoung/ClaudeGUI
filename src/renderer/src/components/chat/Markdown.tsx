@@ -3,7 +3,7 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markd
 import remarkGfm from 'remark-gfm'
 import { CodeBlock } from '../common/CodeBlock'
 import { useChatCtx } from './ChatContext'
-import { findPaths, isProbablyPath, splitLine } from '@/lib/paths'
+import { findPaths, isProbablyPath, linkTargetPath, splitLine } from '@/lib/paths'
 import { useStore } from '@/store'
 
 const FILE_PROTO = 'claudegui-file://'
@@ -32,13 +32,7 @@ const PICTURE = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i
 
 /** The path a picture's address names: `file://` taken off, and `%20` and the like read back. */
 function picturePath(src: string): string {
-  const p = src.replace(/^file:\/\//i, '')
-  if (!/%[0-9a-f]{2}/i.test(p)) return p
-  try {
-    return decodeURI(p)
-  } catch {
-    return p
-  }
+  return linkTargetPath(src.replace(/^file:\/\//i, ''))
 }
 
 /**
@@ -181,11 +175,11 @@ export function Markdown({ text, baseDir }: { text: string; baseDir?: string }) 
       a: ({ href, children }) => {
         const h = href ?? ''
         // The links this file makes itself carry our own protocol; a markdown link that names a
-        // file carries none. `#…` is a link inside the document, not a file.
+        // file carries none, and arrives percent-encoded. `#…` is a link inside the document, not a file.
         const written = h.startsWith(FILE_PROTO)
           ? decodeURIComponent(h.slice(FILE_PROTO.length))
           : h && !SCHEME.test(h) && !h.startsWith('#')
-            ? h
+            ? linkTargetPath(h)
             : null
         if (written !== null) {
           const { path, line } = splitLine(written)

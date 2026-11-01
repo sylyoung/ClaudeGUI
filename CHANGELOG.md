@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.69 — 2026-11-01
+
+### Links to files with Chinese, Japanese or Korean names
+
+- A Markdown link in a reply that names such a file, as in `[大纲](中文目录/测试文件.md)`, now
+  opens it. The Markdown renderer percent-encodes link addresses, so the app looked for a file
+  named `%E4%B8%AD…` and reported it as not found. Names with spaces in a link were affected the
+  same way. Paths written as plain text and pictures were not affected.
+- This is a window-only change. Applying the update does not require replacing the session host
+  or restarting running chats.
+
 ## 1.0.68 — 2026-10-25
 
 ### Idle compaction for fast GPT chats

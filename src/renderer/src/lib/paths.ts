@@ -71,6 +71,22 @@ export function findPaths(text: string): PathMatch[] {
   return out
 }
 
+/**
+ * The path a Markdown link or picture names, spelled the way it was written. The Markdown renderer
+ * percent-encodes every address it hands on, so `[大纲](中文目录/测试文件.md)` arrives as
+ * `%E4%B8%AD%E6%96%87%E7%9B%AE%E5%BD%95/%E6%B5%8B%E8%AF%95%E6%96%87%E4%BB%B6.md`, and a space as
+ * `%20`; no file has that name, so the link opened nothing. An address that is not valid
+ * percent-encoding is kept as it is.
+ */
+export function linkTargetPath(address: string): string {
+  if (!/%[0-9a-f]{2}/i.test(address)) return address
+  try {
+    return decodeURIComponent(address)
+  } catch {
+    return address
+  }
+}
+
 export function splitLine(raw: string): { path: string; line?: number; column?: number } {
   const m = raw.match(/^(.*?)(?::(\d+))?(?::(\d+))?$/)
   if (!m) return { path: raw }
