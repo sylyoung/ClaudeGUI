@@ -79,7 +79,7 @@ export function idleCompactionPlan(
   if (settings.idleCompaction !== true) return state('off', 'Idle compaction is off until explicitly enabled for this chat or in an inherited settings scope.')
   const disabled = (key: string) => [env[key], configValueAt(settings, ['env', key])].some((value) => /^(1|true|yes|on)$/i.test(String(value ?? '')))
   if (settings.autoCompactEnabled === false || disabled('DISABLE_COMPACT') || disabled('DISABLE_AUTO_COMPACT')) return state('waiting', 'Compaction is disabled by Claude Code settings or the process environment.')
-  if (context.busy) return state('waiting', 'Waiting for the chat, its queue, permissions and background tasks to become idle.')
+  if (context.busy) return state('waiting', 'Waiting for the chat, its queue and permissions to become idle.')
   // Claude's fast mode draws paid usage credits. Another provider's fast model uses its plan's usage.
   if (context.fastMode && context.cacheRequired) return state('waiting', 'Idle compaction does not start paid fast-mode requests. Turn fast mode off to allow it.')
   if (context.rateLimited) return state('waiting', 'Claude Code reports a usage warning or limit; no automatic compaction will be requested.')

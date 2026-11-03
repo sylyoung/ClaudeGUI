@@ -386,7 +386,6 @@ test('busy runtime states and native warnings never enqueue automatic compaction
     (f) => { f.rt.live.status = 'running' },
     (f) => { f.rt.live.queuedCount = 1 },
     (f) => { f.rt.live.pendingPermissions = [{} as never] },
-    (f) => { f.rt.live.backgroundTasks = [{ taskId: 'fixture-task', taskType: 'shell', description: 'Fixture task', status: 'running' }] },
     (f) => { f.rt.live.activeTools = [{} as never] },
     (f) => { f.rt.live.runningShellIds = ['fixture-shell'] },
     (f) => { f.rt.live.rateLimit = { status: 'allowed_warning' } },
@@ -399,6 +398,36 @@ test('busy runtime states and native warnings never enqueue automatic compaction
     await f.rt.checkIdleCompaction()
     assert.equal(f.prompts.length, 0)
   }
+})
+
+test('running background tasks and monitors do not hold back idle compaction, as in Claude Code', async () => {
+  const tasks = [
+    { taskId: 'fixture-shell', taskType: 'shell', description: 'Fixture background command', status: 'running' },
+    { taskId: 'fixture-monitor', taskType: 'monitor', description: 'Fixture monitor', status: 'pending' },
+    { taskId: 'fixture-agent', taskType: 'agent', description: 'Fixture subagent', status: undefined }
+  ]
+  for (const provider of [undefined, 'codex']) {
+    const f = fixture(provider)
+    if (provider) f.internal.lastTurnEndedAt = Date.now() - 70 * 60_000
+    f.rt.live.backgroundTasks = tasks as never
+    await f.rt.checkIdleCompaction()
+    assert.equal(f.prompts.length, 1)
+    assert.equal(f.prompts[0].message.content, '/compact')
+    assert.equal(f.rt.live.idleCompaction?.status, 'compacting')
+  }
+})
+
+test('an answer to a task that finished during automatic compaction is shown and marks the chat unread', async () => {
+  const f = fixture()
+  await f.rt.checkIdleCompaction()
+  const compactId = f.prompts[0].uuid
+  f.handle({ type: 'system', subtype: 'compact_boundary', uuid: randomUUID(), session_id: f.record.claudeSessionId, compact_metadata: { trigger: 'manual', pre_tokens: 250000 } })
+  f.handle({ type: 'assistant', parent_tool_use_id: null, uuid: randomUUID(), message: { id: 'fixture-task-answer', model: 'fixture-model', content: [{ type: 'text', text: 'Fixture task answer' }], usage: { input_tokens: 100, output_tokens: 20 } } })
+  f.handle(f.result({ user_message_uuids: [compactId], result: 'Fixture task answer' }))
+  assert.equal(f.rt.live.idleCompaction?.status, 'completed')
+  assert.equal(f.rt.live.lastPreview, 'Fixture task answer')
+  assert.notEqual(f.record.lastActiveAt, 2)
+  assert.equal(f.finished.at(-1)?.silent, false)
 })
 
 test('Claude fast mode never enqueues automatic compaction; a GPT fast model compacts at fast speed', async () => {

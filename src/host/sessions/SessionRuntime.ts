@@ -696,9 +696,10 @@ export class SessionRuntime {
 
   private idleCompactionContext() {
     return {
+      // Background tasks and monitors do not count: Claude Code's own idle compaction waits only for
+      // a running turn, and a task that finishes later reports to the compacted conversation.
       busy: this.stopping || this.live.status !== 'idle' || this.hasUnfinishedPrompt() || this.live.queuedCount > 0 || Boolean(this.queue?.size) ||
         this.live.pendingPermissions.length > 0 || this.live.activeTools.length > 0 || this.shellRuns.size > 0 || Boolean(this.live.runningShellIds?.length) ||
-        this.live.backgroundTasks.some((t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused' || t.status === undefined) ||
         this.recapInFlight || Boolean(this.pendingConfig || this.configApplying || this.live.configError),
       invalidated: this.idleCompactionInvalidated,
       fastMode: this.record.fastMode === true || this.live.fastModeState === 'on' || this.runAs !== null,
@@ -721,7 +722,7 @@ export class SessionRuntime {
     const generation = this.idleCompactionGeneration
     const current = () => this.q === q && generation === this.idleCompactionGeneration && !this.stopping
     if (this.idleCompactionContext().busy) {
-      if (this.live.idleCompaction?.status === 'scheduled') this.noteIdleCompaction({ ...this.live.idleCompaction, status: 'waiting', nextAt: undefined, reason: 'Waiting for the chat, its queue, permissions and background tasks to become idle.' })
+      if (this.live.idleCompaction?.status === 'scheduled') this.noteIdleCompaction({ ...this.live.idleCompaction, status: 'waiting', nextAt: undefined, reason: 'Waiting for the chat, its queue and permissions to become idle.' })
       return Promise.resolve()
     }
     this.idleCompactionCheck = (async () => {
@@ -2306,7 +2307,9 @@ export class SessionRuntime {
           compactAsked || this.turnHadManualCompaction
             ? otherPrompts.length === 0
             : this.turnHadCompaction && !this.turnHadText
-        const idleOnly = Boolean(idleTurn && otherPrompts.length === 0)
+        // A background task that finished during the automatic compaction can be answered in the
+        // same turn; that answer is shown and marks the chat unread like any other.
+        const idleOnly = Boolean(idleTurn && otherPrompts.length === 0 && !this.turnHadText)
         if (idleTurn && !idleOnly && this.turnHadText && !msg.is_error && msg.subtype === 'success') {
           this.idleCompactionGeneration += 1
           this.idleCompactionAttempted = false
@@ -2334,7 +2337,7 @@ export class SessionRuntime {
         this.turnHadCompaction = false
         this.turnHadManualCompaction = false
         this.turnHadText = false
-        this.deps.onTurnFinished(this, this.live.lastPreview ?? '', Boolean(msg.is_error) || msg.subtype !== 'success', compactionOnly || idleOnly)
+        this.deps.onTurnFinished(this, this.live.lastPreview ?? '', Boolean(msg.is_error) || msg.subtype !== 'success', idleTurn ? idleOnly : compactionOnly)
         if (!idleOnly) this.refreshTitle()
         void this.refreshContextUsage('summary')
         if (this.pendingConfig && this.live.status === 'idle') void this.applyPendingConfig()

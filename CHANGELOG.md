@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.70 — 2026-11-03
+
+### Idle compaction while background tasks run
+
+- A chat whose background command, monitor or subagent is still running is now idle-compacted
+  like any other idle chat. Claude Code's own idle compaction waits only for a turn in progress;
+  ClaudeGUI also waited for every background task, so a chat waiting on a long job was never
+  compacted. The task keeps running and reports to the compacted conversation when it finishes.
+- If Claude answers such a task in the same turn as the automatic compaction, that answer appears
+  in the sidebar and marks the chat unread, as any answer does.
+- The change is in the session host. Updating only the window keeps the existing host, which still
+  waits for background tasks. Finish ongoing work before fully quitting and reopening to load it.
+
 ## 1.0.69 — 2026-11-01
 
 ### Links to files with Chinese, Japanese or Korean names
