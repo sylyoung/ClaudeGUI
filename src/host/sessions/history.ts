@@ -26,6 +26,8 @@
  *
  * A chat opens on the last `FIRST_WINDOW` bytes, widened until it holds a screenful of
  * conversation, and scrolling up asks for the range before it.
+ *
+ * Every read leaves out the copies Claude Code writes of a chat's older parts (see copiedRanges).
  */
 import fs from 'fs'
 import { getSessionMessages, getSubagentMessages, type SessionMessage, type SessionStore, type SessionStoreEntry } from '@anthropic-ai/claude-agent-sdk'
@@ -63,35 +65,176 @@ export function sizeOf(file: string): number {
   }
 }
 
+/** A part of a transcript file, in bytes: from `from` up to, not including, `to`. */
+export interface ByteRange {
+  from: number
+  to: number
+}
+
 /**
- * The transcript entries whose lines lie in [from, to) of the file. A range that does not start at
- * the beginning of the file starts in the middle of a line, and that half line is dropped; the same
- * happens at the end, where the file may be being written to right now.
+ * The transcript entries whose lines lie in [from, to) of the file, without those in `skip`. A
+ * range that does not start at the beginning of the file starts in the middle of a line, and that
+ * half line is dropped; the same happens at the end, where the file may be being written to right
+ * now. The ranges skipped begin and end on line starts, so nothing is cut at their edges.
  */
-async function entriesInRange(file: string, from: number, to: number): Promise<SessionStoreEntry[]> {
+async function entriesInRange(file: string, from: number, to: number, skip: ByteRange[] = []): Promise<SessionStoreEntry[]> {
   const fh = await fs.promises.open(file, 'r')
   try {
-    const buf = Buffer.alloc(Math.max(0, to - from))
-    if (buf.length === 0) return []
-    const { bytesRead } = await fh.read(buf, 0, buf.length, from)
-    let text = buf.subarray(0, bytesRead).toString('utf8')
-    if (from > 0) {
-      const nl = text.indexOf('\n')
-      text = nl === -1 ? '' : text.slice(nl + 1)
-    }
     const entries: SessionStoreEntry[] = []
-    for (const line of text.split('\n')) {
-      const t = line.trim()
-      if (!t) continue
-      try {
-        entries.push(JSON.parse(t) as SessionStoreEntry)
-      } catch {
-        // A line cut in half by the edge of the range, or one still being written.
+    for (const part of rangesWithout(from, to, skip)) {
+      const buf = Buffer.alloc(part.to - part.from)
+      const { bytesRead } = await fh.read(buf, 0, buf.length, part.from)
+      let text = buf.subarray(0, bytesRead).toString('utf8')
+      if (part.from === from && from > 0) {
+        const nl = text.indexOf('\n')
+        text = nl === -1 ? '' : text.slice(nl + 1)
+      }
+      for (const line of text.split('\n')) {
+        const t = line.trim()
+        if (!t) continue
+        try {
+          entries.push(JSON.parse(t) as SessionStoreEntry)
+        } catch {
+          // A line cut in half by the edge of the range, or one still being written.
+        }
       }
     }
     return entries
   } finally {
     await fh.close().catch(() => undefined)
+  }
+}
+
+/** The parts of [from, to) outside the ranges in `skip` (sorted, not overlapping), in order. */
+export function rangesWithout(from: number, to: number, skip: ByteRange[]): ByteRange[] {
+  const parts: ByteRange[] = []
+  let at = from
+  for (const s of skip) {
+    if (s.to <= at) continue
+    if (s.from >= to) break
+    if (s.from > at) parts.push({ from: at, to: s.from })
+    at = Math.max(at, s.to)
+  }
+  if (at < to) parts.push({ from: at, to })
+  return parts
+}
+
+/**
+ * Copies Claude Code writes of a chat's older parts. When a Claude Code process compacts a chat
+ * again, it can write the parts from before the chat's earlier compactions into the transcript once
+ * more, just before the new compaction notice: the same entries, with the same uuids, from days or
+ * weeks earlier (found 2026-11-08 in many of the user's compacted chats, up to 75 MB at a time).
+ * Read in the order of the file, they put old messages after the newest ones, and they push the
+ * newest out of the part a chat is opened on: chats opened on the old messages and the compaction,
+ * without the last reply. Claude Code's own reader is not misled — it follows the links from the
+ * newest entry — but a window that shows what came before a compaction reads the file.
+ *
+ * A compaction notice names the message the compaction follows (its `logicalParentUuid`, the last
+ * message of the conversation it summarised); whatever lies between that message's line and the
+ * notice is these copies, and the notes Claude Code writes along with them. Those are the ranges
+ * returned here, oldest first, for every compaction from `downTo` to the end of the file. Each
+ * compaction's message is looked for at most `COPY_SCAN` bytes before it.
+ */
+export async function copiedRanges(file: string, downTo: number): Promise<ByteRange[]> {
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(file)
+  } catch {
+    return []
+  }
+  const { size, ino } = stat
+  let scan = copyScans.get(file)
+  // A transcript Claude Code wrote anew (it can rewrite one to reclaim space) is another file.
+  if (!scan || scan.ino !== ino || size < scan.size) {
+    scan = { size, ino, ...(await walkCompactions(file, size, Math.min(downTo, size))) }
+  } else if (size > scan.size) {
+    // From the start of the line that was the last one then, which may have been half written.
+    const since = await lineStartAt(file, scan.size - 1)
+    const added = await walkCompactions(file, size, since)
+    // A compaction written since the last look reaches back into the part looked at before: that
+    // part is walked again, so that copies read before their notice was written are known as such.
+    scan = added.reached < since ? { size, ino, ...(await walkCompactions(file, size, Math.min(downTo, scan.reached))) } : { size, ino, reached: scan.reached, ranges: [...scan.ranges, ...added.ranges] }
+  }
+  if (downTo < scan.reached) {
+    const more = await walkCompactions(file, scan.reached, downTo)
+    scan = { size, ino, reached: more.reached, ranges: [...more.ranges, ...scan.ranges] }
+  }
+  copyScans.set(file, scan)
+  return scan.ranges
+}
+
+/**
+ * How far before a compaction notice the message it follows is looked for: past the copies, which
+ * grow with each compaction a long-running process makes (75 MB the most measured).
+ */
+const COPY_SCAN = 1024 * 1024 * 1024
+const BOUNDARY_KEY = '"subtype":"compact_boundary"'
+
+/** What is known of a transcript's copies: those from `reached` to `size`, the file's size then. */
+const copyScans = new Map<string, { size: number; ino: number; reached: number; ranges: ByteRange[] }>()
+
+/**
+ * The copies before each compaction notice from `end` back to `downTo`, found by going back from
+ * notice to notice. A notice inside copies is a copy of an older one and is passed over with them.
+ * `reached` is where the walk stopped: `downTo`, or the line of a compaction's message before it.
+ */
+async function walkCompactions(file: string, end: number, downTo: number): Promise<{ reached: number; ranges: ByteRange[] }> {
+  const ranges: ByteRange[] = []
+  let pos = end
+  while (pos > downTo) {
+    const at = await findBackwards(file, BOUNDARY_KEY, pos - downTo, pos)
+    if (at === null || at < downTo) return { reached: downTo, ranges }
+    const start = await lineStartAt(file, at)
+    pos = start
+    const notice = await readLineAt(file, start)
+    const parent = notice?.type === 'system' && notice.subtype === 'compact_boundary' && notice.isSidechain !== true ? notice.logicalParentUuid : undefined
+    if (typeof parent !== 'string' || !parent) continue
+    const parentAt = await findBackwards(file, `"uuid":"${parent}"`, COPY_SCAN, start)
+    if (parentAt === null) continue
+    const after = await lineEndAt(file, parentAt)
+    if (after < start) ranges.unshift({ from: after, to: start })
+    pos = after
+  }
+  return { reached: pos, ranges }
+}
+
+/** The entry on the line starting at `start`, parsed, or null. */
+async function readLineAt(file: string, start: number): Promise<Record<string, unknown> | null> {
+  const end = await lineEndAt(file, start)
+  const fh = await fs.promises.open(file, 'r')
+  try {
+    const buf = Buffer.alloc(end - start)
+    await fh.read(buf, 0, buf.length, start)
+    return JSON.parse(buf.toString('utf8')) as Record<string, unknown>
+  } catch {
+    return null
+  } finally {
+    await fh.close().catch(() => undefined)
+  }
+}
+
+/**
+ * Where to start reading so that `bytes` of the file before `end` are read, not counting copies:
+ * a window of the chat holds as much of it as one without them.
+ */
+async function startBefore(file: string, end: number, bytes: number): Promise<number> {
+  let downTo = Math.max(0, end - bytes)
+  for (;;) {
+    const skip = await copiedRanges(file, downTo)
+    let pos = end
+    let left = bytes
+    for (let i = skip.length - 1; i >= 0 && left > 0; i--) {
+      const s = skip[i]
+      if (s.from >= pos) continue
+      if (s.to < pos) {
+        if (pos - s.to >= left) break
+        left -= pos - s.to
+      }
+      pos = s.from
+    }
+    pos = Math.max(0, pos - left)
+    if (pos >= downTo) return pos
+    downTo = pos
   }
 }
 
@@ -179,7 +322,7 @@ function withoutTrailingNote(piece: SessionStoreEntry[]): SessionStoreEntry[] {
  * written twice over the same conversation — is kept once, where it first stands.
  */
 async function foldRange(sessionId: string, dir: string, file: string, from: number, to: number): Promise<SessionMessage[]> {
-  const entries = await entriesInRange(file, from, to)
+  const entries = await entriesInRange(file, from, to, await copiedRanges(file, from))
   const messages: SessionMessage[] = []
   const seen = new Set<string>()
   for (const piece of piecesOf(entries)) {
@@ -213,11 +356,11 @@ export function readSessionHistory(sessionId: string, dir: string, file: string)
   const size = sizeOf(file)
   return oneAtATime(async () => {
     let window = FIRST_WINDOW
-    let from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, Math.max(0, size - window)))
+    let from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, await startBefore(file, size, window)))
     let messages = await foldLines(sessionId, dir, file, from, size)
     while (from > 0 && window < MAX_WINDOW && messages.length < ENOUGH_MESSAGES) {
       window = Math.min(window * 2, MAX_WINDOW)
-      from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, Math.max(0, size - window)))
+      from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, await startBefore(file, size, window)))
       messages = await foldLines(sessionId, dir, file, from, size)
     }
     return { messages, fileMB: Math.round(size / 1048576), from }
@@ -310,11 +453,11 @@ export function readSessionSlice(sessionId: string, dir: string, file: string, b
     // there on neither side yet: it belongs here.
     const to = await lineAtOrAfter(file, before)
     let window = EARLIER_WINDOW
-    let from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, Math.max(0, to - window)))
+    let from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, await startBefore(file, to, window)))
     let messages = await foldLines(sessionId, dir, file, from, to)
     while (from > 0 && window < MAX_WINDOW && messages.length < ENOUGH_MESSAGES) {
       window = Math.min(window * 2, MAX_WINDOW)
-      from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, Math.max(0, to - window)))
+      from = await stepStartAtOrBefore(file, await lineAtOrAfter(file, await startBefore(file, to, window)))
       messages = await foldLines(sessionId, dir, file, from, to)
     }
     return { messages, from }
@@ -377,17 +520,16 @@ export function readSessionLines(sessionId: string, dir: string, file: string, f
 }
 
 /**
- * Where the last occurrence of `needle` is in the file, read backwards from its end in blocks, or
- * null when it is not in the last `maxScan` bytes.
+ * Where the last occurrence of `needle` before byte `before` (the end of the file unless given) is,
+ * read backwards in blocks, or null when it is not in the `maxScan` bytes before it.
  */
-async function findBackwards(file: string, needle: string, maxScan = Number.POSITIVE_INFINITY): Promise<number | null> {
-  const size = sizeOf(file)
+async function findBackwards(file: string, needle: string, maxScan = Number.POSITIVE_INFINITY, before = sizeOf(file)): Promise<number | null> {
   const pattern = Buffer.from(needle, 'utf8')
   const fh = await fs.promises.open(file, 'r')
   try {
     const block = Buffer.allocUnsafe(4 * 1024 * 1024)
     // Blocks overlap by the length of the needle, so one lying across two blocks is still found.
-    for (let end = size; end > 0 && size - end < maxScan; ) {
+    for (let end = before; end > 0 && before - end < maxScan; ) {
       const start = Math.max(0, end - block.length)
       const { bytesRead } = await fh.read(block, 0, end - start, start)
       const at = block.subarray(0, bytesRead).lastIndexOf(pattern)
@@ -411,23 +553,27 @@ async function findBackwards(file: string, needle: string, maxScan = Number.POSI
 export async function readLineIndex(file: string, from: number): Promise<LineIndex> {
   const idx: LineIndex = { uuid: new Map(), answerFirst: new Map(), answerLast: new Map(), result: new Map() }
   const size = sizeOf(file)
+  // Copies are left out: a row is where its own lines are, not where Claude Code wrote them again.
+  const parts = rangesWithout(from, size, await copiedRanges(file, from))
   const fh = await fs.promises.open(file, 'r')
   try {
     const block = Buffer.allocUnsafe(8 * 1024 * 1024)
-    let carry: Buffer = Buffer.alloc(0)
-    let carryAt = from
-    for (let pos = from; pos < size; ) {
-      const { bytesRead } = await fh.read(block, 0, Math.min(block.length, size - pos), pos)
-      if (!bytesRead) break
-      const buf = carry.length ? Buffer.concat([carry, block.subarray(0, bytesRead)]) : block.subarray(0, bytesRead)
-      let lineStart = 0
-      for (let nl = buf.indexOf(10); nl !== -1; nl = buf.indexOf(10, lineStart)) {
-        indexLine(buf.subarray(lineStart, nl), carryAt + lineStart, idx)
-        lineStart = nl + 1
+    for (const part of parts) {
+      let carry: Buffer = Buffer.alloc(0)
+      let carryAt = part.from
+      for (let pos = part.from; pos < part.to; ) {
+        const { bytesRead } = await fh.read(block, 0, Math.min(block.length, part.to - pos), pos)
+        if (!bytesRead) break
+        const buf = carry.length ? Buffer.concat([carry, block.subarray(0, bytesRead)]) : block.subarray(0, bytesRead)
+        let lineStart = 0
+        for (let nl = buf.indexOf(10); nl !== -1; nl = buf.indexOf(10, lineStart)) {
+          indexLine(buf.subarray(lineStart, nl), carryAt + lineStart, idx)
+          lineStart = nl + 1
+        }
+        carry = Buffer.from(buf.subarray(lineStart))
+        carryAt += lineStart
+        pos += bytesRead
       }
-      carry = Buffer.from(buf.subarray(lineStart))
-      carryAt += lineStart
-      pos += bytesRead
     }
     // The last line is left out while it has no newline: it may be being written.
   } finally {

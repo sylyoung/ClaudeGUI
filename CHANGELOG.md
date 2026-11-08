@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.71 — 2026-11-08
+
+### Chats open on their last reply after repeated compactions
+
+- A chat compacted more than once by the same Claude Code process could open without its last
+  reply: just before the compaction it showed messages from days earlier, and the newest part of the
+  conversation only came back after scrolling far up. When Claude Code compacts a chat again, it can
+  write the chat's earlier parts into the transcript once more, just before the new compaction, and
+  ClaudeGUI read those copies as the latest messages. Idle compaction made such compactions frequent.
+- The copies are now recognised by the compaction itself, which names the message it follows, and
+  left out wherever a chat's history is read: opening a chat, scrolling up, message times and recaps,
+  letting go of older messages, and finding text in a chat, where each match is now listed once.
+- Transcripts are not changed, and no message was lost.
+- Opening and scrolling are read by the session host. Updating only the window keeps the existing
+  host, which still shows the copies. Finish ongoing work before fully quitting and reopening to
+  load it.
+
 ## 1.0.70 — 2026-11-03
 
 ### Idle compaction while background tasks run

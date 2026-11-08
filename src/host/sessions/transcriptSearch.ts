@@ -59,6 +59,9 @@ export async function searchTranscript(
   const exact = caseless ? Buffer.from(escaped, 'utf8') : null
   const lowered = escaped.toLowerCase()
   let truncated = false
+  // Claude Code writes copies of a chat's older parts into the file (see copiedRanges in history.ts):
+  // an entry is found once, on its own line, the first in the file.
+  const seen = new Set<string>()
 
   const consider = (line: Buffer, start: number, end: number): void => {
     const isUser = line.includes('"type":"user"')
@@ -87,6 +90,10 @@ export async function searchTranscript(
     if (!text || (role === 'user' && looksSynthetic(text))) return
     const count = countMatches(text, re)
     if (!count) return
+    if (entry.uuid) {
+      if (seen.has(entry.uuid)) return
+      seen.add(entry.uuid)
+    }
     const rowId = role === 'user' ? entry.uuid : entry.message?.id
     const snippet = snippetOf(text, re)
     if (!rowId || !snippet) return

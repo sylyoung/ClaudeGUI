@@ -4,6 +4,7 @@
  * that a search found (see transcriptSearch.ts).
  */
 import fs from 'fs'
+import { copiedRanges, rangesWithout, sizeOf } from './history'
 
 /** A recap the CLI wrote into the transcript: its note about what happened while the user was away. */
 export interface TranscriptRecap {
@@ -66,27 +67,31 @@ export async function readTranscriptIndex(file: string, from = 0, to?: number): 
     const t = Date.parse(m[2] ?? m[3])
     if (uuid && !Number.isNaN(t)) stamps.set(uuid, t)
   }
-  let rest = Buffer.alloc(0)
-  // A range that starts inside a line starts with the tail of that line, which belongs to the
-  // entry before it: it is dropped rather than parsed as an entry of its own.
-  let whole = from === 0
-  let first = from > 0
-  for await (const chunk of fs.createReadStream(file, { start: from, end: to === undefined ? undefined : Math.max(from, to - 1) }) as AsyncIterable<Buffer>) {
-    let at = 0
-    for (let nl = chunk.indexOf(10, at); nl !== -1; nl = chunk.indexOf(10, at)) {
-      const part = chunk.subarray(at, nl)
-      if (first) first = false
-      else takeLine((rest.length ? Buffer.concat([rest, part]) : part).toString('utf8'), whole)
-      rest = Buffer.alloc(0)
-      whole = true
-      at = nl + 1
+  // The copies Claude Code writes of a chat's older parts are left out (see copiedRanges); the parts
+  // around them begin and end on line starts.
+  for (const range of rangesWithout(from, to ?? sizeOf(file), await copiedRanges(file, from))) {
+    let rest = Buffer.alloc(0)
+    // A range that starts inside a line starts with the tail of that line, which belongs to the
+    // entry before it: it is dropped rather than parsed as an entry of its own.
+    let whole = range.from === 0 || range.from !== from
+    let first = !whole
+    for await (const chunk of fs.createReadStream(file, { start: range.from, end: Math.max(range.from, range.to - 1) }) as AsyncIterable<Buffer>) {
+      let at = 0
+      for (let nl = chunk.indexOf(10, at); nl !== -1; nl = chunk.indexOf(10, at)) {
+        const part = chunk.subarray(at, nl)
+        if (first) first = false
+        else takeLine((rest.length ? Buffer.concat([rest, part]) : part).toString('utf8'), whole)
+        rest = Buffer.alloc(0)
+        whole = true
+        at = nl + 1
+      }
+      rest = Buffer.concat([rest, chunk.subarray(at)])
+      if (rest.length > INDEX_LINE_MAX) {
+        rest = Buffer.from(rest.subarray(rest.length - INDEX_LINE_TAIL))
+        whole = false
+      }
     }
-    rest = Buffer.concat([rest, chunk.subarray(at)])
-    if (rest.length > INDEX_LINE_MAX) {
-      rest = Buffer.from(rest.subarray(rest.length - INDEX_LINE_TAIL))
-      whole = false
-    }
+    if (rest.length && !first) takeLine(rest.toString('utf8'), whole)
   }
-  if (rest.length && !first) takeLine(rest.toString('utf8'), whole)
   return { stamps, recaps }
 }

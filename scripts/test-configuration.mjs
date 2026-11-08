@@ -5,7 +5,7 @@ import { builtinModules } from 'node:module'
 import { build } from 'vite'
 
 const root = process.cwd()
-const suite = process.argv.includes('--idle-compaction') ? 'idleCompaction' : 'configuration'
+const suite = process.argv.includes('--idle-compaction') ? 'idleCompaction' : process.argv.includes('--history') ? 'history' : 'configuration'
 const parent = path.join(root, 'sandbox/tmp')
 fs.mkdirSync(parent, { recursive: true })
 const scratch = fs.mkdtempSync(path.join(parent, 'configuration-tests-'))
