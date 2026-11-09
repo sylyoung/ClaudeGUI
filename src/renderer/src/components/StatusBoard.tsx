@@ -9,7 +9,8 @@ const ORDER: VisualKey[] = ['working', 'permission', 'option', 'unread', 'idle-t
 /**
  * One-line statistics bar above the chat: how many sessions are working, waiting for a permission
  * or an answer, unread, idle with tasks running, idle, not running, in error — plus the running
- * background tasks. Clicking a number jumps to the next session in that state.
+ * background tasks. Clicking a number jumps to the next session in that state. The button on the
+ * right starts the pinned sessions that are not running.
  */
 export function StatusBoard() {
   const records = useStore((s) => s.records)
@@ -40,7 +41,7 @@ export function StatusBoard() {
     void selectSession(list[(idx + 1) % list.length].id)
   }
   const names = (list: typeof all) => list.slice(0, 8).map((r) => `• ${r.title}`).join('\n') + (list.length > 8 ? `\n… and ${list.length - 8} more` : '')
-  const notRunning = byState.get('stopped') ?? []
+  const pinnedNotRunning = (byState.get('stopped') ?? []).filter((r) => r.pinned)
   const busyStarts = Object.values(bulkBusy).filter((v) => v === 'start').length
 
   return (
@@ -68,10 +69,10 @@ export function StatusBoard() {
         <b>{subagents}</b>
       </span>
       <span className="spacer" />
-      {notRunning.length > 0 && (
-        <button className="stat action no-drag" disabled={busyStarts > 0} onClick={() => void startSessions(notRunning.map((r) => r.id))} data-tip={`Start the Claude process of every session that is not running (${notRunning.length}), one after the other. Stop all / select all: sidebar view options.`}>
+      {(pinnedNotRunning.length > 0 || busyStarts > 0) && (
+        <button className="stat action no-drag" disabled={busyStarts > 0} onClick={() => void startSessions(pinnedNotRunning.map((r) => r.id))} data-tip={`Start the Claude process of every pinned session that is not running (${pinnedNotRunning.length}), one after the other. Start all / stop all / select all: sidebar view options.`}>
           <Play size={12} />
-          <span>{busyStarts > 0 ? `starting ${busyStarts}…` : `Start all (${notRunning.length})`}</span>
+          <span>{busyStarts > 0 ? `starting ${busyStarts}…` : `Start pinned (${pinnedNotRunning.length})`}</span>
         </button>
       )}
     </div>

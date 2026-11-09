@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.72 — 2026-11-09
+
+### Start the pinned chats
+
+- The button at the right of the statistics bar now starts the pinned chats that are not running,
+  one after the other, and reads "Start pinned" with their number. It shows only while a pinned chat
+  is not running. Chats that are not pinned are left as they are.
+- The sidebar's view options have the same action as "Start pinned processes", above "Start all
+  processes". Starting every chat stays there and in the Session menu.
+- This is a window-only change. Applying the update does not require replacing the session host
+  or restarting running chats.
+
 ## 1.0.71 — 2026-11-08
 
 ### Chats open on their last reply after repeated compactions

@@ -252,6 +252,7 @@ export function Sidebar() {
   }
   const viewMenu = (e: React.MouseEvent) => {
     const notRunning = flat.filter((r) => !live[r.id]?.processAlive)
+    const pinnedNotRunning = notRunning.filter((r) => r.pinned)
     const running = flat.filter((r) => live[r.id]?.processAlive)
     const items: MenuItem[] = [
       { label: 'Order by last prompt (newest first)', checked: sort === 'lastPrompt', tip: 'Sessions move up when you send a prompt, never when Claude answers', onClick: () => void setSettings({ sidebarSort: 'lastPrompt' }) },
@@ -264,6 +265,7 @@ export function Sidebar() {
       { label: 'Expand all groups', disabled: view !== 'groups', onClick: () => groups.forEach((g) => g.collapsed && window.api.sessions.setGroupCollapsed(g.id, false).catch(fail)) },
       { label: 'Collapse all groups', disabled: view !== 'groups', onClick: () => groups.forEach((g) => !g.collapsed && window.api.sessions.setGroupCollapsed(g.id, true).catch(fail)) },
       { label: '', onClick: () => undefined, separator: true },
+      { label: `Start pinned processes (${pinnedNotRunning.length} not running)`, disabled: pinnedNotRunning.length === 0, tip: 'Starts the pinned sessions one after the other; each one needs a few seconds', onClick: () => void startSessions(pinnedNotRunning.map((r) => r.id)) },
       { label: `Start all processes (${notRunning.length} not running)`, disabled: notRunning.length === 0, tip: 'Starts one process after the other; each one needs a few seconds', onClick: () => void startSessions(notRunning.map((r) => r.id)) },
       {
         label: `Stop all processes (${running.length} running)`,
@@ -606,7 +608,7 @@ export function Sidebar() {
           </button>
         </div>
         <span className="spacer" />
-        <button className="btn ghost icon no-drag" data-tip="View options: order, archived sessions, groups, start / stop all, select all" onClick={viewMenu}>
+        <button className="btn ghost icon no-drag" data-tip="View options: order, archived sessions, groups, start pinned / start all / stop all, select all" onClick={viewMenu}>
           <SlidersHorizontal size={15} />
         </button>
         <button className="btn ghost icon no-drag" data-tip="Settings (⌘,)" onClick={() => setDialog('settings')}>
