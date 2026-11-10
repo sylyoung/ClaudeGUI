@@ -190,3 +190,21 @@ export function mergeSpawnEnv(captured: Record<string, string>, extra: Record<st
   delete merged.ORIGINAL_XDG_CURRENT_DESKTOP
   return merged
 }
+
+const PROXY_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'NO_PROXY', 'no_proxy']
+
+/**
+ * A provider launcher that sends every host direct (`NO_PROXY=*`, as cc-ds and cc-kimi set) keeps
+ * that choice: its own proxy variables replace the ones from the Settings extras, which are there
+ * for the other chats. Otherwise the extras' NO_PROXY cancels the launcher's "*" and its provider is
+ * reached through the extras' proxy. Any other launcher's environment is left as merged.
+ */
+export function keepLauncherDirect(env: Record<string, string>, launcher: Record<string, string>): Record<string, string> {
+  const direct = [launcher.NO_PROXY, launcher.no_proxy].some((v) => (v ?? '').split(',').some((host) => host.trim() === '*'))
+  if (!direct) return env
+  for (const key of PROXY_KEYS) {
+    if (key in launcher) env[key] = launcher[key]
+    else delete env[key]
+  }
+  return env
+}

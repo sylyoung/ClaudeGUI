@@ -14,6 +14,7 @@ import { ClaudeConfigService, configRevision, readConfigFile, writeConfigFile } 
 import { SessionRuntime, type RuntimeDeps } from '../src/host/sessions/SessionRuntime'
 import { DEFAULT_SETTINGS } from '../src/shared/defaults'
 import { SessionsStore } from '../src/main/store'
+import { keepLauncherDirect, mergeSpawnEnv, parseExtraEnv } from '../src/main/env'
 import type { SessionRecord } from '../src/shared/types'
 
 const root = process.env.CONFIGURATION_TEST_ROOT!
@@ -258,4 +259,25 @@ test('native CLI accepts compaction flags and top-level object replacement witho
     end?.(); q?.close(); await consume
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }
+})
+
+test('a provider launcher that sends every host direct keeps its proxy settings over the Settings extras', () => {
+  const extras = parseExtraEnv('HTTPS_PROXY=http://proxy.invalid:3128\nhttps_proxy=http://proxy.invalid:3128\nNO_PROXY=localhost,127.0.0.1,::1')
+  const direct = { HTTPS_PROXY: '', https_proxy: '', NO_PROXY: '*', ANTHROPIC_BASE_URL: 'https://provider.invalid/anthropic' }
+  const a = keepLauncherDirect(mergeSpawnEnv(direct, extras), direct)
+  assert.equal(a.NO_PROXY, '*')
+  assert.equal(a.HTTPS_PROXY, '')
+  assert.equal(a.https_proxy, '')
+  assert.equal('no_proxy' in a, false)
+  const lowerCase = { HTTPS_PROXY: 'http://launcher.invalid:3128', no_proxy: '*,localhost', ANTHROPIC_BASE_URL: 'https://provider.invalid/anthropic' }
+  const b = keepLauncherDirect(mergeSpawnEnv(lowerCase, extras), lowerCase)
+  assert.equal(b.no_proxy, '*,localhost')
+  assert.equal(b.HTTPS_PROXY, 'http://launcher.invalid:3128')
+  assert.equal('NO_PROXY' in b, false)
+  assert.equal('https_proxy' in b, false)
+  // A launcher that uses a proxy (the GPT bridge's) still takes the extras, as before.
+  const proxied = { HTTPS_PROXY: 'http://launcher.invalid:3128', NO_PROXY: 'localhost,127.0.0.1', ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/' }
+  const c = keepLauncherDirect(mergeSpawnEnv(proxied, extras), proxied)
+  assert.equal(c.HTTPS_PROXY, 'http://proxy.invalid:3128')
+  assert.equal(c.NO_PROXY, 'localhost,127.0.0.1,::1')
 })

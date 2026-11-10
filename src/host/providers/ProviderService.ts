@@ -3,7 +3,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import type { AppSettings, EffortLevel, ModelProviderSetting, ProviderModelView, ProviderView } from '@shared/types'
-import { captureLauncher, mergeSpawnEnv, parseExtraEnv, type LauncherCapture } from '../../main/env'
+import { captureLauncher, keepLauncherDirect, mergeSpawnEnv, parseExtraEnv, type LauncherCapture } from '../../main/env'
 import { fastModelBase, fastModelId } from '@shared/fastMode'
 
 /** Everything a Claude process needs to run on another provider. */
@@ -264,7 +264,7 @@ export class ProviderService {
       runModel = variant?.value ?? base
       if ((fast || variantOf) && !variant) this.deps.log(`[providers] ${p.id}: ${base} has no fast variant (${fastModelId(base)} is not listed); running it at standard speed`)
     }
-    const env = mergeSpawnEnv(capture.env, parseExtraEnv(this.deps.getSettings().extraEnv))
+    const env = keepLauncherDirect(mergeSpawnEnv(capture.env, parseExtraEnv(this.deps.getSettings().extraEnv)), capture.env)
     env.ANTHROPIC_MODEL = runModel
     const launch: ProviderLaunch = { env, model: base, runModel, fast: runModel !== base, disallowedTools: [], extraArgs: {}, warning: stale ? staleWarning(p.launcher, stale) : undefined }
     const argv = capture.argv

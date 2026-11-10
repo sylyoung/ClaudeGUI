@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.73 — 2026-11-09
+
+### Provider launchers that go direct stay direct
+
+- A provider launcher can send every host direct (`NO_PROXY=*`, as the default DeepSeek and Kimi
+  launchers do). Such a chat now keeps the launcher's own proxy variables. Before this, the proxy
+  lines in Settings → Claude → Environment → "Extra environment variables" replaced them, so these
+  chats reached their provider through that proxy. Restarting the chat did not change that.
+- Launchers that use a proxy (the GPT bridge) and plain Claude chats still take the extra variables,
+  as before.
+- This is a session host change. It applies once the app has been quit fully and opened again, and
+  each chat on such a provider uses it from its next start.
+
 ## 1.0.72 — 2026-11-09
 
 ### Start the pinned chats
