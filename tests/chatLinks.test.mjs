@@ -12,7 +12,10 @@ import remarkGfm from 'remark-gfm'
 // The production helpers, compiled on the fly so the test reads the same source the app ships.
 const source = fs.readFileSync(new URL('../src/renderer/src/lib/paths.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText
-const { linkTargetPath, splitLine } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+const { isProbablyPath, linkTargetPath, splitLine } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+const fsSource = fs.readFileSync(new URL('../src/main/fsService.ts', import.meta.url), 'utf8')
+const fsCompiled = ts.transpileModule(fsSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText
+const { locatePath } = await import(`data:text/javascript;base64,${Buffer.from(fsCompiled).toString('base64')}`)
 
 /** The address react-markdown hands to the chat's link and picture components for one reply. */
 function addressOf(markdown) {
@@ -70,4 +73,37 @@ test('the read-back path names the file on disk, and the encoded address does no
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('a path written from a folder above the chat\'s folder opens the file there', () => {
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-links-'))
+  try {
+    const home = path.join(outer, 'home')
+    const cwd = path.join(home, 'Workspace', '申请', '项目甲')
+    const cv = path.join(home, 'Workspace', '申请', '项目乙', '提交文件', '简历.pdf')
+    fs.mkdirSync(cwd, { recursive: true })
+    fs.mkdirSync(path.dirname(cv), { recursive: true })
+    fs.writeFileSync(cv, '')
+    // from 申请, from the folder above it, the folder alone, and glued to a Chinese sentence
+    assert.equal(locatePath('项目乙/提交文件/简历.pdf', cwd, home), cv)
+    assert.equal(locatePath('申请/项目乙/提交文件/简历.pdf', cwd, home), cv)
+    assert.equal(locatePath('申请/项目乙/提交文件/', cwd, home), path.dirname(cv))
+    assert.equal(locatePath('打开申请/项目乙/提交文件/简历.pdf', cwd, home), cv)
+    // a file of that name in the chat's own folder comes first
+    fs.mkdirSync(path.join(cwd, '项目乙', '提交文件'), { recursive: true })
+    fs.writeFileSync(path.join(cwd, '项目乙', '提交文件', '简历.pdf'), '')
+    assert.equal(locatePath('项目乙/提交文件/简历.pdf', cwd, home), path.join(cwd, '项目乙', '提交文件', '简历.pdf'))
+    // nothing above the home folder is searched, and a path found nowhere is reported as written
+    fs.mkdirSync(path.join(outer, 'outside'))
+    fs.writeFileSync(path.join(outer, 'outside', 'notes.md'), '')
+    assert.equal(locatePath('outside/notes.md', cwd, home), path.join(cwd, 'outside', 'notes.md'))
+    assert.equal(locatePath('申请/项目乙/缺少.pdf', cwd, home), path.join(cwd, '申请', '项目乙', '缺少.pdf'))
+  } finally {
+    fs.rmSync(outer, { recursive: true, force: true })
+  }
+})
+
+test('a folder written with its closing slash is taken for a path', () => {
+  for (const t of ['申请/项目乙/提交文件/', 'docs/notes/']) assert.equal(isProbablyPath(t), true, t)
+  for (const t of ['notes/', '/']) assert.equal(isProbablyPath(t), false, t)
 })

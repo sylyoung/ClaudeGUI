@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.74 — 2026-11-15
+
+### Paths written from a folder above the chat open
+
+- A chat often names files in a neighbouring project by a path that starts above its own folder. A
+  chat in `申请/项目甲` writes `项目乙/提交文件/简历.pdf` or `申请/项目乙/提交文件/简历.pdf`. ClaudeGUI
+  joined such a path only to the chat's own folder, so a click reported "Not found" with the chat's
+  folder in front of it, for example `…/申请/项目甲/申请/项目乙/…`.
+- When a relative path does not exist in the chat's folder, the folders above it are now tried, nearest
+  first, up to the home folder. A path that exists in the chat's folder is still opened first. A path
+  found nowhere is still reported as written.
+- A folder written with its closing slash, such as `申请/项目乙/提交文件/`, is now clickable too.
+- A click on a folder outside the chat's folder opens it in Finder. Before, nothing happened, because
+  the file panel shows only the chat's own folder.
+- This is a window-only change. Applying the update does not require replacing the session host
+  or restarting running chats.
+
 ## 1.0.73 — 2026-11-09
 
 ### Provider launchers that go direct stay direct

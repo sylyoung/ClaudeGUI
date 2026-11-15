@@ -98,6 +98,8 @@ export function isProbablyPath(text: string): boolean {
   if (t.length < 3 || t.length > 400 || /\s/.test(t) || t.includes('://')) return false
   if (t.startsWith('/') || t.startsWith('~/') || t.startsWith('./') || t.startsWith('../')) return true
   if (new RegExp(`^${SEG}(?:\\/${SEG})+(?:\\.[A-Za-z0-9]{1,8})?(?::\\d+)?(?::\\d+)?$`, 'u').test(t)) return true
+  // a folder written with its closing slash, e.g. `申请/项目乙/提交文件/`
+  if (new RegExp(`^${SEG}(?:\\/${SEG})+\\/$`, 'u').test(t)) return true
   // bare file name with an extension, e.g. `greet.py`, `README.md:12` or `测试文件.md`
   return new RegExp(`^[\\p{L}\\p{N}\\p{M}_\\-+@%()]+(?:\\.[\\p{L}\\p{N}\\p{M}_\\-]+)*\\.[A-Za-z][A-Za-z0-9]{0,7}(?::\\d+)?(?::\\d+)?$`, 'u').test(t) && !/^\d+(\.\d+)+$/.test(t)
 }

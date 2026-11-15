@@ -207,7 +207,11 @@ export function ChatView({ record, live }: { record: SessionRecord; live: Sessio
           else await window.api.shell.openInEditor(abs, line)
           return
         }
-        if (probe.kind === 'dir') {
+        // The file panel shows only the chat's folder, so a folder elsewhere opens in Finder.
+        if (probe.kind === 'dir' && abs !== record.cwd && !abs.startsWith(record.cwd + '/')) {
+          const err = await window.api.shell.openPath(abs)
+          if (err) toast(err, 'error')
+        } else if (probe.kind === 'dir') {
           toggleExpanded(record.id, abs, true)
           setRevealPath(record.id, abs)
           setFilesOpen(true)

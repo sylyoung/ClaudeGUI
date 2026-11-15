@@ -187,16 +187,43 @@ function gluedVariants(raw: string): string[] {
 }
 
 /**
+ * The folders above the chat's folder, nearest first, up to the home folder (or up to the folder
+ * below the root when the chat is outside home). A chat in `申请/项目甲` that works on a sibling
+ * project writes `项目乙/简历.pdf` from `申请`, or `申请/项目乙/简历.pdf` from the folder above it;
+ * joined to the chat's own folder neither exists.
+ */
+function parentFolders(cwd: string, home: string): string[] {
+  const out: string[] = []
+  let dir = path.resolve(cwd)
+  while (dir !== home) {
+    const up = path.dirname(dir)
+    if (up === dir || path.dirname(up) === up) break
+    out.push(up)
+    dir = up
+  }
+  return out
+}
+
+/**
  * The path a click in the chat should open: the one that was written when it exists, otherwise the
- * longest spelling of it that does exist (see gluedVariants). Falls back to the path as written, so
- * the caller still reports "not found" with the name the user saw.
+ * longest spelling of it that does exist (see gluedVariants), first in the chat's folder and then,
+ * for a relative path, in the folders above it (see parentFolders). Falls back to the path as
+ * written, so the caller still reports "not found" with the name the user saw.
  */
 export function locatePath(raw: string, cwd: string, home: string): string {
   const asWritten = resolveMentionedPath(raw, cwd, home)
-  if (!CJK.test(raw)) return asWritten
-  for (const variant of gluedVariants(raw.trim())) {
+  if (fs.existsSync(asWritten)) return asWritten
+  const variants = CJK.test(raw) ? gluedVariants(raw.trim()) : [raw.trim()]
+  for (const variant of variants) {
     const full = resolveMentionedPath(variant, cwd, home)
     if (fs.existsSync(full)) return full
+  }
+  const relative = variants.filter((v) => v && !path.isAbsolute(v) && !v.startsWith('~'))
+  for (const variant of relative) {
+    for (const dir of parentFolders(cwd, home)) {
+      const full = path.resolve(dir, variant)
+      if (fs.existsSync(full)) return full
+    }
   }
   return asWritten
 }
