@@ -46,6 +46,18 @@ export function providerFastVariant(p: ProviderView | undefined, model: string |
   return p.models.find((m) => !m.unavailable && (m.fastOf ? m.fastOf === model : m.value === fastModelId(model)))
 }
 
+/** The same name, exact id and explanation in the chat selector and the New session dialog. */
+export function providerModelOption(p: ProviderView, m: ProviderModelView): PopupOption {
+  // The id already says "[1m]", so the window marker is not repeated in the name before it.
+  const name = modelLabel(m.value).replace(/ \(1M\)$/, '')
+  // A parenthetical in the launcher's own label adds information the id does not carry.
+  const note = m.label.includes('(') ? m.label.slice(m.label.indexOf('(')).trim() : ''
+  const fast = providerFastVariant(p, m.value)
+  const fastNote = fast ? `Has fast mode${fast.description ? ` (${fast.description})` : ''}: the fast switch next to effort.` : ''
+  const hint = [note, m.unavailable ?? m.description, fastNote].filter(Boolean).join('\n') || undefined
+  return { value: encodeModelChoice(p.id, m.value), label: `${name} (${m.value})`, short: name, hint, disabled: Boolean(m.unavailable) }
+}
+
 /** Picker options for every other provider: a heading per provider, then its models (or why it is unavailable). */
 export function providerModelOptions(providers: ProviderView[]): PopupOption[] {
   const out: PopupOption[] = []
@@ -56,18 +68,7 @@ export function providerModelOptions(providers: ProviderView[]): PopupOption[] {
       out.push({ value: `unavailable:${p.id}`, label: `Not available: ${p.reason ?? 'unknown reason'}`, disabled: true })
       continue
     }
-    for (const m of listedModels(p)) {
-      // The closed control shows the name on its own; inside the list the id follows in brackets, and
-      // that id already says "[1m]", so the window marker is not repeated.
-      const name = modelLabel(m.value).replace(/ \(1M\)$/, '')
-      // A parenthetical in the launcher's own label says something the id does not ("what cc-ds uses
-      // by itself"), so it is kept as a note rather than lost with the rest of the launcher's wording.
-      const note = m.label.includes('(') ? m.label.slice(m.label.indexOf('(')).trim() : ''
-      const fast = providerFastVariant(p, m.value)
-      const fastNote = fast ? `Has fast mode${fast.description ? ` (${fast.description})` : ''}: the fast switch next to effort.` : ''
-      const hint = [note, m.unavailable ?? m.description, fastNote].filter(Boolean).join('\n') || undefined
-      out.push({ value: encodeModelChoice(p.id, m.value), label: `${name} (${m.value})`, short: name, hint, disabled: Boolean(m.unavailable) })
-    }
+    for (const m of listedModels(p)) out.push(providerModelOption(p, m))
     if (p.reason) out.push({ value: `note:${p.id}`, label: p.reason, disabled: true })
   }
   return out

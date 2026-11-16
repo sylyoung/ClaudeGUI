@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.75 — 2026-11-16
+
+### Consistent model names
+
+- Claude model names keep the full version number. Sonnet 5.5 was displayed as "Sonnet 5" because
+  the name lookup matched the shorter version first; Haiku 5.5 fell through to "Claude Haiku-5-5".
+  Version numbers are now read directly from the model ID, including dated releases.
+- The New session dialog uses the same provider names as the chat selector, with the exact model ID
+  beside the name. GPT, DeepSeek and Kimi no longer appear in different styles between those controls.
+- Model IDs, selected models and provider routing are unchanged.
+- This is a window-only change. Applying the update does not require replacing the session host
+  or restarting running chats.
+
 ## 1.0.74 — 2026-11-15
 
 ### Paths written from a folder above the chat open

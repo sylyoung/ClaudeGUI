@@ -4,7 +4,7 @@ import type { EffortLevel, PermissionMode } from '@shared/types'
 import { useStore } from '@/store'
 import { Modal } from '../common/Modal'
 import { modelLabel, shortenPath } from '@/lib/format'
-import { decodeModelChoice, encodeModelChoice, listedModels } from '@/lib/providers'
+import { decodeModelChoice, listedModels, providerModelOption } from '@/lib/providers'
 
 import { EFFORTS, EFFORT_LABELS, MODES } from '@/lib/options'
 
@@ -100,11 +100,14 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
             </optgroup>
             {providers.map((p) => (
               <optgroup key={p.id} label={p.available ? p.name : `${p.name}: not available (${p.reason ?? 'unknown reason'})`}>
-                {listedModels(p).map((m) => (
-                  <option key={m.value} value={encodeModelChoice(p.id, m.value)} disabled={!p.available || Boolean(m.unavailable)} title={m.unavailable ?? m.description}>
-                    {m.label}{m.unavailable ? ' (bridge update needed)' : ''}
-                  </option>
-                ))}
+                {listedModels(p).map((m) => {
+                  const option = providerModelOption(p, m)
+                  return (
+                    <option key={option.value} value={option.value} disabled={!p.available || option.disabled} title={option.hint}>
+                      {option.label}{m.unavailable ? ' (bridge update needed)' : ''}
+                    </option>
+                  )
+                })}
               </optgroup>
             ))}
           </select>

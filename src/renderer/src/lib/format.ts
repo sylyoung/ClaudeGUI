@@ -69,23 +69,6 @@ export function shortenPath(p: string, home?: string): string {
   return p
 }
 
-/**
- * Names of the Claude models as people write them, matched by prefix so a dated id still finds its
- * name. The longer id comes first, or "claude-opus-5-5" would be read as Opus 5.
- */
-const CLAUDE_MODEL_NAMES: Record<string, string> = {
-  'claude-fable-5-1': 'Fable 5.1',
-  'claude-fable-5': 'Fable 5',
-  'claude-opus-5-5': 'Opus 5.5',
-  'claude-opus-5': 'Opus 5',
-  'claude-opus-4-8': 'Opus 4.8',
-  'claude-opus-4-7': 'Opus 4.7',
-  'claude-opus-4-6': 'Opus 4.6',
-  'claude-sonnet-5': 'Sonnet 5',
-  'claude-sonnet-4-6': 'Sonnet 4.6',
-  'claude-haiku-4-5': 'Haiku 4.5'
-}
-
 /** Brand and product words that are written with capitals of their own, not as title case. */
 const MODEL_WORDS: Record<string, string> = {
   gpt: 'GPT',
@@ -110,7 +93,13 @@ const MODEL_WORDS: Record<string, string> = {
  * after it are separated by spaces. A date at the end of an id is shown as a date.
  */
 function prettyModelId(id: string): string {
-  for (const [key, name] of Object.entries(CLAUDE_MODEL_NAMES)) if (id === key || id.startsWith(key + '-')) return name
+  // Read the whole version: a prefix match for Sonnet 5 would also swallow Sonnet 5.5. A dated
+  // release keeps that version's name; an unfamiliar suffix falls through without being discarded.
+  const claude = /^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id)
+  if (claude) {
+    const [, family, major, minor] = claude
+    return `${family[0].toUpperCase() + family.slice(1)} ${major}${minor ? `.${minor}` : ''}`
+  }
   const words: string[] = []
   for (const token of id.split(/[-_]+/)) {
     if (!token) continue
@@ -126,7 +115,6 @@ function prettyModelId(id: string): string {
   return words.join(' ') || id
 }
 
-/** The name of a model for reading, e.g. "GPT-5.6 Sol (1M)"; the id itself stays in the tooltip. */
 /**
  * A line of chat text with the markdown taken off it. In a one-line summary the pairs of asterisks
  * and the backticks are noise, so only those markers go — never a character inside a word, because
@@ -141,6 +129,7 @@ export function plainLine(text: string): string {
     .trim()
 }
 
+/** The name of a model for reading, e.g. "GPT-5.6 Sol (1M)"; the id itself stays in the tooltip. */
 export function modelLabel(model: string | undefined): string {
   if (!model) return 'default model'
   if (model === '<synthetic>') return 'Claude Code'
